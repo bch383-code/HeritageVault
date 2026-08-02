@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../database/database_helper.dart';
 import '../models/imported_coin.dart';
+import 'coin_detail_screen.dart';
 
 class CoinsScreen extends StatefulWidget {
   const CoinsScreen({super.key});
@@ -69,8 +70,33 @@ class _CoinsScreenState extends State<CoinsScreen> {
     }
   }
 
+  Future<void> _openDetails(ImportedCoin coin) async {
+    final updatedCoin = await Navigator.push<ImportedCoin>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => CoinDetailScreen(coin: coin),
+      ),
+    );
+
+    if (updatedCoin != null) {
+      await _loadData();
+
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Coin changes saved.')),
+      );
+    }
+  }
+
   Future<void> _toggleStatus(ImportedCoin coin) async {
     final newStatus = coin.isNeeded ? 'Owned' : 'Need';
+
+    await _databaseHelper.createDatabaseBackup(
+      reason: 'before_status_change',
+    );
 
     await _databaseHelper.updateImportedCoinStatus(
       coin: coin,
@@ -84,9 +110,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
     }
 
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('${coin.displayName} marked $newStatus.'),
-      ),
+      SnackBar(content: Text('${coin.displayName} marked $newStatus.')),
     );
   }
 
@@ -171,7 +195,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
                 SizedBox(
                   width: 220,
                   child: DropdownButtonFormField<String?>(
-                    value: _selectedCategory,
+                    initialValue: _selectedCategory,
                     decoration: const InputDecoration(
                       labelText: 'Category',
                       border: OutlineInputBorder(),
@@ -229,7 +253,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
 
     return ListView.separated(
       itemCount: _coins.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      separatorBuilder: (_, _) => const SizedBox(height: 8),
       itemBuilder: (context, index) {
         final coin = _coins[index];
         final subtitleParts = <String>[
@@ -237,11 +261,13 @@ class _CoinsScreenState extends State<CoinsScreen> {
           if (coin.series.isNotEmpty) coin.series,
           if (coin.storageLocation.isNotEmpty)
             'Storage: ${coin.storageLocation}',
+          if (coin.grade.isNotEmpty) 'Grade: ${coin.grade}',
           if (coin.notes.isNotEmpty) coin.notes,
         ];
 
         return Card(
           child: ListTile(
+            onTap: () => _openDetails(coin),
             leading: CircleAvatar(
               child: Icon(
                 coin.isNeeded
@@ -250,19 +276,24 @@ class _CoinsScreenState extends State<CoinsScreen> {
               ),
             ),
             title: Text(
-              coin.displayName.isEmpty
-                  ? 'Unnamed coin'
-                  : coin.displayName,
+              coin.displayName.isEmpty ? 'Unnamed coin' : coin.displayName,
             ),
             subtitle: Text(subtitleParts.join(' • ')),
-            trailing: FilledButton.tonalIcon(
-              onPressed: () => _toggleStatus(coin),
-              icon: Icon(
-                coin.isNeeded ? Icons.add_task : Icons.undo,
-              ),
-              label: Text(
-                coin.isNeeded ? 'Mark Owned' : 'Mark Needed',
-              ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FilledButton.tonalIcon(
+                  onPressed: () => _toggleStatus(coin),
+                  icon: Icon(
+                    coin.isNeeded ? Icons.add_task : Icons.undo,
+                  ),
+                  label: Text(
+                    coin.isNeeded ? 'Mark Owned' : 'Mark Needed',
+                  ),
+                ),
+                const SizedBox(width: 6),
+                const Icon(Icons.chevron_right),
+              ],
             ),
           ),
         );

@@ -29,6 +29,10 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
+      await _databaseHelper.createDatabaseBackup(
+        reason: 'before_spreadsheet_import',
+      );
+
       final savedCount = await _databaseHelper.replaceImportedCoins(
         result.coins,
       );

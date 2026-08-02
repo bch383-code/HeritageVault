@@ -11,8 +11,8 @@ class DatabaseHelper {
   DatabaseHelper._();
 
   static final DatabaseHelper instance = DatabaseHelper._();
-
   static Database? _database;
+  static String? _databasePath;
 
   Future<Database> get database async {
     if (_database != null) {
@@ -24,29 +24,22 @@ class DatabaseHelper {
   }
 
   Future<Database> _openDatabase() async {
-    final documentsDirectory =
-        await getApplicationDocumentsDirectory();
-
+    final documentsDirectory = await getApplicationDocumentsDirectory();
     final heritageVaultDirectory = Directory(
-      path.join(
-        documentsDirectory.path,
-        'Heritage Vault',
-      ),
+      path.join(documentsDirectory.path, 'Heritage Vault'),
     );
 
     if (!await heritageVaultDirectory.exists()) {
-      await heritageVaultDirectory.create(
-        recursive: true,
-      );
+      await heritageVaultDirectory.create(recursive: true);
     }
 
-    final databasePath = path.join(
+    _databasePath = path.join(
       heritageVaultDirectory.path,
       'heritage_vault.db',
     );
 
     return databaseFactory.openDatabase(
-      databasePath,
+      _databasePath!,
       options: OpenDatabaseOptions(
         version: 2,
         onCreate: (database, version) async {
@@ -62,9 +55,7 @@ class DatabaseHelper {
     );
   }
 
-  static Future<void> _createManualCoinsTable(
-    Database database,
-  ) async {
+  static Future<void> _createManualCoinsTable(Database database) async {
     await database.execute('''
       CREATE TABLE coins (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,9 +68,7 @@ class DatabaseHelper {
     ''');
   }
 
-  static Future<void> _createImportedCoinsTable(
-    Database database,
-  ) async {
+  static Future<void> _createImportedCoinsTable(Database database) async {
     await database.execute('''
       CREATE TABLE IF NOT EXISTS imported_coins (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,23 +85,51 @@ class DatabaseHelper {
     ''');
 
     await database.execute('''
-      CREATE INDEX IF NOT EXISTS
-      imported_coins_status_index
+      CREATE INDEX IF NOT EXISTS imported_coins_status_index
       ON imported_coins(status)
     ''');
 
     await database.execute('''
-      CREATE INDEX IF NOT EXISTS
-      imported_coins_category_index
+      CREATE INDEX IF NOT EXISTS imported_coins_category_index
       ON imported_coins(category)
     ''');
   }
 
-  // Existing manually entered coins
+  Future<String?> createDatabaseBackup({
+    String reason = 'automatic',
+  }) async {
+    final database = await this.database;
+    final sourcePath = _databasePath;
+
+    if (sourcePath == null) {
+      return null;
+    }
+
+    final backupDirectory = Directory(
+      path.join(path.dirname(sourcePath), 'Backups'),
+    );
+
+    if (!await backupDirectory.exists()) {
+      await backupDirectory.create(recursive: true);
+    }
+
+    final now = DateTime.now();
+    String twoDigits(int value) => value.toString().padLeft(2, '0');
+    final timestamp = '${now.year}${twoDigits(now.month)}${twoDigits(now.day)}_'
+        '${twoDigits(now.hour)}${twoDigits(now.minute)}${twoDigits(now.second)}';
+    final safeReason = reason.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+    final backupPath = path.join(
+      backupDirectory.path,
+      'heritage_vault_${timestamp}_$safeReason.db',
+    );
+
+    final escapedPath = backupPath.replaceAll("'", "''");
+    await database.execute("VACUUM INTO '$escapedPath'");
+    return backupPath;
+  }
 
   Future<int> insertCoin(Coin coin) async {
     final database = await this.database;
-
     final coinMap = coin.toMap();
     coinMap.remove('id');
 
@@ -125,18 +142,15 @@ class DatabaseHelper {
 
   Future<List<Coin>> getCoins() async {
     final database = await this.database;
-
     final results = await database.query(
       'coins',
       orderBy: 'year ASC, name ASC',
     );
-
     return results.map(Coin.fromMap).toList();
   }
 
   Future<int> deleteCoin(int id) async {
     final database = await this.database;
-
     return database.delete(
       'coins',
       where: 'id = ?',
@@ -144,39 +158,18 @@ class DatabaseHelper {
     );
   }
 
-  // Spreadsheet-imported coins
-
-  Future<int> replaceImportedCoins(
-    List<ImportedCoin> coins,
-  ) async {
+  Future<int> replaceImportedCoins(List<ImportedCoin> coins) async {
     final database = await this.database;
 
     return database.transaction((transaction) async {
       await transaction.delete('imported_coins');
-
       final batch = transaction.batch();
 
       for (final coin in coins) {
-        batch.insert(
-          'imported_coins',
-          {
-            'category': coin.category,
-            'series': coin.series,
-            'year': coin.year,
-            'mint': coin.mint,
-            'variety': coin.variety,
-            'status': coin.status,
-            'storage_location': coin.storageLocation,
-            'grade': coin.grade,
-            'notes': coin.notes,
-          },
-        );
+        batch.insert('imported_coins', _importedCoinMap(coin));
       }
 
-      await batch.commit(
-        noResult: true,
-      );
-
+      await batch.commit(noResult: true);
       return coins.length;
     });
   }
@@ -187,7 +180,6 @@ class DatabaseHelper {
     String searchText = '',
   }) async {
     final database = await this.database;
-
     final whereParts = <String>[];
     final whereArguments = <Object?>[];
 
@@ -202,58 +194,33 @@ class DatabaseHelper {
     }
 
     final search = searchText.trim();
-
     if (search.isNotEmpty) {
       whereParts.add('''
         (
-          year LIKE ? OR
-          mint LIKE ? OR
-          variety LIKE ? OR
-          series LIKE ? OR
-          category LIKE ? OR
-          storage_location LIKE ? OR
-          notes LIKE ?
+          year LIKE ? OR mint LIKE ? OR variety LIKE ? OR
+          series LIKE ? OR category LIKE ? OR
+          storage_location LIKE ? OR notes LIKE ?
         )
       ''');
-
-      final searchPattern = '%$search%';
-
+      final pattern = '%$search%';
       for (var index = 0; index < 7; index++) {
-        whereArguments.add(searchPattern);
+        whereArguments.add(pattern);
       }
     }
 
     final results = await database.query(
       'imported_coins',
-      where: whereParts.isEmpty
-          ? null
-          : whereParts.join(' AND '),
-      whereArgs:
-          whereArguments.isEmpty ? null : whereArguments,
-      orderBy:
-          'category COLLATE NOCASE, year COLLATE NOCASE, '
+      where: whereParts.isEmpty ? null : whereParts.join(' AND '),
+      whereArgs: whereArguments.isEmpty ? null : whereArguments,
+      orderBy: 'category COLLATE NOCASE, year COLLATE NOCASE, '
           'mint COLLATE NOCASE, variety COLLATE NOCASE',
     );
 
-    return results.map((row) {
-      return ImportedCoin(
-        category: row['category'] as String? ?? '',
-        series: row['series'] as String? ?? '',
-        year: row['year'] as String? ?? '',
-        mint: row['mint'] as String? ?? '',
-        variety: row['variety'] as String? ?? '',
-        status: row['status'] as String? ?? '',
-        storageLocation:
-            row['storage_location'] as String? ?? '',
-        grade: row['grade'] as String? ?? '',
-        notes: row['notes'] as String? ?? '',
-      );
-    }).toList();
+    return results.map(_importedCoinFromMap).toList();
   }
 
   Future<List<String>> getImportedCategories() async {
     final database = await this.database;
-
     final results = await database.rawQuery('''
       SELECT DISTINCT category
       FROM imported_coins
@@ -261,60 +228,100 @@ class DatabaseHelper {
       ORDER BY category COLLATE NOCASE
     ''');
 
-    return results
-        .map((row) => row['category'] as String)
-        .toList();
+    return results.map((row) => row['category'] as String).toList();
   }
 
-  Future<int> getImportedCoinCount({
-    String? status,
-  }) async {
+  Future<int> getImportedCoinCount({String? status}) async {
     final database = await this.database;
-
     final result = await database.rawQuery(
       status == null
-          ? '''
-              SELECT COUNT(*) AS total
-              FROM imported_coins
-            '''
-          : '''
-              SELECT COUNT(*) AS total
-              FROM imported_coins
-              WHERE status = ?
-            ''',
+          ? 'SELECT COUNT(*) AS total FROM imported_coins'
+          : 'SELECT COUNT(*) AS total FROM imported_coins WHERE status = ?',
       status == null ? null : [status],
     );
 
-    return (result.first['total'] as int?) ?? 0;
+    final value = result.first['total'];
+    if (value is int) {
+      return value;
+    }
+    return int.tryParse(value.toString()) ?? 0;
   }
 
   Future<int> updateImportedCoinStatus({
     required ImportedCoin coin,
     required String newStatus,
   }) async {
+    final updatedCoin = ImportedCoin(
+      category: coin.category,
+      series: coin.series,
+      year: coin.year,
+      mint: coin.mint,
+      variety: coin.variety,
+      status: newStatus,
+      storageLocation: coin.storageLocation,
+      grade: coin.grade,
+      notes: coin.notes,
+    );
+
+    return updateImportedCoin(
+      originalCoin: coin,
+      updatedCoin: updatedCoin,
+    );
+  }
+
+  Future<int> updateImportedCoin({
+    required ImportedCoin originalCoin,
+    required ImportedCoin updatedCoin,
+  }) async {
     final database = await this.database;
 
     return database.update(
       'imported_coins',
-      {
-        'status': newStatus,
-      },
+      _importedCoinMap(updatedCoin),
       where: '''
-        category = ? AND
-        series = ? AND
-        year = ? AND
-        mint = ? AND
-        variety = ? AND
-        storage_location = ?
+        category = ? AND series = ? AND year = ? AND mint = ? AND
+        variety = ? AND status = ? AND storage_location = ? AND
+        grade = ? AND notes = ?
       ''',
       whereArgs: [
-        coin.category,
-        coin.series,
-        coin.year,
-        coin.mint,
-        coin.variety,
-        coin.storageLocation,
+        originalCoin.category,
+        originalCoin.series,
+        originalCoin.year,
+        originalCoin.mint,
+        originalCoin.variety,
+        originalCoin.status,
+        originalCoin.storageLocation,
+        originalCoin.grade,
+        originalCoin.notes,
       ],
+    );
+  }
+
+  Map<String, Object?> _importedCoinMap(ImportedCoin coin) {
+    return {
+      'category': coin.category,
+      'series': coin.series,
+      'year': coin.year,
+      'mint': coin.mint,
+      'variety': coin.variety,
+      'status': coin.status,
+      'storage_location': coin.storageLocation,
+      'grade': coin.grade,
+      'notes': coin.notes,
+    };
+  }
+
+  ImportedCoin _importedCoinFromMap(Map<String, Object?> row) {
+    return ImportedCoin(
+      category: row['category'] as String? ?? '',
+      series: row['series'] as String? ?? '',
+      year: row['year'] as String? ?? '',
+      mint: row['mint'] as String? ?? '',
+      variety: row['variety'] as String? ?? '',
+      status: row['status'] as String? ?? '',
+      storageLocation: row['storage_location'] as String? ?? '',
+      grade: row['grade'] as String? ?? '',
+      notes: row['notes'] as String? ?? '',
     );
   }
 }
