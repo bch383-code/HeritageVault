@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../database/database_helper.dart';
-import '../models/coin.dart';
+import '../models/imported_coin.dart';
 
 class CoinsScreen extends StatefulWidget {
   const CoinsScreen({super.key});
@@ -12,20 +12,38 @@ class CoinsScreen extends StatefulWidget {
 
 class _CoinsScreenState extends State<CoinsScreen> {
   final DatabaseHelper _databaseHelper = DatabaseHelper.instance;
+  final TextEditingController _searchController = TextEditingController();
 
-  List<Coin> _coins = [];
-  String _searchText = '';
+  List<ImportedCoin> _coins = [];
+  List<String> _categories = [];
+  String? _selectedStatus;
+  String? _selectedCategory;
   bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    _loadCoins();
+    _loadData();
   }
 
-  Future<void> _loadCoins() async {
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadData() async {
+    setState(() {
+      _isLoading = true;
+    });
+
     try {
-      final coins = await _databaseHelper.getCoins();
+      final coins = await _databaseHelper.getImportedCoins(
+        status: _selectedStatus,
+        category: _selectedCategory,
+        searchText: _searchController.text,
+      );
+      final categories = await _databaseHelper.getImportedCategories();
 
       if (!mounted) {
         return;
@@ -33,6 +51,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
 
       setState(() {
         _coins = coins;
+        _categories = categories;
         _isLoading = false;
       });
     } catch (error) {
@@ -45,294 +64,205 @@ class _CoinsScreenState extends State<CoinsScreen> {
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Could not load coins: $error'),
-        ),
+        SnackBar(content: Text('Could not load collection: $error')),
       );
     }
   }
 
-  List<Coin> get _filteredCoins {
-    final query = _searchText.trim().toLowerCase();
+  Future<void> _toggleStatus(ImportedCoin coin) async {
+    final newStatus = coin.isNeeded ? 'Owned' : 'Need';
 
-    if (query.isEmpty) {
-      return _coins;
+    await _databaseHelper.updateImportedCoinStatus(
+      coin: coin,
+      newStatus: newStatus,
+    );
+
+    await _loadData();
+
+    if (!mounted) {
+      return;
     }
 
-    return _coins.where((coin) {
-      return coin.year.toLowerCase().contains(query) ||
-          coin.name.toLowerCase().contains(query) ||
-          coin.mintMark.toLowerCase().contains(query) ||
-          coin.country.toLowerCase().contains(query) ||
-          coin.notes.toLowerCase().contains(query);
-    }).toList();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('${coin.displayName} marked $newStatus.'),
+      ),
+    );
   }
 
-  Future<void> _showAddCoinDialog() async {
-    final yearController = TextEditingController();
-    final nameController = TextEditingController();
-    final mintController = TextEditingController();
-    final countryController = TextEditingController(
-      text: 'United States',
-    );
-    final notesController = TextEditingController();
-
-    final newCoin = await showDialog<Coin>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Add Coin'),
-          content: SizedBox(
-            width: 420,
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: yearController,
-                    decoration: const InputDecoration(
-                      labelText: 'Year',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: nameController,
-                    decoration: const InputDecoration(
-                      labelText: 'Coin name',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: mintController,
-                    decoration: const InputDecoration(
-                      labelText: 'Mint mark',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: countryController,
-                    decoration: const InputDecoration(
-                      labelText: 'Country',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: notesController,
-                    maxLines: 3,
-                    decoration: const InputDecoration(
-                      labelText: 'Notes',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(dialogContext);
-              },
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () {
-                final year = yearController.text.trim();
-                final name = nameController.text.trim();
-                final mintMark = mintController.text.trim();
-                final country = countryController.text.trim();
-                final notes = notesController.text.trim();
-
-                if (year.isEmpty || name.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text(
-                        'Year and coin name are required.',
-                      ),
-                    ),
-                  );
-                  return;
-                }
-
-                Navigator.pop(
-                  dialogContext,
-                  Coin(
-                    year: year,
-                    name: name,
-                    mintMark: mintMark,
-                    country: country.isEmpty ? 'Unknown' : country,
-                    notes: notes,
-                  ),
-                );
-              },
-              child: const Text('Save Coin'),
-            ),
-          ],
-        );
-      },
-    );
-
-    yearController.dispose();
-    nameController.dispose();
-    mintController.dispose();
-    countryController.dispose();
-    notesController.dispose();
-
-    if (newCoin == null) {
-      return;
-    }
-
-    try {
-      await _databaseHelper.insertCoin(newCoin);
-      await _loadCoins();
-
-      if (!mounted) {
-        return;
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Coin saved permanently.'),
-        ),
-      );
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Could not save coin: $error'),
-        ),
-      );
-    }
-  }
-
-  Future<void> _deleteCoin(Coin coin) async {
-    if (coin.id == null) {
-      return;
-    }
-
-    final shouldDelete = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Delete Coin?'),
-          content: Text(
-            'Delete ${coin.year} ${coin.name} from Heritage Vault?',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(dialogContext, false);
-              },
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () {
-                Navigator.pop(dialogContext, true);
-              },
-              child: const Text('Delete'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (shouldDelete != true) {
-      return;
-    }
-
-    await _databaseHelper.deleteCoin(coin.id!);
-    await _loadCoins();
+  void _clearFilters() {
+    _searchController.clear();
+    setState(() {
+      _selectedStatus = null;
+      _selectedCategory = null;
+    });
+    _loadData();
   }
 
   @override
   Widget build(BuildContext context) {
-    final visibleCoins = _filteredCoins;
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Coin Collection'),
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _showAddCoinDialog,
-        icon: const Icon(Icons.add),
-        label: const Text('Add Coin'),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh',
+            onPressed: _loadData,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
       ),
       body: Padding(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(20),
         child: Column(
           children: [
             TextField(
-              decoration: const InputDecoration(
-                hintText:
-                    'Search by year, name, mint mark, country, or notes',
-                prefixIcon: Icon(Icons.search),
-                border: OutlineInputBorder(),
+              controller: _searchController,
+              decoration: InputDecoration(
+                hintText: 'Search year, mint, variety, series, binder, or notes',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _searchController.text.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: 'Clear search',
+                        onPressed: () {
+                          _searchController.clear();
+                          _loadData();
+                        },
+                        icon: const Icon(Icons.clear),
+                      ),
+                border: const OutlineInputBorder(),
               ),
-              onChanged: (value) {
-                setState(() {
-                  _searchText = value;
-                });
-              },
+              textInputAction: TextInputAction.search,
+              onSubmitted: (_) => _loadData(),
+              onChanged: (_) => setState(() {}),
             ),
-            const SizedBox(height: 20),
-            Expanded(
-              child: _buildCoinList(visibleCoins),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                SegmentedButton<String?>(
+                  segments: const [
+                    ButtonSegment<String?>(
+                      value: null,
+                      label: Text('All'),
+                    ),
+                    ButtonSegment<String?>(
+                      value: 'Need',
+                      icon: Icon(Icons.star_outline),
+                      label: Text('Needed'),
+                    ),
+                    ButtonSegment<String?>(
+                      value: 'Owned',
+                      icon: Icon(Icons.check_circle_outline),
+                      label: Text('Owned'),
+                    ),
+                  ],
+                  selected: {_selectedStatus},
+                  onSelectionChanged: (selection) {
+                    setState(() {
+                      _selectedStatus = selection.first;
+                    });
+                    _loadData();
+                  },
+                ),
+                SizedBox(
+                  width: 220,
+                  child: DropdownButtonFormField<String?>(
+                    value: _selectedCategory,
+                    decoration: const InputDecoration(
+                      labelText: 'Category',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    items: [
+                      const DropdownMenuItem<String?>(
+                        value: null,
+                        child: Text('All categories'),
+                      ),
+                      ..._categories.map(
+                        (category) => DropdownMenuItem<String?>(
+                          value: category,
+                          child: Text(category),
+                        ),
+                      ),
+                    ],
+                    onChanged: (value) {
+                      setState(() {
+                        _selectedCategory = value;
+                      });
+                      _loadData();
+                    },
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _clearFilters,
+                  icon: const Icon(Icons.filter_alt_off),
+                  label: const Text('Clear'),
+                ),
+                Text('${_coins.length} coins'),
+              ],
             ),
+            const SizedBox(height: 16),
+            Expanded(child: _buildBody()),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildCoinList(List<Coin> visibleCoins) {
+  Widget _buildBody() {
     if (_isLoading) {
-      return const Center(
-        child: CircularProgressIndicator(),
-      );
+      return const Center(child: CircularProgressIndicator());
     }
 
-    if (visibleCoins.isEmpty) {
+    if (_coins.isEmpty) {
       return const Center(
         child: Text(
-          'No coins have been added yet.\n'
-          'Click Add Coin to create your first entry.',
+          'No imported coins found.\nImport your spreadsheet from the home screen.',
           textAlign: TextAlign.center,
         ),
       );
     }
 
     return ListView.separated(
-      itemCount: visibleCoins.length,
-      separatorBuilder: (context, index) {
-        return const SizedBox(height: 8);
-      },
+      itemCount: _coins.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 8),
       itemBuilder: (context, index) {
-        final coin = visibleCoins[index];
-
-        final mintText = coin.mintMark.isEmpty
-            ? 'No mint mark'
-            : 'Mint: ${coin.mintMark}';
+        final coin = _coins[index];
+        final subtitleParts = <String>[
+          coin.category,
+          if (coin.series.isNotEmpty) coin.series,
+          if (coin.storageLocation.isNotEmpty)
+            'Storage: ${coin.storageLocation}',
+          if (coin.notes.isNotEmpty) coin.notes,
+        ];
 
         return Card(
           child: ListTile(
-            leading: const CircleAvatar(
-              child: Icon(Icons.monetization_on_outlined),
+            leading: CircleAvatar(
+              child: Icon(
+                coin.isNeeded
+                    ? Icons.star_outline
+                    : Icons.check_circle_outline,
+              ),
             ),
-            title: Text('${coin.year} ${coin.name}'),
-            subtitle: Text('${coin.country} • $mintText'),
-            trailing: IconButton(
-              tooltip: 'Delete coin',
-              icon: const Icon(Icons.delete_outline),
-              onPressed: () {
-                _deleteCoin(coin);
-              },
+            title: Text(
+              coin.displayName.isEmpty
+                  ? 'Unnamed coin'
+                  : coin.displayName,
+            ),
+            subtitle: Text(subtitleParts.join(' • ')),
+            trailing: FilledButton.tonalIcon(
+              onPressed: () => _toggleStatus(coin),
+              icon: Icon(
+                coin.isNeeded ? Icons.add_task : Icons.undo,
+              ),
+              label: Text(
+                coin.isNeeded ? 'Mark Owned' : 'Mark Needed',
+              ),
             ),
           ),
         );

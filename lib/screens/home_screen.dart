@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../database/database_helper.dart';
 import '../services/coin_import_service.dart';
 import 'coins_screen.dart';
 
@@ -12,6 +13,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final CoinImportService _importService = CoinImportService();
+  final DatabaseHelper _databaseHelper = DatabaseHelper.instance;
 
   bool _isImporting = false;
 
@@ -27,24 +29,44 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
+      final savedCount = await _databaseHelper.replaceImportedCoins(
+        result.coins,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
       await showDialog<void>(
         context: context,
         builder: (dialogContext) {
           return AlertDialog(
-            title: const Text('Spreadsheet Read Successfully'),
+            title: const Text('Collection Imported'),
             content: Text(
               'File: ${result.fileName}\n\n'
               'Coin worksheets: ${result.sheetCount}\n'
               'Needed coins: ${result.neededCount}\n'
               'Owned coins: ${result.ownedCount}\n'
-              'Total tracked: ${result.trackedCount}',
+              'Saved to Heritage Vault: $savedCount',
             ),
             actions: [
-              FilledButton(
+              TextButton(
                 onPressed: () {
                   Navigator.pop(dialogContext);
                 },
-                child: const Text('Continue'),
+                child: const Text('Close'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  Navigator.pop(dialogContext);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const CoinsScreen(),
+                    ),
+                  );
+                },
+                child: const Text('View Coins'),
               ),
             ],
           );
@@ -57,7 +79,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Could not read spreadsheet: $error'),
+          content: Text('Could not import spreadsheet: $error'),
         ),
       );
     } finally {
@@ -154,20 +176,17 @@ class _HomeScreenState extends State<HomeScreen> {
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed:
-                    _isImporting ? null : _importSpreadsheet,
+                onPressed: _isImporting ? null : _importSpreadsheet,
                 icon: _isImporting
                     ? const SizedBox(
                         width: 18,
                         height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                        ),
+                        child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.upload_file),
                 label: Text(
                   _isImporting
-                      ? 'Reading Spreadsheet...'
+                      ? 'Importing Collection...'
                       : 'Import Coin Spreadsheet',
                 ),
               ),
