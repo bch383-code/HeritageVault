@@ -1,8 +1,11 @@
+import 'dart:io';
+
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../models/coin.dart';
+import '../models/imported_coin.dart';
 
 class DatabaseHelper {
   DatabaseHelper._();
@@ -21,33 +24,91 @@ class DatabaseHelper {
   }
 
   Future<Database> _openDatabase() async {
-    final documentsDirectory = await getApplicationDocumentsDirectory();
+    final documentsDirectory =
+        await getApplicationDocumentsDirectory();
+
+    final heritageVaultDirectory = Directory(
+      path.join(
+        documentsDirectory.path,
+        'Heritage Vault',
+      ),
+    );
+
+    if (!await heritageVaultDirectory.exists()) {
+      await heritageVaultDirectory.create(
+        recursive: true,
+      );
+    }
 
     final databasePath = path.join(
-      documentsDirectory.path,
-      'Heritage Vault',
+      heritageVaultDirectory.path,
       'heritage_vault.db',
     );
 
     return databaseFactory.openDatabase(
       databasePath,
       options: OpenDatabaseOptions(
-        version: 1,
+        version: 2,
         onCreate: (database, version) async {
-          await database.execute('''
-            CREATE TABLE coins (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              year TEXT NOT NULL,
-              name TEXT NOT NULL,
-              mint_mark TEXT NOT NULL DEFAULT '',
-              country TEXT NOT NULL DEFAULT 'Unknown',
-              notes TEXT NOT NULL DEFAULT ''
-            )
-          ''');
+          await _createManualCoinsTable(database);
+          await _createImportedCoinsTable(database);
+        },
+        onUpgrade: (database, oldVersion, newVersion) async {
+          if (oldVersion < 2) {
+            await _createImportedCoinsTable(database);
+          }
         },
       ),
     );
   }
+
+  static Future<void> _createManualCoinsTable(
+    Database database,
+  ) async {
+    await database.execute('''
+      CREATE TABLE coins (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        year TEXT NOT NULL,
+        name TEXT NOT NULL,
+        mint_mark TEXT NOT NULL DEFAULT '',
+        country TEXT NOT NULL DEFAULT 'Unknown',
+        notes TEXT NOT NULL DEFAULT ''
+      )
+    ''');
+  }
+
+  static Future<void> _createImportedCoinsTable(
+    Database database,
+  ) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS imported_coins (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category TEXT NOT NULL,
+        series TEXT NOT NULL DEFAULT '',
+        year TEXT NOT NULL DEFAULT '',
+        mint TEXT NOT NULL DEFAULT '',
+        variety TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL,
+        storage_location TEXT NOT NULL DEFAULT '',
+        grade TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT ''
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS
+      imported_coins_status_index
+      ON imported_coins(status)
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS
+      imported_coins_category_index
+      ON imported_coins(category)
+    ''');
+  }
+
+  // Existing manually entered coins
 
   Future<int> insertCoin(Coin coin) async {
     final database = await this.database;
@@ -80,6 +141,180 @@ class DatabaseHelper {
       'coins',
       where: 'id = ?',
       whereArgs: [id],
+    );
+  }
+
+  // Spreadsheet-imported coins
+
+  Future<int> replaceImportedCoins(
+    List<ImportedCoin> coins,
+  ) async {
+    final database = await this.database;
+
+    return database.transaction((transaction) async {
+      await transaction.delete('imported_coins');
+
+      final batch = transaction.batch();
+
+      for (final coin in coins) {
+        batch.insert(
+          'imported_coins',
+          {
+            'category': coin.category,
+            'series': coin.series,
+            'year': coin.year,
+            'mint': coin.mint,
+            'variety': coin.variety,
+            'status': coin.status,
+            'storage_location': coin.storageLocation,
+            'grade': coin.grade,
+            'notes': coin.notes,
+          },
+        );
+      }
+
+      await batch.commit(
+        noResult: true,
+      );
+
+      return coins.length;
+    });
+  }
+
+  Future<List<ImportedCoin>> getImportedCoins({
+    String? status,
+    String? category,
+    String searchText = '',
+  }) async {
+    final database = await this.database;
+
+    final whereParts = <String>[];
+    final whereArguments = <Object?>[];
+
+    if (status != null && status.trim().isNotEmpty) {
+      whereParts.add('status = ?');
+      whereArguments.add(status);
+    }
+
+    if (category != null && category.trim().isNotEmpty) {
+      whereParts.add('category = ?');
+      whereArguments.add(category);
+    }
+
+    final search = searchText.trim();
+
+    if (search.isNotEmpty) {
+      whereParts.add('''
+        (
+          year LIKE ? OR
+          mint LIKE ? OR
+          variety LIKE ? OR
+          series LIKE ? OR
+          category LIKE ? OR
+          storage_location LIKE ? OR
+          notes LIKE ?
+        )
+      ''');
+
+      final searchPattern = '%$search%';
+
+      for (var index = 0; index < 7; index++) {
+        whereArguments.add(searchPattern);
+      }
+    }
+
+    final results = await database.query(
+      'imported_coins',
+      where: whereParts.isEmpty
+          ? null
+          : whereParts.join(' AND '),
+      whereArgs:
+          whereArguments.isEmpty ? null : whereArguments,
+      orderBy:
+          'category COLLATE NOCASE, year COLLATE NOCASE, '
+          'mint COLLATE NOCASE, variety COLLATE NOCASE',
+    );
+
+    return results.map((row) {
+      return ImportedCoin(
+        category: row['category'] as String? ?? '',
+        series: row['series'] as String? ?? '',
+        year: row['year'] as String? ?? '',
+        mint: row['mint'] as String? ?? '',
+        variety: row['variety'] as String? ?? '',
+        status: row['status'] as String? ?? '',
+        storageLocation:
+            row['storage_location'] as String? ?? '',
+        grade: row['grade'] as String? ?? '',
+        notes: row['notes'] as String? ?? '',
+      );
+    }).toList();
+  }
+
+  Future<List<String>> getImportedCategories() async {
+    final database = await this.database;
+
+    final results = await database.rawQuery('''
+      SELECT DISTINCT category
+      FROM imported_coins
+      WHERE category <> ''
+      ORDER BY category COLLATE NOCASE
+    ''');
+
+    return results
+        .map((row) => row['category'] as String)
+        .toList();
+  }
+
+  Future<int> getImportedCoinCount({
+    String? status,
+  }) async {
+    final database = await this.database;
+
+    final result = await database.rawQuery(
+      status == null
+          ? '''
+              SELECT COUNT(*) AS total
+              FROM imported_coins
+            '''
+          : '''
+              SELECT COUNT(*) AS total
+              FROM imported_coins
+              WHERE status = ?
+            ''',
+      status == null ? null : [status],
+    );
+
+    return (result.first['total'] as int?) ?? 0;
+  }
+
+  Future<int> updateImportedCoinStatus({
+    required ImportedCoin coin,
+    required String newStatus,
+  }) async {
+    final database = await this.database;
+
+    return database.update(
+      'imported_coins',
+      {
+        'status': newStatus,
+      },
+      where: '''
+        category = ? AND
+        series = ? AND
+        year = ? AND
+        mint = ? AND
+        variety = ? AND
+        storage_location = ?
+      ''',
+      whereArgs: [
+        coin.category,
+        coin.series,
+        coin.year,
+        coin.mint,
+        coin.variety,
+        coin.storageLocation,
+      ],
     );
   }
 }
