@@ -5,23 +5,39 @@ import 'package:spreadsheet_decoder/spreadsheet_decoder.dart';
 
 import '../models/imported_coin.dart';
 
+class CoinCategorySummary {
+  final String category;
+  final int total;
+  final int owned;
+  final int needed;
+  final int untracked;
+
+  const CoinCategorySummary({
+    required this.category,
+    required this.total,
+    required this.owned,
+    required this.needed,
+    required this.untracked,
+  });
+}
+
 class CoinImportResult {
   final String fileName;
   final int sheetCount;
   final List<ImportedCoin> coins;
+  final List<CoinCategorySummary> categories;
 
   const CoinImportResult({
     required this.fileName,
     required this.sheetCount,
     required this.coins,
+    required this.categories,
   });
 
-  int get neededCount =>
-      coins.where((coin) => coin.isNeeded).length;
-
-  int get ownedCount =>
-      coins.where((coin) => coin.isOwned).length;
-
+  int get neededCount => coins.where((coin) => coin.status == 'Need').length;
+  int get ownedCount => coins.where((coin) => coin.status == 'Owned').length;
+  int get untrackedCount =>
+      coins.where((coin) => coin.status == 'Untracked').length;
   int get trackedCount => coins.length;
 }
 
@@ -48,18 +64,12 @@ class CoinImportService {
     final Uint8List? bytes = platformFile.bytes;
 
     if (bytes == null) {
-      throw Exception(
-        'Heritage Vault could not read the selected file.',
-      );
+      throw Exception('Heritage Vault could not read the selected file.');
     }
 
-    final workbook = SpreadsheetDecoder.decodeBytes(
-      bytes,
-      update: false,
-    );
-
+    final workbook = SpreadsheetDecoder.decodeBytes(bytes, update: false);
     final importedCoins = <ImportedCoin>[];
-    int sheetCount = 0;
+    final summaries = <CoinCategorySummary>[];
 
     for (final sheetName in workbook.tables.keys) {
       if (_ignoredSheets.contains(sheetName)) {
@@ -67,86 +77,199 @@ class CoinImportService {
       }
 
       final sheet = workbook.tables[sheetName];
-
       if (sheet == null) {
         continue;
       }
 
-      sheetCount++;
+      final sheetCoins = _readSheet(sheetName, sheet.rows);
+      importedCoins.addAll(sheetCoins);
 
-      String currentSeries = '';
-      String currentStorageLocation = '';
-
-      for (final row in sheet.rows) {
-        final yearCell = _cellAt(row, 1);
-        final mintCell = _cellAt(row, 2);
-        final varietyCell = _cellAt(row, 3);
-        final statusCell = _cellAt(row, 4);
-        final notesCell = _cellAt(row, 8);
-
-        /*
-         * A header row looks like:
-         * Year | Mint | Variety | Book 1 | ...
-         */
-        if (yearCell.toUpperCase() == 'YEAR') {
-          currentStorageLocation = statusCell;
-          continue;
-        }
-
-        /*
-         * Series headings usually appear in column D immediately
-         * above each section's header row.
-         */
-        if (yearCell.isEmpty &&
-            varietyCell.isNotEmpty &&
-            statusCell.isEmpty) {
-          currentSeries = varietyCell;
-          continue;
-        }
-
-        final normalizedStatus = statusCell.toUpperCase();
-
-        if (normalizedStatus != 'X' &&
-            normalizedStatus != 'NEED') {
-          continue;
-        }
-
-        importedCoins.add(
-          ImportedCoin(
-            category: sheetName,
-            series: currentSeries,
-            year: yearCell,
-            mint: mintCell,
-            variety: varietyCell,
-            status: normalizedStatus == 'X'
-                ? 'Owned'
-                : 'Need',
-            storageLocation: currentStorageLocation,
-            grade: '',
-            notes: notesCell,
-          ),
-        );
-      }
+      summaries.add(
+        CoinCategorySummary(
+          category: sheetName,
+          total: sheetCoins.length,
+          owned: sheetCoins.where((coin) => coin.status == 'Owned').length,
+          needed: sheetCoins.where((coin) => coin.status == 'Need').length,
+          untracked:
+              sheetCoins.where((coin) => coin.status == 'Untracked').length,
+        ),
+      );
     }
+
+    summaries.sort((a, b) => a.category.compareTo(b.category));
 
     return CoinImportResult(
       fileName: platformFile.name,
-      sheetCount: sheetCount,
+      sheetCount: summaries.length,
       coins: importedCoins,
+      categories: summaries,
     );
   }
 
-  String _cellAt(List<dynamic> row, int index) {
+  List<ImportedCoin> _readSheet(
+    String category,
+    List<List<dynamic>> rows,
+  ) {
+    final coins = <ImportedCoin>[];
+
+    int? yearIndex;
+    int? mintIndex;
+    int? varietyIndex;
+    int? notesIndex;
+    List<int> ownershipIndexes = [];
+    List<String> ownershipLabels = [];
+    String currentSeries = '';
+
+    for (final row in rows) {
+      final cells = row.map(_cellText).toList();
+      final normalized = cells.map((cell) => cell.toUpperCase()).toList();
+
+      final detectedYearIndex = normalized.indexOf('YEAR');
+      final detectedMintIndex = normalized.indexOf('MINT');
+      final detectedVarietyIndex = normalized.indexOf('VARIETY');
+
+      if (detectedYearIndex >= 0 &&
+          detectedMintIndex >= 0 &&
+          detectedVarietyIndex >= 0) {
+        yearIndex = detectedYearIndex;
+        mintIndex = detectedMintIndex;
+        varietyIndex = detectedVarietyIndex;
+        notesIndex = normalized.indexOf('NOTES');
+
+        ownershipIndexes = [];
+        ownershipLabels = [];
+
+        final ownershipEnd = notesIndex != null && notesIndex! >= 0
+            ? notesIndex!
+            : cells.length;
+
+        for (var index = varietyIndex + 1;
+            index < ownershipEnd;
+            index++) {
+          final label = cells[index].trim();
+          if (_isOwnershipHeader(label)) {
+            ownershipIndexes.add(index);
+            ownershipLabels.add(label);
+          }
+        }
+
+        continue;
+      }
+
+      if (yearIndex == null || mintIndex == null || varietyIndex == null) {
+        final possibleSeries = _possibleSeries(cells);
+        if (possibleSeries.isNotEmpty) {
+          currentSeries = possibleSeries;
+        }
+        continue;
+      }
+
+      final year = _cellAt(cells, yearIndex);
+      final mint = _cellAt(cells, mintIndex);
+      final variety = _cellAt(cells, varietyIndex);
+
+      if (!_looksLikeCatalogYear(year)) {
+        final possibleSeries = _cellAt(cells, varietyIndex);
+        if (_isSeriesText(possibleSeries)) {
+          currentSeries = possibleSeries;
+        }
+        continue;
+      }
+
+      var status = 'Untracked';
+      final locations = <String>[];
+
+      for (var position = 0;
+          position < ownershipIndexes.length;
+          position++) {
+        final columnIndex = ownershipIndexes[position];
+        final value = _cellAt(cells, columnIndex).toUpperCase();
+        final label = ownershipLabels[position];
+
+        if (value == 'X') {
+          status = 'Owned';
+          locations.add(label);
+        } else if (value == 'NEED') {
+          if (status != 'Owned') {
+            status = 'Need';
+          }
+          locations.add(label);
+        }
+      }
+
+      final notes = notesIndex != null && notesIndex! >= 0
+          ? _cellAt(cells, notesIndex!)
+          : '';
+
+      coins.add(
+        ImportedCoin(
+          category: category,
+          series: currentSeries,
+          year: year,
+          mint: mint,
+          variety: variety,
+          status: status,
+          storageLocation: locations.join(', '),
+          grade: '',
+          notes: notes,
+        ),
+      );
+    }
+
+    return coins;
+  }
+
+  bool _isOwnershipHeader(String value) {
+    final normalized = value.trim().toUpperCase();
+    if (normalized.isEmpty || normalized == 'OGP') {
+      return false;
+    }
+
+    return normalized.contains('BOOK') ||
+        normalized.contains('BINDER') ||
+        normalized.contains('ALBUM') ||
+        normalized.contains('FOLDER') ||
+        normalized.contains('SET');
+  }
+
+  bool _looksLikeCatalogYear(String value) {
+    final normalized = value.trim();
+    return RegExp(r'^\d{4}(?:-\d{2,4})?$').hasMatch(normalized);
+  }
+
+  String _possibleSeries(List<String> cells) {
+    for (final cell in cells.reversed) {
+      if (_isSeriesText(cell)) {
+        return cell;
+      }
+    }
+    return '';
+  }
+
+  bool _isSeriesText(String value) {
+    final normalized = value.trim();
+    if (normalized.isEmpty ||
+        normalized.toUpperCase().startsWith('UNITED STATES') ||
+        normalized.toUpperCase() == 'NOTES' ||
+        normalized.toUpperCase() == 'NO BOOK') {
+      return false;
+    }
+
+    return RegExp(r'[A-Za-z]').hasMatch(normalized) &&
+        !RegExp(r'^\d').hasMatch(normalized);
+  }
+
+  String _cellAt(List<String> row, int index) {
     if (index < 0 || index >= row.length) {
       return '';
     }
+    return row[index].trim();
+  }
 
-    final value = row[index];
-
+  String _cellText(dynamic value) {
     if (value == null) {
       return '';
     }
-
     return value.toString().trim();
   }
 }

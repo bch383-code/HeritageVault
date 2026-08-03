@@ -6,10 +6,7 @@ import '../models/imported_coin.dart';
 class CoinDetailScreen extends StatefulWidget {
   final ImportedCoin coin;
 
-  const CoinDetailScreen({
-    super.key,
-    required this.coin,
-  });
+  const CoinDetailScreen({super.key, required this.coin});
 
   @override
   State<CoinDetailScreen> createState() => _CoinDetailScreenState();
@@ -27,9 +24,7 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
   void initState() {
     super.initState();
     _status = widget.coin.status;
-    _storageController = TextEditingController(
-      text: widget.coin.storageLocation,
-    );
+    _storageController = TextEditingController(text: widget.coin.storageLocation);
     _gradeController = TextEditingController(text: widget.coin.grade);
     _notesController = TextEditingController(text: widget.coin.notes);
   }
@@ -43,14 +38,9 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
   }
 
   Future<void> _save() async {
-    setState(() {
-      _isSaving = true;
-    });
-
+    setState(() => _isSaving = true);
     try {
-      await _databaseHelper.createDatabaseBackup(
-        reason: 'before_coin_edit',
-      );
+      await _databaseHelper.createDatabaseBackup(reason: 'before_coin_edit');
 
       final updatedCoin = ImportedCoin(
         category: widget.coin.category,
@@ -72,25 +62,19 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
       if (!mounted) {
         return;
       }
-
       if (changedRows == 0) {
         throw Exception('The coin record could not be located.');
       }
-
       Navigator.pop(context, updatedCoin);
     } catch (error) {
-      if (!mounted) {
-        return;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not save coin: $error')),
+        );
       }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not save coin: $error')),
-      );
     } finally {
       if (mounted) {
-        setState(() {
-          _isSaving = false;
-        });
+        setState(() => _isSaving = false);
       }
     }
   }
@@ -102,9 +86,7 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
         : widget.coin.displayName;
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(title),
-      ),
+      appBar: AppBar(title: Text(title)),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 760),
@@ -118,26 +100,11 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
                     spacing: 28,
                     runSpacing: 16,
                     children: [
-                      _ReadOnlyField(
-                        label: 'Category',
-                        value: widget.coin.category,
-                      ),
-                      _ReadOnlyField(
-                        label: 'Series',
-                        value: widget.coin.series,
-                      ),
-                      _ReadOnlyField(
-                        label: 'Year',
-                        value: widget.coin.year,
-                      ),
-                      _ReadOnlyField(
-                        label: 'Mint',
-                        value: widget.coin.mint,
-                      ),
-                      _ReadOnlyField(
-                        label: 'Variety',
-                        value: widget.coin.variety,
-                      ),
+                      _ReadOnlyField(label: 'Category', value: widget.coin.category),
+                      _ReadOnlyField(label: 'Series', value: widget.coin.series),
+                      _ReadOnlyField(label: 'Year', value: widget.coin.year),
+                      _ReadOnlyField(label: 'Mint', value: widget.coin.mint),
+                      _ReadOnlyField(label: 'Variety', value: widget.coin.variety),
                     ],
                   ),
                 ),
@@ -161,20 +128,16 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
                           border: OutlineInputBorder(),
                         ),
                         items: const [
+                          DropdownMenuItem(value: 'Need', child: Text('Need')),
+                          DropdownMenuItem(value: 'Owned', child: Text('Owned')),
                           DropdownMenuItem(
-                            value: 'Need',
-                            child: Text('Need'),
-                          ),
-                          DropdownMenuItem(
-                            value: 'Owned',
-                            child: Text('Owned'),
+                            value: 'Untracked',
+                            child: Text('Untracked'),
                           ),
                         ],
                         onChanged: (value) {
                           if (value != null) {
-                            setState(() {
-                              _status = value;
-                            });
+                            setState(() => _status = value);
                           }
                         },
                       ),
@@ -221,11 +184,6 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
                     : const Icon(Icons.save_outlined),
                 label: Text(_isSaving ? 'Saving...' : 'Save Changes'),
               ),
-              const SizedBox(height: 12),
-              const Text(
-                'Individual coin photos are optional. Generic coin-type images can be added to category cards later.',
-                textAlign: TextAlign.center,
-              ),
             ],
           ),
         ),
@@ -238,10 +196,7 @@ class _ReadOnlyField extends StatelessWidget {
   final String label;
   final String value;
 
-  const _ReadOnlyField({
-    required this.label,
-    required this.value,
-  });
+  const _ReadOnlyField({required this.label, required this.value});
 
   @override
   Widget build(BuildContext context) {
@@ -250,10 +205,7 @@ class _ReadOnlyField extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            label,
-            style: Theme.of(context).textTheme.labelMedium,
-          ),
+          Text(label, style: Theme.of(context).textTheme.labelMedium),
           const SizedBox(height: 4),
           Text(
             value.trim().isEmpty ? '—' : value,

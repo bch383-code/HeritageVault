@@ -324,4 +324,109 @@ class DatabaseHelper {
       notes: row['notes'] as String? ?? '',
     );
   }
+  Future<CollectionSummary> getCollectionSummary() async {
+    final database = await this.database;
+    final rows = await database.rawQuery('''
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN status = 'Owned' THEN 1 ELSE 0 END) AS owned,
+        SUM(CASE WHEN status = 'Need' THEN 1 ELSE 0 END) AS needed,
+        SUM(CASE WHEN status = 'Untracked' THEN 1 ELSE 0 END) AS untracked,
+        COUNT(DISTINCT category) AS categories
+      FROM imported_coins
+    ''');
+
+    final row = rows.first;
+    int number(String key) {
+      final value = row[key];
+      if (value is int) return value;
+      return int.tryParse(value?.toString() ?? '') ?? 0;
+    }
+
+    return CollectionSummary(
+      total: number('total'),
+      owned: number('owned'),
+      needed: number('needed'),
+      untracked: number('untracked'),
+      categories: number('categories'),
+    );
+  }
+
+  Future<List<CategoryProgress>> getCategoryProgress() async {
+    final database = await this.database;
+    final rows = await database.rawQuery('''
+      SELECT
+        category,
+        COUNT(*) AS total,
+        SUM(CASE WHEN status = 'Owned' THEN 1 ELSE 0 END) AS owned,
+        SUM(CASE WHEN status = 'Need' THEN 1 ELSE 0 END) AS needed,
+        SUM(CASE WHEN status = 'Untracked' THEN 1 ELSE 0 END) AS untracked
+      FROM imported_coins
+      WHERE category <> ''
+      GROUP BY category
+      ORDER BY category COLLATE NOCASE
+    ''');
+
+    int number(Map<String, Object?> row, String key) {
+      final value = row[key];
+      if (value is int) return value;
+      return int.tryParse(value?.toString() ?? '') ?? 0;
+    }
+
+    return rows.map((row) {
+      return CategoryProgress(
+        category: row['category'] as String? ?? '',
+        total: number(row, 'total'),
+        owned: number(row, 'owned'),
+        needed: number(row, 'needed'),
+        untracked: number(row, 'untracked'),
+      );
+    }).toList();
+  }
+
+}
+
+
+class CollectionSummary {
+  final int total;
+  final int owned;
+  final int needed;
+  final int untracked;
+  final int categories;
+
+  const CollectionSummary({
+    required this.total,
+    required this.owned,
+    required this.needed,
+    required this.untracked,
+    required this.categories,
+  });
+
+  double get completionRate {
+    final tracked = owned + needed;
+    if (tracked == 0) return 0;
+    return owned / tracked;
+  }
+}
+
+class CategoryProgress {
+  final String category;
+  final int total;
+  final int owned;
+  final int needed;
+  final int untracked;
+
+  const CategoryProgress({
+    required this.category,
+    required this.total,
+    required this.owned,
+    required this.needed,
+    required this.untracked,
+  });
+
+  double get completionRate {
+    final tracked = owned + needed;
+    if (tracked == 0) return 0;
+    return owned / tracked;
+  }
 }

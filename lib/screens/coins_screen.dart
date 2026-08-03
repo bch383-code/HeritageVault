@@ -5,7 +5,14 @@ import '../models/imported_coin.dart';
 import 'coin_detail_screen.dart';
 
 class CoinsScreen extends StatefulWidget {
-  const CoinsScreen({super.key});
+  final String? initialStatus;
+  final String? initialCategory;
+
+  const CoinsScreen({
+    super.key,
+    this.initialStatus,
+    this.initialCategory,
+  });
 
   @override
   State<CoinsScreen> createState() => _CoinsScreenState();
@@ -24,6 +31,8 @@ class _CoinsScreenState extends State<CoinsScreen> {
   @override
   void initState() {
     super.initState();
+    _selectedStatus = widget.initialStatus;
+    _selectedCategory = widget.initialCategory;
     _loadData();
   }
 
@@ -34,9 +43,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
   }
 
   Future<void> _loadData() async {
-    setState(() {
-      _isLoading = true;
-    });
+    setState(() => _isLoading = true);
 
     try {
       final coins = await _databaseHelper.getImportedCoins(
@@ -49,7 +56,6 @@ class _CoinsScreenState extends State<CoinsScreen> {
       if (!mounted) {
         return;
       }
-
       setState(() {
         _coins = coins;
         _categories = categories;
@@ -59,11 +65,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
       if (!mounted) {
         return;
       }
-
-      setState(() {
-        _isLoading = false;
-      });
-
+      setState(() => _isLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Could not load collection: $error')),
       );
@@ -80,38 +82,23 @@ class _CoinsScreenState extends State<CoinsScreen> {
 
     if (updatedCoin != null) {
       await _loadData();
-
-      if (!mounted) {
-        return;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Coin changes saved.')),
+        );
       }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Coin changes saved.')),
-      );
     }
   }
 
-  Future<void> _toggleStatus(ImportedCoin coin) async {
-    final newStatus = coin.isNeeded ? 'Owned' : 'Need';
-
+  Future<void> _setStatus(ImportedCoin coin, String newStatus) async {
     await _databaseHelper.createDatabaseBackup(
       reason: 'before_status_change',
     );
-
     await _databaseHelper.updateImportedCoinStatus(
       coin: coin,
       newStatus: newStatus,
     );
-
     await _loadData();
-
-    if (!mounted) {
-      return;
-    }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('${coin.displayName} marked $newStatus.')),
-    );
   }
 
   void _clearFilters() {
@@ -121,6 +108,17 @@ class _CoinsScreenState extends State<CoinsScreen> {
       _selectedCategory = null;
     });
     _loadData();
+  }
+
+  IconData _statusIcon(ImportedCoin coin) {
+    switch (coin.status) {
+      case 'Owned':
+        return Icons.check_circle_outline;
+      case 'Need':
+        return Icons.star_outline;
+      default:
+        return Icons.radio_button_unchecked;
+    }
   }
 
   @override
@@ -169,10 +167,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
               children: [
                 SegmentedButton<String?>(
                   segments: const [
-                    ButtonSegment<String?>(
-                      value: null,
-                      label: Text('All'),
-                    ),
+                    ButtonSegment<String?>(value: null, label: Text('All')),
                     ButtonSegment<String?>(
                       value: 'Need',
                       icon: Icon(Icons.star_outline),
@@ -183,12 +178,15 @@ class _CoinsScreenState extends State<CoinsScreen> {
                       icon: Icon(Icons.check_circle_outline),
                       label: Text('Owned'),
                     ),
+                    ButtonSegment<String?>(
+                      value: 'Untracked',
+                      icon: Icon(Icons.radio_button_unchecked),
+                      label: Text('Untracked'),
+                    ),
                   ],
                   selected: {_selectedStatus},
                   onSelectionChanged: (selection) {
-                    setState(() {
-                      _selectedStatus = selection.first;
-                    });
+                    setState(() => _selectedStatus = selection.first);
                     _loadData();
                   },
                 ),
@@ -214,9 +212,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
                       ),
                     ],
                     onChanged: (value) {
-                      setState(() {
-                        _selectedCategory = value;
-                      });
+                      setState(() => _selectedCategory = value);
                       _loadData();
                     },
                   ),
@@ -226,7 +222,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
                   icon: const Icon(Icons.filter_alt_off),
                   label: const Text('Clear'),
                 ),
-                Text('${_coins.length} coins'),
+                Text('${_coins.length} entries'),
               ],
             ),
             const SizedBox(height: 16),
@@ -241,11 +237,10 @@ class _CoinsScreenState extends State<CoinsScreen> {
     if (_isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
-
     if (_coins.isEmpty) {
       return const Center(
         child: Text(
-          'No imported coins found.\nImport your spreadsheet from the home screen.',
+          'No matching coin entries found.\nImport the workbook again to load every category.',
           textAlign: TextAlign.center,
         ),
       );
@@ -253,12 +248,13 @@ class _CoinsScreenState extends State<CoinsScreen> {
 
     return ListView.separated(
       itemCount: _coins.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 8),
+      separatorBuilder: (_, __) => const SizedBox(height: 8),
       itemBuilder: (context, index) {
         final coin = _coins[index];
         final subtitleParts = <String>[
           coin.category,
           if (coin.series.isNotEmpty) coin.series,
+          'Status: ${coin.status}',
           if (coin.storageLocation.isNotEmpty)
             'Storage: ${coin.storageLocation}',
           if (coin.grade.isNotEmpty) 'Grade: ${coin.grade}',
@@ -268,32 +264,23 @@ class _CoinsScreenState extends State<CoinsScreen> {
         return Card(
           child: ListTile(
             onTap: () => _openDetails(coin),
-            leading: CircleAvatar(
-              child: Icon(
-                coin.isNeeded
-                    ? Icons.star_outline
-                    : Icons.check_circle_outline,
-              ),
-            ),
+            leading: CircleAvatar(child: Icon(_statusIcon(coin))),
             title: Text(
               coin.displayName.isEmpty ? 'Unnamed coin' : coin.displayName,
             ),
             subtitle: Text(subtitleParts.join(' • ')),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                FilledButton.tonalIcon(
-                  onPressed: () => _toggleStatus(coin),
-                  icon: Icon(
-                    coin.isNeeded ? Icons.add_task : Icons.undo,
-                  ),
-                  label: Text(
-                    coin.isNeeded ? 'Mark Owned' : 'Mark Needed',
-                  ),
+            trailing: PopupMenuButton<String>(
+              tooltip: 'Change status',
+              onSelected: (status) => _setStatus(coin, status),
+              itemBuilder: (context) => const [
+                PopupMenuItem(value: 'Need', child: Text('Mark Needed')),
+                PopupMenuItem(value: 'Owned', child: Text('Mark Owned')),
+                PopupMenuItem(
+                  value: 'Untracked',
+                  child: Text('Mark Untracked'),
                 ),
-                const SizedBox(width: 6),
-                const Icon(Icons.chevron_right),
               ],
+              icon: const Icon(Icons.more_vert),
             ),
           ),
         );
