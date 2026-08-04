@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../database/database_helper.dart';
@@ -27,6 +29,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
   String? _selectedStatus;
   String? _selectedCategory;
   bool _isLoading = true;
+  Timer? _searchDebounce;
 
   @override
   void initState() {
@@ -38,12 +41,15 @@ class _CoinsScreenState extends State<CoinsScreen> {
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _searchController.dispose();
     super.dispose();
   }
 
   Future<void> _loadData() async {
-    setState(() => _isLoading = true);
+    if (mounted) {
+      setState(() => _isLoading = true);
+    }
 
     try {
       final coins = await _databaseHelper.getImportedCoins(
@@ -56,6 +62,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
       if (!mounted) {
         return;
       }
+
       setState(() {
         _coins = coins;
         _categories = categories;
@@ -65,11 +72,21 @@ class _CoinsScreenState extends State<CoinsScreen> {
       if (!mounted) {
         return;
       }
+
       setState(() => _isLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Could not load collection: $error')),
       );
     }
+  }
+
+  void _onSearchChanged(String value) {
+    setState(() {});
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(
+      const Duration(milliseconds: 300),
+      _loadData,
+    );
   }
 
   Future<void> _openDetails(ImportedCoin coin) async {
@@ -101,7 +118,15 @@ class _CoinsScreenState extends State<CoinsScreen> {
     await _loadData();
   }
 
+  void _clearSearch() {
+    _searchDebounce?.cancel();
+    _searchController.clear();
+    setState(() {});
+    _loadData();
+  }
+
   void _clearFilters() {
+    _searchDebounce?.cancel();
     _searchController.clear();
     setState(() {
       _selectedStatus = null;
@@ -140,6 +165,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
           children: [
             TextField(
               controller: _searchController,
+              autofocus: false,
               decoration: InputDecoration(
                 hintText: 'Search year, mint, variety, series, binder, or notes',
                 prefixIcon: const Icon(Icons.search),
@@ -147,17 +173,17 @@ class _CoinsScreenState extends State<CoinsScreen> {
                     ? null
                     : IconButton(
                         tooltip: 'Clear search',
-                        onPressed: () {
-                          _searchController.clear();
-                          _loadData();
-                        },
+                        onPressed: _clearSearch,
                         icon: const Icon(Icons.clear),
                       ),
                 border: const OutlineInputBorder(),
               ),
               textInputAction: TextInputAction.search,
-              onSubmitted: (_) => _loadData(),
-              onChanged: (_) => setState(() {}),
+              onSubmitted: (_) {
+                _searchDebounce?.cancel();
+                _loadData();
+              },
+              onChanged: _onSearchChanged,
             ),
             const SizedBox(height: 12),
             Wrap(
@@ -237,10 +263,12 @@ class _CoinsScreenState extends State<CoinsScreen> {
     if (_isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
+
     if (_coins.isEmpty) {
       return const Center(
         child: Text(
-          'No matching coin entries found.\nImport the workbook again to load every category.',
+          'No matching coin entries found.\n'
+          'Import the workbook again to load every category.',
           textAlign: TextAlign.center,
         ),
       );
@@ -248,7 +276,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
 
     return ListView.separated(
       itemCount: _coins.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      separatorBuilder: (_, index) => const SizedBox(height: 8),
       itemBuilder: (context, index) {
         final coin = _coins[index];
         final subtitleParts = <String>[
