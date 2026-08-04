@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 
 import '../database/database_helper.dart';
 import '../services/coin_import_service.dart';
+import '../widgets/collection_card.dart';
 import 'coins_screen.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final VoidCallback? onOpenCollections;
+
+  const HomeScreen({super.key, this.onOpenCollections});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -174,63 +177,103 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Heritage Vault'),
-        centerTitle: true,
-        actions: [
-          IconButton(
-            tooltip: 'Refresh dashboard',
-            onPressed: _loadDashboard,
-            icon: const Icon(Icons.refresh),
+    return CustomScrollView(
+      slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(28, 24, 28, 10),
+          sliver: SliverToBoxAdapter(
+            child: _buildHero(),
+          ),
+        ),
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(28, 14, 28, 32),
+          sliver: SliverToBoxAdapter(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (_isLoadingDashboard)
+                  const Center(child: CircularProgressIndicator())
+                else ...[
+                  _buildSummaryCards(),
+                  const SizedBox(height: 24),
+                  _buildQuickActions(),
+                  const SizedBox(height: 28),
+                  _buildCategoryProgress(),
+                ],
+                const SizedBox(height: 28),
+                FilledButton.icon(
+                  onPressed: _isImporting ? null : _importSpreadsheet,
+                  icon: _isImporting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.upload_file),
+                  label: Text(
+                    _isImporting
+                        ? 'Reading Collection...'
+                        : 'Import Coin Spreadsheet',
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _buildOtherCollections(),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHero() {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(28),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [colors.primary, colors.tertiary],
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Heritage Vault',
+                  style: Theme.of(context).textTheme.headlineLarge?.copyWith(
+                        color: colors.onPrimary,
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'A living museum for your family collections and history.',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        color: colors.onPrimary.withValues(alpha: 0.9),
+                      ),
+                ),
+                const SizedBox(height: 20),
+                FilledButton.tonalIcon(
+                  onPressed: widget.onOpenCollections,
+                  icon: const Icon(Icons.collections_bookmark_outlined),
+                  label: const Text('Explore Collections'),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 24),
+          Icon(
+            Icons.account_balance_outlined,
+            size: 88,
+            color: colors.onPrimary.withValues(alpha: 0.86),
           ),
         ],
-      ),
-      body: RefreshIndicator(
-        onRefresh: _loadDashboard,
-        child: ListView(
-          padding: const EdgeInsets.all(24),
-          children: [
-            Text(
-              'Your collection at a glance',
-              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              'Track what you own, what you still need, and where everything is stored.',
-            ),
-            const SizedBox(height: 24),
-            if (_isLoadingDashboard)
-              const Center(child: CircularProgressIndicator())
-            else ...[
-              _buildSummaryCards(),
-              const SizedBox(height: 24),
-              _buildQuickActions(),
-              const SizedBox(height: 28),
-              _buildCategoryProgress(),
-            ],
-            const SizedBox(height: 28),
-            FilledButton.icon(
-              onPressed: _isImporting ? null : _importSpreadsheet,
-              icon: _isImporting
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.upload_file),
-              label: Text(
-                _isImporting
-                    ? 'Reading Collection...'
-                    : 'Import Coin Spreadsheet',
-              ),
-            ),
-            const SizedBox(height: 16),
-            _buildOtherCollections(),
-          ],
-        ),
       ),
     );
   }
@@ -349,59 +392,36 @@ class _HomeScreenState extends State<HomeScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'Coin categories',
+          'Collection explorer',
           style: Theme.of(context).textTheme.titleLarge?.copyWith(
                 fontWeight: FontWeight.bold,
               ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 6),
+        const Text(
+          'Choose a coin category to view its checklist and collection progress.',
+        ),
+        const SizedBox(height: 16),
         GridView.builder(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           itemCount: _categoryProgress.length,
           gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-            maxCrossAxisExtent: 360,
-            mainAxisSpacing: 12,
-            crossAxisSpacing: 12,
-            childAspectRatio: 2.2,
+            maxCrossAxisExtent: 420,
+            mainAxisSpacing: 16,
+            crossAxisSpacing: 16,
+            childAspectRatio: 1.65,
           ),
           itemBuilder: (context, index) {
             final category = _categoryProgress[index];
-            final percent = (category.completionRate * 100).toStringAsFixed(0);
-            return Card(
-              child: InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: () => _openCoins(category: category.category),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              category.category,
-                              style: const TextStyle(fontWeight: FontWeight.w600),
-                            ),
-                          ),
-                          Text('${category.owned}/${category.owned + category.needed}'),
-                        ],
-                      ),
-                      const Spacer(),
-                      LinearProgressIndicator(value: category.completionRate),
-                      const SizedBox(height: 8),
-                      Text(
-                        '$percent% tracked completion  •  '
-                        '${category.needed} need  •  '
-                        '${category.untracked} untracked',
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+
+            return CollectionCard(
+              title: category.category,
+              owned: category.owned,
+              needed: category.needed,
+              untracked: category.untracked,
+              icon: Icons.monetization_on_outlined,
+              onTap: () => _openCoins(category: category.category),
             );
           },
         ),
