@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'coins_screen.dart';
+import 'coin_collection_explorer_screen.dart';
 
 class CollectionsScreen extends StatelessWidget {
   const CollectionsScreen({super.key});
@@ -10,7 +10,7 @@ class CollectionsScreen extends StatelessWidget {
     final collections = [
       const _CollectionItem(
         title: 'Coins',
-        subtitle: 'Catalog, status, storage, grade, and notes',
+        subtitle: 'Explore collection progress, needed coins, storage, and notes',
         icon: Icons.monetization_on_outlined,
         enabled: true,
       ),
@@ -82,7 +82,8 @@ class CollectionsScreen extends StatelessWidget {
                     ? () => Navigator.push(
                           context,
                           MaterialPageRoute(
-                            builder: (_) => const CoinsScreen(),
+                            builder: (context) =>
+                                const CoinCollectionExplorerScreen(),
                           ),
                         )
                     : null,
@@ -118,10 +119,11 @@ class _CollectionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+
     return Card(
+      clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
         child: DecoratedBox(
           decoration: BoxDecoration(
             gradient: LinearGradient(
@@ -146,7 +148,7 @@ class _CollectionCard extends StatelessWidget {
                       child: Icon(item.icon, color: colors.onPrimaryContainer),
                     ),
                     const Spacer(),
-                    Chip(label: Text(item.enabled ? 'Open' : 'Coming later')),
+                    Chip(label: Text(item.enabled ? 'Explore' : 'Coming later')),
                   ],
                 ),
                 const Spacer(),
