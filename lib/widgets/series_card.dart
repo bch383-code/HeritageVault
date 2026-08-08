@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../reference/coin_series_reference.dart';
 
 class SeriesCard extends StatelessWidget {
   final String title;
@@ -30,6 +31,7 @@ class SeriesCard extends StatelessWidget {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
     final percent = (completionRate * 100).round();
+    final reference = CoinSeriesLibrary.find(title);
 
     return Card(
       clipBehavior: Clip.antiAlias,
@@ -58,15 +60,33 @@ class SeriesCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const Spacer(),
+Text(
+  title,
+  maxLines: 2,
+  overflow: TextOverflow.ellipsis,
+  style: theme.textTheme.titleLarge?.copyWith(
+    fontWeight: FontWeight.w800,
+  ),
+),
+
+if (reference != null) ...[
+  const SizedBox(height: 6),
+  Row(
+    children: [
+      Chip(
+        label: Text(reference.denomination),
+        visualDensity: VisualDensity.compact,
+      ),
+      const SizedBox(width: 8),
+      Text(
+        reference.years,
+        style: theme.textTheme.bodySmall,
+      ),
+    ],
+  ),
+],
+
+const Spacer(),
                     Row(
                       children: [
                         Text(
