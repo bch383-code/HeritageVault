@@ -1,3 +1,5 @@
+import '../widgets/history_timeline.dart';
+
 class CoinSeriesReference {
   final String series;
   final String denomination;
@@ -123,3 +125,29 @@ class CoinSeriesLibrary {
   return null;
 }
 }
+const List<TimelineEvent> morganTimeline = [
+  TimelineEvent(
+    year: '1878',
+    title: 'Morgan Dollar Introduced',
+    description:
+        'The Morgan Dollar was first struck following the Bland–Allison Act.',
+  ),
+  TimelineEvent(
+    year: '1893',
+    title: 'Lowest Mintage',
+    description:
+        'The 1893-S Morgan Dollar became one of the key dates in the series.',
+  ),
+  TimelineEvent(
+    year: '1904',
+    title: 'Production Ends',
+    description:
+        'Regular production of Morgan Dollars came to an end.',
+  ),
+  TimelineEvent(
+    year: '1921',
+    title: 'Final Morgan Dollar',
+    description:
+        'The Morgan Dollar returned for one final year before the Peace Dollar replaced it.',
+  ),
+];

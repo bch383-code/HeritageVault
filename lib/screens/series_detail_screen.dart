@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 
 import '../reference/coin_series_reference.dart';
-import '../widgets/series_museum_header.dart';
+import '../widgets/series_live_header.dart';
+import '../widgets/series_overview_tab.dart';
+import '../widgets/history_timeline.dart';
+import '../widgets/series_collection_tab.dart';
 
 class SeriesDetailScreen extends StatelessWidget {
   final String seriesName;
@@ -23,12 +26,9 @@ class SeriesDetailScreen extends StatelessWidget {
         ),
         body: Column(
           children: [
-SeriesMuseumHeader(
+SeriesLiveHeader(
   seriesName: seriesName,
   reference: reference,
-  completionRate: 0.82,
-  owned: 143,
-  needed: 31,
 ),
             const TabBar(
               tabs: [
@@ -38,23 +38,19 @@ SeriesMuseumHeader(
                 Tab(text: 'My Story'),
               ],
             ),
-            const Expanded(
+            Expanded(
               child: TabBarView(
                 children: [
-                  _PlaceholderTab(
-                    title: 'Overview',
-                    text:
-                        'Series facts, collection progress, and albums will appear here.',
-                  ),
-                  _PlaceholderTab(
-                    title: 'Collection',
-                    text:
-                        'Your owned and needed coins will appear here.',
-                  ),
-                  _PlaceholderTab(
-                    title: 'History',
-                    text:
-                        'The history, key dates, and major varieties of this series will appear here.',
+                 SeriesOverviewTab(
+                reference: reference,
+                ),
+                  SeriesCollectionTab(
+                seriesName: seriesName,
+                ),
+                 HistoryTimeline(
+                    events: seriesName.toLowerCase().contains('morgan')
+                     ? morganTimeline
+                     : const [],
                   ),
                   _PlaceholderTab(
                     title: 'My Story',
