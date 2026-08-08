@@ -4,6 +4,7 @@ import '../database/database_helper.dart';
 import '../models/imported_coin.dart';
 import '../widgets/series_card.dart';
 import 'coins_screen.dart';
+import 'series_detail_screen.dart';
 
 class CoinSeriesExplorerScreen extends StatefulWidget {
   const CoinSeriesExplorerScreen({super.key});
@@ -103,18 +104,32 @@ class _CoinSeriesExplorerScreenState
         .toList();
   }
 
-  Future<void> _openSeries(String seriesName) async {
+Future<void> _openSeries(String seriesName) async {
+  if (seriesName.toLowerCase().contains('morgan')) {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => CoinsScreen(
-          initialSearchText: seriesName,
-        ),
+       builder: (context) => SeriesDetailScreen(
+  seriesName: seriesName,
+),
       ),
     );
 
     await _loadSeries();
+    return;
   }
+
+  await Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (context) => CoinsScreen(
+        initialSearchText: seriesName,
+      ),
+    ),
+  );
+
+  await _loadSeries();
+}
 
   @override
   Widget build(BuildContext context) {
