@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../reference/coin_series_reference.dart';
+import '../widgets/series_museum_header.dart';
 
 class SeriesDetailScreen extends StatelessWidget {
   final String seriesName;
@@ -12,7 +13,6 @@ class SeriesDetailScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final reference = CoinSeriesLibrary.find(seriesName);
 
     return DefaultTabController(
@@ -23,55 +23,13 @@ class SeriesDetailScreen extends StatelessWidget {
         ),
         body: Column(
           children: [
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(28),
-              child: Column(
-                children: [
-                  Container(
-                    width: 150,
-                    height: 150,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: theme.colorScheme.primaryContainer,
-                    ),
-                    child: Icon(
-                      Icons.monetization_on_outlined,
-                      size: 88,
-                      color: theme.colorScheme.primary,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  Text(
-                    seriesName,
-                    style: theme.textTheme.headlineMedium?.copyWith(
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    '${reference?.denomination ?? ''} • '
-                    '${reference?.years ?? ''}',
-                    style: theme.textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    reference?.designer ?? '',
-                    style: theme.textTheme.bodyLarge,
-                  ),
-                  const SizedBox(height: 18),
-                  const SizedBox(
-                    width: 340,
-                    child: LinearProgressIndicator(
-                      value: 0.82,
-                      minHeight: 10,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text('82% Complete'),
-                ],
-              ),
-            ),
+SeriesMuseumHeader(
+  seriesName: seriesName,
+  reference: reference,
+  completionRate: 0.82,
+  owned: 143,
+  needed: 31,
+),
             const TabBar(
               tabs: [
                 Tab(text: 'Overview'),

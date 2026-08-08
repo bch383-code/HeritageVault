@@ -31,7 +31,7 @@ class CoinSeriesLibrary {
       mints: ['P', 'CC', 'O', 'S', 'D'],
       history:
           'The Morgan dollar is one of the most widely collected United States silver dollar series.',
-      imageAsset: '',
+      imageAsset: 'assets/images/series/morgan_dollar.png',
     ),
     CoinSeriesReference(
       series: 'Peace Dollars',
@@ -80,14 +80,46 @@ class CoinSeriesLibrary {
   ];
 
   static CoinSeriesReference? find(String seriesName) {
-    final normalized = seriesName.trim().toLowerCase();
+  final normalized = seriesName.trim().toLowerCase();
 
-    for (final reference in series) {
-      if (reference.series.toLowerCase() == normalized) {
-        return reference;
-      }
-    }
-
-    return null;
+  // Common series-name aliases from imported spreadsheets.
+  if (normalized.contains('morgan')) {
+    return series.firstWhere(
+      (reference) => reference.series == 'Morgan Dollars',
+    );
   }
+
+  if (normalized.contains('peace')) {
+    return series.firstWhere(
+      (reference) => reference.series == 'Peace Dollars',
+    );
+  }
+
+  if (normalized.contains('buffalo')) {
+    return series.firstWhere(
+      (reference) => reference.series == 'Buffalo Nickels',
+    );
+  }
+
+  if (normalized.contains('mercury')) {
+    return series.firstWhere(
+      (reference) => reference.series == 'Mercury Dimes',
+    );
+  }
+
+  if (normalized.contains('wheat') &&
+      normalized.contains('cent')) {
+    return series.firstWhere(
+      (reference) => reference.series == 'Lincoln Wheat Cents',
+    );
+  }
+
+  for (final reference in series) {
+    if (reference.series.toLowerCase() == normalized) {
+      return reference;
+    }
+  }
+
+  return null;
+}
 }
