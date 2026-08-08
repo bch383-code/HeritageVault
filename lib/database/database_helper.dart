@@ -270,32 +270,30 @@ class DatabaseHelper {
   }
 
   Future<int> updateImportedCoin({
-    required ImportedCoin originalCoin,
-    required ImportedCoin updatedCoin,
-  }) async {
-    final database = await this.database;
+  required ImportedCoin originalCoin,
+  required ImportedCoin updatedCoin,
+}) async {
+  final database = await this.database;
 
-    return database.update(
-      'imported_coins',
-      _importedCoinMap(updatedCoin),
-      where: '''
-        category = ? AND series = ? AND year = ? AND mint = ? AND
-        variety = ? AND status = ? AND storage_location = ? AND
-        grade = ? AND notes = ?
-      ''',
-      whereArgs: [
-        originalCoin.category,
-        originalCoin.series,
-        originalCoin.year,
-        originalCoin.mint,
-        originalCoin.variety,
-        originalCoin.status,
-        originalCoin.storageLocation,
-        originalCoin.grade,
-        originalCoin.notes,
-      ],
-    );
-  }
+  return database.update(
+    'imported_coins',
+    _importedCoinMap(updatedCoin),
+    where: '''
+      category = ? AND
+      series = ? AND
+      year = ? AND
+      mint = ? AND
+      variety = ?
+    ''',
+    whereArgs: [
+      originalCoin.category,
+      originalCoin.series,
+      originalCoin.year,
+      originalCoin.mint,
+      originalCoin.variety,
+    ],
+  );
+}
 
   Map<String, Object?> _importedCoinMap(ImportedCoin coin) {
     return {
