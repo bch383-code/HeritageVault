@@ -115,7 +115,7 @@ class CoinImportService {
     int? yearIndex;
     int? mintIndex;
     int? varietyIndex;
-    int? notesIndex;
+    int notesIndex = -1;
     List<int> ownershipIndexes = [];
     List<String> ownershipLabels = [];
     String currentSeries = '';
@@ -139,10 +139,8 @@ class CoinImportService {
         ownershipIndexes = [];
         ownershipLabels = [];
 
-        final ownershipEnd = notesIndex != null && notesIndex! >= 0
-            ? notesIndex!
-            : cells.length;
-
+      final ownershipEnd =
+    notesIndex >= 0 ? notesIndex : cells.length;
         for (var index = varietyIndex + 1;
             index < ownershipEnd;
             index++) {
@@ -197,9 +195,8 @@ class CoinImportService {
         }
       }
 
-      final notes = notesIndex != null && notesIndex! >= 0
-          ? _cellAt(cells, notesIndex!)
-          : '';
+final notes =
+    notesIndex >= 0 ? _cellAt(cells, notesIndex) : '';
 
       coins.add(
         ImportedCoin(
