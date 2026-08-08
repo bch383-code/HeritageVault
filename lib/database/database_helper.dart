@@ -430,3 +430,28 @@ class CategoryProgress {
     return owned / tracked;
   }
 }
+class StorageProgress {
+  final String storageLocation;
+  final int total;
+  final int owned;
+  final int needed;
+  final int untracked;
+
+  const StorageProgress({
+    required this.storageLocation,
+    required this.total,
+    required this.owned,
+    required this.needed,
+    required this.untracked,
+  });
+
+  double get completionRate {
+    final tracked = owned + needed;
+
+    if (tracked == 0) {
+      return 0;
+    }
+
+    return owned / tracked;
+  }
+}

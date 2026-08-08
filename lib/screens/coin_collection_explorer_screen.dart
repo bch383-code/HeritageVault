@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../database/database_helper.dart';
-import '../widgets/collection_card.dart';
+import '../widgets/series_card.dart';
 import 'coins_screen.dart';
 
 class CoinCollectionExplorerScreen extends StatefulWidget {
@@ -257,14 +257,13 @@ if (_isLoading) {
             itemBuilder: (context, index) {
               final category = visibleCategories[index];
 
-              return CollectionCard(
-                title: category.category,
-                owned: category.owned,
-                needed: category.needed,
-                untracked: category.untracked,
-                icon: _iconForCategory(category.category),
-                onTap: () => _openCoins(category: category.category),
-              );
+return SeriesCard(
+  title: category.category,
+  owned: category.owned,
+  needed: category.needed,
+  untracked: category.untracked,
+  onTap: () => _openCoins(category: category.category),
+);
             },
           ),
       ],
@@ -365,28 +364,6 @@ if (_isLoading) {
         ),
       ],
     );
-  }
-
-  IconData _iconForCategory(String category) {
-    final normalized = category.toLowerCase();
-
-    if (normalized.contains('proof')) {
-      return Icons.workspace_premium_outlined;
-    }
-    if (normalized.contains('set')) {
-      return Icons.grid_view_outlined;
-    }
-    if (normalized.contains('dollar')) {
-      return Icons.paid_outlined;
-    }
-    if (normalized.contains('cent')) {
-      return Icons.circle_outlined;
-    }
-    if (normalized.contains('silver')) {
-      return Icons.brightness_5_outlined;
-    }
-
-    return Icons.monetization_on_outlined;
   }
 }
 

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'coin_collection_explorer_screen.dart';
+import 'coin_series_explorer_screen.dart';
 
 class CollectionsScreen extends StatelessWidget {
   const CollectionsScreen({super.key});
@@ -83,7 +83,7 @@ class CollectionsScreen extends StatelessWidget {
                           context,
                           MaterialPageRoute(
                             builder: (context) =>
-                                const CoinCollectionExplorerScreen(),
+                                const CoinSeriesExplorerScreen(),
                           ),
                         )
                     : null,

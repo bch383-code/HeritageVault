@@ -9,11 +9,13 @@ import 'coin_detail_screen.dart';
 class CoinsScreen extends StatefulWidget {
   final String? initialStatus;
   final String? initialCategory;
+  final String? initialSearchText;
 
   const CoinsScreen({
     super.key,
     this.initialStatus,
     this.initialCategory,
+    this.initialSearchText,
   });
 
   @override
@@ -36,6 +38,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
     super.initState();
     _selectedStatus = widget.initialStatus;
     _selectedCategory = widget.initialCategory;
+    _searchController.text = widget.initialSearchText ?? '';
     _loadData();
   }
 
