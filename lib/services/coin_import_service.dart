@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:spreadsheet_decoder/spreadsheet_decoder.dart';
 
 import '../models/imported_coin.dart';
+import '../reference/coin_series_reference.dart';
 
 class CoinCategorySummary {
   final String category;
@@ -154,10 +155,11 @@ class CoinImportService {
         continue;
       }
 
+      final detectedSeries = _recognizedSeries(cells);
+
       if (yearIndex == null || mintIndex == null || varietyIndex == null) {
-        final possibleSeries = _possibleSeries(cells);
-        if (possibleSeries.isNotEmpty) {
-          currentSeries = possibleSeries;
+        if (detectedSeries != null) {
+          currentSeries = detectedSeries;
         }
         continue;
       }
@@ -167,9 +169,8 @@ class CoinImportService {
       final variety = _cellAt(cells, varietyIndex);
 
       if (!_looksLikeCatalogYear(year)) {
-        final possibleSeries = _cellAt(cells, varietyIndex);
-        if (_isSeriesText(possibleSeries)) {
-          currentSeries = possibleSeries;
+        if (detectedSeries != null) {
+          currentSeries = detectedSeries;
         }
         continue;
       }
@@ -216,6 +217,22 @@ final notes =
     return coins;
   }
 
+  String? _recognizedSeries(List<String> cells) {
+    for (final cell in cells.reversed) {
+      final candidate = cell.trim();
+      if (!_isSeriesText(candidate)) {
+        continue;
+      }
+
+      final reference = CoinSeriesLibrary.find(candidate);
+      if (reference != null) {
+        return reference.series;
+      }
+    }
+
+    return null;
+  }
+
   bool _isOwnershipHeader(String value) {
     final normalized = value.trim().toUpperCase();
     if (normalized.isEmpty || normalized == 'OGP') {
@@ -232,15 +249,6 @@ final notes =
   bool _looksLikeCatalogYear(String value) {
     final normalized = value.trim();
     return RegExp(r'^\d{4}(?:-\d{2,4})?$').hasMatch(normalized);
-  }
-
-  String _possibleSeries(List<String> cells) {
-    for (final cell in cells.reversed) {
-      if (_isSeriesText(cell)) {
-        return cell;
-      }
-    }
-    return '';
   }
 
   bool _isSeriesText(String value) {

@@ -5,10 +5,12 @@ import '../screens/storage_detail_screen.dart';
 
 class SeriesStorageSummary extends StatelessWidget {
   final List<ImportedCoin> coins;
+  final bool embedded;
 
   const SeriesStorageSummary({
     super.key,
     required this.coins,
+    this.embedded = false,
   });
 
   @override
@@ -41,7 +43,7 @@ class SeriesStorageSummary extends StatelessWidget {
             fontWeight: FontWeight.w800,
           ),
         ),
-        const SizedBox(height: 14),
+        SizedBox(height: embedded ? 10 : 14),
         for (final location in locations) ...[
           _StorageCard(
             location: location,
