@@ -304,7 +304,7 @@ Future<void> _openSeries(String seriesName) async {
               maxCrossAxisExtent: 420,
               mainAxisSpacing: 18,
               crossAxisSpacing: 18,
-              childAspectRatio: 1.25,
+              childAspectRatio: 1.15,
             ),
             itemBuilder: (context, index) {
               final series = visibleSeries[index];

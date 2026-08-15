@@ -20,12 +20,12 @@ class SeriesCard extends StatelessWidget {
     this.onTap,
   });
 
-  int get trackedTotal => owned + needed;
+int get totalCoins => owned + needed + untracked;
 
-  double get completionRate {
-    if (trackedTotal == 0) return 0;
-    return owned / trackedTotal;
-  }
+double get completionRate {
+  if (totalCoins == 0) return 0;
+  return owned / totalCoins;
+}
 
   String? _thumbnailForTitle(String value) {
     final name = value.trim().toLowerCase();
@@ -98,7 +98,7 @@ class SeriesCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(
-              flex: 4,
+              flex: 3,
               child: Container(
                 width: double.infinity,
                 color: colors.primaryContainer.withValues(alpha: 0.35),
@@ -106,7 +106,7 @@ class SeriesCard extends StatelessWidget {
               ),
             ),
             Expanded(
-              flex: 5,
+              flex: 6,
               child: Padding(
                 padding: const EdgeInsets.all(12),
                 child: Column(
