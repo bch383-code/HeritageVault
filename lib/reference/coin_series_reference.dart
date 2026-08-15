@@ -765,7 +765,7 @@ class CoinSeriesLibrary {
 
     if (normalized.contains('half dime')) {
       if (normalized.contains('flowing hair')) return _byName('Flowing Hair Half Dimes');
-      if (normalized.contains('small eagle')) return _byName('Draped Bust Half Dimes - Small Eagle');
+      if (normalized.contains('small eagle')) return _byName('Draped Bust Half Dimes');
       if (normalized.contains('heraldic')) return _byName('Draped Bust Half Dimes - Heraldic Eagle');
       if (normalized.contains('capped bust')) return _byName('Capped Bust Half Dimes');
       if (normalized.contains('liberty seated')) return _byName('Liberty Seated Half Dimes');

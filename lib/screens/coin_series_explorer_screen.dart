@@ -145,7 +145,7 @@ Future<void> _openSeries(String seriesName) async {
     context,
     MaterialPageRoute(
       builder: (context) => CoinsScreen(
-        initialSearchText: seriesName,
+        initialSeries: seriesName,
       ),
     ),
   );

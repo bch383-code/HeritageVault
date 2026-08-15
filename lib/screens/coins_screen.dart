@@ -9,12 +9,14 @@ import 'coin_detail_screen.dart';
 class CoinsScreen extends StatefulWidget {
   final String? initialStatus;
   final String? initialCategory;
+  final String? initialSeries;
   final String? initialSearchText;
 
   const CoinsScreen({
     super.key,
     this.initialStatus,
     this.initialCategory,
+    this.initialSeries,
     this.initialSearchText,
   });
 
@@ -30,6 +32,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
   List<String> _categories = [];
   String? _selectedStatus;
   String? _selectedCategory;
+  String? _selectedSeries;
   bool _isLoading = true;
   Timer? _searchDebounce;
 
@@ -38,6 +41,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
     super.initState();
     _selectedStatus = widget.initialStatus;
     _selectedCategory = widget.initialCategory;
+    _selectedSeries = widget.initialSeries;
     _searchController.text = widget.initialSearchText ?? '';
     _loadData();
   }
@@ -58,6 +62,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
       final coins = await _databaseHelper.getImportedCoins(
         status: _selectedStatus,
         category: _selectedCategory,
+        series: _selectedSeries,
         searchText: _searchController.text,
       );
       final categories = await _databaseHelper.getImportedCategories();
@@ -134,6 +139,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
     setState(() {
       _selectedStatus = null;
       _selectedCategory = null;
+      _selectedSeries = null;
     });
     _loadData();
   }
@@ -188,6 +194,21 @@ class _CoinsScreenState extends State<CoinsScreen> {
               },
               onChanged: _onSearchChanged,
             ),
+            if (_selectedSeries != null &&
+                _selectedSeries!.trim().isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Chip(
+                  avatar: const Icon(Icons.toll_outlined, size: 18),
+                  label: Text('Series: $_selectedSeries'),
+                  onDeleted: () {
+                    setState(() => _selectedSeries = null);
+                    _loadData();
+                  },
+                ),
+              ),
+            ],
             const SizedBox(height: 12),
             Wrap(
               spacing: 10,

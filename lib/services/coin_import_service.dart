@@ -155,7 +155,7 @@ class CoinImportService {
         continue;
       }
 
-      final detectedSeries = _recognizedSeries(cells);
+      final detectedSeries = _recognizedSeries(category, cells);
 
       if (yearIndex == null || mintIndex == null || varietyIndex == null) {
         if (detectedSeries != null) {
@@ -217,14 +217,22 @@ final notes =
     return coins;
   }
 
-  String? _recognizedSeries(List<String> cells) {
+  String? _recognizedSeries(String category, List<String> cells) {
     for (final cell in cells.reversed) {
       final candidate = cell.trim();
       if (!_isSeriesText(candidate)) {
         continue;
       }
 
-      final reference = CoinSeriesLibrary.find(candidate);
+      var reference = CoinSeriesLibrary.find(candidate);
+      if (reference != null) {
+        return reference.series;
+      }
+
+      // Many workbook headings omit the denomination. Add the worksheet
+      // category so names such as "Silver", "Barber", and "Liberty Seated"
+      // can be matched to the correct denomination-specific series.
+      reference = CoinSeriesLibrary.find('$candidate $category');
       if (reference != null) {
         return reference.series;
       }
@@ -260,8 +268,11 @@ final notes =
       return false;
     }
 
-    return RegExp(r'[A-Za-z]').hasMatch(normalized) &&
-        !RegExp(r'^\d').hasMatch(normalized);
+    // Series headings can legitimately begin with a denomination number,
+    // such as "3 Cent Silver" or "20 Cent Liberty Seated".
+    // _recognizedSeries() still validates the text against CoinSeriesLibrary,
+    // so ordinary numeric/year cells will not become series names.
+    return RegExp(r'[A-Za-z]').hasMatch(normalized);
   }
 
   String _cellAt(List<String> row, int index) {

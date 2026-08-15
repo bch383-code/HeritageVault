@@ -177,6 +177,7 @@ class DatabaseHelper {
   Future<List<ImportedCoin>> getImportedCoins({
     String? status,
     String? category,
+    String? series,
     String searchText = '',
   }) async {
     final database = await this.database;
@@ -191,6 +192,11 @@ class DatabaseHelper {
     if (category != null && category.trim().isNotEmpty) {
       whereParts.add('category = ?');
       whereArguments.add(category);
+    }
+
+    if (series != null && series.trim().isNotEmpty) {
+      whereParts.add('series = ?');
+      whereArguments.add(series);
     }
 
     final search = searchText.trim();
