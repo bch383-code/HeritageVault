@@ -4,6 +4,10 @@ import '../../screens/coin_series_explorer_screen.dart';
 import '../../screens/coins_screen.dart';
 import '../../screens/home_screen.dart';
 import '../../screens/need_list_screen.dart';
+import '../../screens/postcards_screen.dart';
+import '../../screens/valuables_screen.dart';
+import '../../screens/antiques_screen.dart';
+import '../../screens/photos_screen.dart';
 
 class MuseumShell extends StatefulWidget {
   const MuseumShell({super.key});
@@ -17,6 +21,8 @@ enum _VaultPage {
   coinSeries,
   collection,
   needList,
+  postcards,
+  valuables,
   photos,
   documents,
   familyTree,
@@ -45,12 +51,12 @@ class _MuseumShellState extends State<MuseumShell> {
         return const CoinsScreen();
       case _VaultPage.needList:
         return const NeedListScreen();
+      case _VaultPage.postcards:
+        return const PostcardsScreen();
+      case _VaultPage.valuables:
+        return const ValuablesScreen();
       case _VaultPage.photos:
-        return const _ComingSoonPage(
-          title: 'Photos',
-          subtitle: 'Preserve, identify, and organize family photographs.',
-          icon: Icons.photo_library_outlined,
-        );
+        return const PhotosScreen();
       case _VaultPage.documents:
         return const _ComingSoonPage(
           title: 'Documents',
@@ -64,11 +70,7 @@ class _MuseumShellState extends State<MuseumShell> {
           icon: Icons.account_tree_outlined,
         );
       case _VaultPage.antiques:
-        return const _ComingSoonPage(
-          title: 'Antiques',
-          subtitle: 'Catalog heirlooms, keepsakes, and historic objects.',
-          icon: Icons.inventory_2_outlined,
-        );
+        return const AntiquesScreen();
       case _VaultPage.stories:
         return const _ComingSoonPage(
           title: 'Stories',
@@ -240,6 +242,20 @@ class _VaultSidebar extends StatelessWidget {
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 8),
                   child: Divider(color: Color(0xFF21405A)),
+                ),
+                _SidebarItem(
+                  icon: Icons.markunread_mailbox_outlined,
+                  selectedIcon: Icons.markunread_mailbox,
+                  label: 'Postcards',
+                  selected: selectedPage == _VaultPage.postcards,
+                  onTap: () => onSelect(_VaultPage.postcards),
+                ),
+                _SidebarItem(
+                  icon: Icons.diamond_outlined,
+                  selectedIcon: Icons.diamond,
+                  label: 'Valuables',
+                  selected: selectedPage == _VaultPage.valuables,
+                  onTap: () => onSelect(_VaultPage.valuables),
                 ),
                 _SidebarItem(
                   icon: Icons.photo_library_outlined,

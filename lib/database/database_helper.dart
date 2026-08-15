@@ -6,6 +6,11 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../models/coin.dart';
 import '../models/imported_coin.dart';
+import '../models/postcard.dart';
+import '../models/valuable.dart';
+import '../models/antique.dart';
+import '../models/vault_photo.dart';
+import '../models/photo_catalog_metadata.dart';
 
 class DatabaseHelper {
   DatabaseHelper._();
@@ -41,14 +46,47 @@ class DatabaseHelper {
     return databaseFactory.openDatabase(
       _databasePath!,
       options: OpenDatabaseOptions(
-        version: 2,
+        version: 9,
         onCreate: (database, version) async {
           await _createManualCoinsTable(database);
           await _createImportedCoinsTable(database);
+          await _createStorageLocationsTable(database);
+          await _createPostcardsTable(database);
+          await _createValuablesTables(database);
+          await _createAntiquesTables(database);
+          await _createPhotoLibraryTables(database);
+          await _createPhotoCatalogMetadataTable(database);
         },
         onUpgrade: (database, oldVersion, newVersion) async {
           if (oldVersion < 2) {
             await _createImportedCoinsTable(database);
+          }
+          if (oldVersion < 3) {
+            await _upgradeToVersion3(database);
+          }
+          if (oldVersion < 4) {
+            await _createPostcardsTable(database);
+          }
+          if (oldVersion < 5) {
+            await _createValuablesTables(database);
+          }
+          if (oldVersion < 6) {
+            await _createAntiquesTables(database);
+          }
+          if (oldVersion < 7) {
+            await _createPhotoLibraryTables(database);
+          }
+          if (oldVersion < 8) {
+            await database.execute(
+              "ALTER TABLE indexed_photos ADD COLUMN relative_folder TEXT NOT NULL DEFAULT ''",
+            );
+            await database.execute('''
+              CREATE INDEX IF NOT EXISTS indexed_photos_relative_folder_index
+              ON indexed_photos(relative_folder)
+            ''');
+          }
+          if (oldVersion < 9) {
+            await _createPhotoCatalogMetadataTable(database);
           }
         },
       ),
@@ -78,8 +116,10 @@ class DatabaseHelper {
         mint TEXT NOT NULL DEFAULT '',
         variety TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL,
+        quantity_owned INTEGER NOT NULL DEFAULT 0,
         storage_location TEXT NOT NULL DEFAULT '',
         grade TEXT NOT NULL DEFAULT '',
+        value REAL,
         notes TEXT NOT NULL DEFAULT ''
       )
     ''');
@@ -93,6 +133,532 @@ class DatabaseHelper {
       CREATE INDEX IF NOT EXISTS imported_coins_category_index
       ON imported_coins(category)
     ''');
+  }
+
+  static Future<void> _upgradeToVersion3(Database database) async {
+    await database.execute(
+      'ALTER TABLE imported_coins ADD COLUMN quantity_owned INTEGER NOT NULL DEFAULT 0',
+    );
+    await database.execute(
+      'ALTER TABLE imported_coins ADD COLUMN value REAL',
+    );
+    await _createStorageLocationsTable(database);
+  }
+
+  static Future<void> _createStorageLocationsTable(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS storage_locations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        brand TEXT NOT NULL DEFAULT '',
+        color TEXT NOT NULL DEFAULT '',
+        number TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL DEFAULT '',
+        year TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT ''
+      )
+    ''');
+  }
+
+  static Future<void> _createPostcardsTable(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS postcards (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        year TEXT NOT NULL DEFAULT '',
+        acquired_from TEXT NOT NULL DEFAULT '',
+        purchase_price REAL,
+        estimated_value REAL,
+        front_image_path TEXT NOT NULL DEFAULT '',
+        back_image_path TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT ''
+      )
+    ''');
+  }
+
+  Future<int> insertPostcard(Postcard postcard) async {
+    final database = await this.database;
+    final map = postcard.toMap();
+    map.remove('id');
+
+    return database.insert(
+      'postcards',
+      map,
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<int> updatePostcard(Postcard postcard) async {
+    final database = await this.database;
+    final id = postcard.id;
+    if (id == null) {
+      throw ArgumentError('A postcard ID is required for updates.');
+    }
+
+    final map = postcard.toMap();
+    map.remove('id');
+
+    return database.update(
+      'postcards',
+      map,
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<int> deletePostcard(int id) async {
+    final database = await this.database;
+    return database.delete(
+      'postcards',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<List<Postcard>> getPostcards() async {
+    final database = await this.database;
+    final rows = await database.query(
+      'postcards',
+      orderBy: '''
+        CASE WHEN year = '' THEN 1 ELSE 0 END,
+        year COLLATE NOCASE,
+        title COLLATE NOCASE
+      ''',
+    );
+
+    return rows.map(Postcard.fromMap).toList();
+  }
+
+  static Future<void> _createValuablesTables(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS valuables (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        year TEXT NOT NULL DEFAULT '',
+        acquired_from TEXT NOT NULL DEFAULT '',
+        purchase_price REAL,
+        estimated_value REAL,
+        notes TEXT NOT NULL DEFAULT ''
+      )
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS valuable_images (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        valuable_id INTEGER NOT NULL,
+        image_path TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+  }
+
+  Future<int> insertValuable(Valuable valuable) async {
+    final database = await this.database;
+
+    return database.transaction((transaction) async {
+      final map = valuable.toMap();
+      map.remove('id');
+
+      final id = await transaction.insert('valuables', map);
+
+      for (var index = 0; index < valuable.imagePaths.length; index++) {
+        await transaction.insert(
+          'valuable_images',
+          {
+            'valuable_id': id,
+            'image_path': valuable.imagePaths[index],
+            'sort_order': index,
+          },
+        );
+      }
+
+      return id;
+    });
+  }
+
+  Future<int> updateValuable(Valuable valuable) async {
+    final database = await this.database;
+    final id = valuable.id;
+    if (id == null) {
+      throw ArgumentError('A valuable ID is required for updates.');
+    }
+
+    return database.transaction((transaction) async {
+      final map = valuable.toMap();
+      map.remove('id');
+
+      final changed = await transaction.update(
+        'valuables',
+        map,
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+
+      await transaction.delete(
+        'valuable_images',
+        where: 'valuable_id = ?',
+        whereArgs: [id],
+      );
+
+      for (var index = 0; index < valuable.imagePaths.length; index++) {
+        await transaction.insert(
+          'valuable_images',
+          {
+            'valuable_id': id,
+            'image_path': valuable.imagePaths[index],
+            'sort_order': index,
+          },
+        );
+      }
+
+      return changed;
+    });
+  }
+
+  Future<int> deleteValuable(int id) async {
+    final database = await this.database;
+
+    return database.transaction((transaction) async {
+      await transaction.delete(
+        'valuable_images',
+        where: 'valuable_id = ?',
+        whereArgs: [id],
+      );
+
+      return transaction.delete(
+        'valuables',
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    });
+  }
+
+  Future<List<Valuable>> getValuables() async {
+    final database = await this.database;
+    final rows = await database.query(
+      'valuables',
+      orderBy: '''
+        CASE WHEN year = '' THEN 1 ELSE 0 END,
+        year COLLATE NOCASE,
+        title COLLATE NOCASE
+      ''',
+    );
+
+    final result = <Valuable>[];
+
+    for (final row in rows) {
+      final id = row['id'] as int?;
+      final imageRows = id == null
+          ? <Map<String, Object?>>[]
+          : await database.query(
+              'valuable_images',
+              where: 'valuable_id = ?',
+              whereArgs: [id],
+              orderBy: 'sort_order ASC, id ASC',
+            );
+
+      final imagePaths = imageRows
+          .map((imageRow) => imageRow['image_path'] as String? ?? '')
+          .where((value) => value.isNotEmpty)
+          .toList();
+
+      result.add(
+        Valuable.fromMap(
+          row,
+          imagePaths: imagePaths,
+        ),
+      );
+    }
+
+    return result;
+  }
+
+  static Future<void> _createAntiquesTables(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS antiques (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        year TEXT NOT NULL DEFAULT '',
+        acquired_from TEXT NOT NULL DEFAULT '',
+        purchase_price REAL,
+        estimated_value REAL,
+        notes TEXT NOT NULL DEFAULT ''
+      )
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS antique_images (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        antique_id INTEGER NOT NULL,
+        image_path TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+  }
+
+  Future<int> insertAntique(Antique antique) async {
+    final database = await this.database;
+
+    return database.transaction((transaction) async {
+      final map = antique.toMap();
+      map.remove('id');
+
+      final id = await transaction.insert('antiques', map);
+
+      for (var index = 0; index < antique.imagePaths.length; index++) {
+        await transaction.insert(
+          'antique_images',
+          {
+            'antique_id': id,
+            'image_path': antique.imagePaths[index],
+            'sort_order': index,
+          },
+        );
+      }
+
+      return id;
+    });
+  }
+
+  Future<int> updateAntique(Antique antique) async {
+    final database = await this.database;
+    final id = antique.id;
+    if (id == null) {
+      throw ArgumentError('An antique ID is required for updates.');
+    }
+
+    return database.transaction((transaction) async {
+      final map = antique.toMap();
+      map.remove('id');
+
+      final changed = await transaction.update(
+        'antiques',
+        map,
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+
+      await transaction.delete(
+        'antique_images',
+        where: 'antique_id = ?',
+        whereArgs: [id],
+      );
+
+      for (var index = 0; index < antique.imagePaths.length; index++) {
+        await transaction.insert(
+          'antique_images',
+          {
+            'antique_id': id,
+            'image_path': antique.imagePaths[index],
+            'sort_order': index,
+          },
+        );
+      }
+
+      return changed;
+    });
+  }
+
+  Future<int> deleteAntique(int id) async {
+    final database = await this.database;
+
+    return database.transaction((transaction) async {
+      await transaction.delete(
+        'antique_images',
+        where: 'antique_id = ?',
+        whereArgs: [id],
+      );
+
+      return transaction.delete(
+        'antiques',
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    });
+  }
+
+  Future<List<Antique>> getAntiques() async {
+    final database = await this.database;
+    final rows = await database.query(
+      'antiques',
+      orderBy: '''
+        CASE WHEN year = '' THEN 1 ELSE 0 END,
+        year COLLATE NOCASE,
+        title COLLATE NOCASE
+      ''',
+    );
+
+    final result = <Antique>[];
+
+    for (final row in rows) {
+      final id = row['id'] as int?;
+      final imageRows = id == null
+          ? <Map<String, Object?>>[]
+          : await database.query(
+              'antique_images',
+              where: 'antique_id = ?',
+              whereArgs: [id],
+              orderBy: 'sort_order ASC, id ASC',
+            );
+
+      final imagePaths = imageRows
+          .map((imageRow) => imageRow['image_path'] as String? ?? '')
+          .where((value) => value.isNotEmpty)
+          .toList();
+
+      result.add(
+        Antique.fromMap(
+          row,
+          imagePaths: imagePaths,
+        ),
+      );
+    }
+
+    return result;
+  }
+
+
+  static Future<void> _createPhotoLibraryTables(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS app_settings (
+        setting_key TEXT PRIMARY KEY,
+        setting_value TEXT NOT NULL DEFAULT ''
+      )
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS indexed_photos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_path TEXT NOT NULL UNIQUE,
+        file_name TEXT NOT NULL DEFAULT '',
+        extension TEXT NOT NULL DEFAULT '',
+        file_size INTEGER NOT NULL DEFAULT 0,
+        modified_milliseconds INTEGER NOT NULL DEFAULT 0,
+        relative_folder TEXT NOT NULL DEFAULT ''
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS indexed_photos_file_name_index
+      ON indexed_photos(file_name)
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS indexed_photos_relative_folder_index
+      ON indexed_photos(relative_folder)
+    ''');
+  }
+
+  Future<String?> getSetting(String key) async {
+    final database = await this.database;
+    final rows = await database.query(
+      'app_settings',
+      columns: ['setting_value'],
+      where: 'setting_key = ?',
+      whereArgs: [key],
+      limit: 1,
+    );
+
+    if (rows.isEmpty) return null;
+    final value = rows.first['setting_value'] as String? ?? '';
+    return value.isEmpty ? null : value;
+  }
+
+  Future<void> setSetting(String key, String value) async {
+    final database = await this.database;
+    await database.insert(
+      'app_settings',
+      {
+        'setting_key': key,
+        'setting_value': value,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<int> replaceIndexedPhotos(List<VaultPhoto> photos) async {
+    final database = await this.database;
+
+    return database.transaction((transaction) async {
+      await transaction.delete('indexed_photos');
+      final batch = transaction.batch();
+
+      for (final photo in photos) {
+        final map = photo.toMap();
+        map.remove('id');
+        batch.insert(
+          'indexed_photos',
+          map,
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+
+      await batch.commit(noResult: true);
+      return photos.length;
+    });
+  }
+
+  Future<List<VaultPhoto>> getIndexedPhotos() async {
+    final database = await this.database;
+    final rows = await database.query(
+      'indexed_photos',
+      orderBy: 'file_name COLLATE NOCASE, file_path COLLATE NOCASE',
+    );
+    return rows.map(VaultPhoto.fromMap).toList();
+  }
+
+
+  static Future<void> _createPhotoCatalogMetadataTable(
+    Database database,
+  ) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS photo_catalog_metadata (
+        file_path TEXT PRIMARY KEY,
+        people_json TEXT NOT NULL DEFAULT '[]',
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        approximate_date TEXT NOT NULL DEFAULT '',
+        location TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT ''
+      )
+    ''');
+  }
+
+  Future<PhotoCatalogMetadata> getPhotoCatalogMetadata(
+    String filePath,
+  ) async {
+    final database = await this.database;
+    final rows = await database.query(
+      'photo_catalog_metadata',
+      where: 'file_path = ?',
+      whereArgs: [filePath],
+      limit: 1,
+    );
+
+    if (rows.isEmpty) {
+      return PhotoCatalogMetadata(filePath: filePath);
+    }
+
+    return PhotoCatalogMetadata.fromMap(rows.first);
+  }
+
+  Future<List<PhotoCatalogMetadata>> getAllPhotoCatalogMetadata() async {
+    final database = await this.database;
+    final rows = await database.query('photo_catalog_metadata');
+    return rows.map(PhotoCatalogMetadata.fromMap).toList();
+  }
+
+  Future<void> savePhotoCatalogMetadata(
+    PhotoCatalogMetadata metadata,
+  ) async {
+    final database = await this.database;
+    await database.insert(
+      'photo_catalog_metadata',
+      metadata.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
 
   Future<String?> createDatabaseBackup({
@@ -264,8 +830,10 @@ class DatabaseHelper {
       mint: coin.mint,
       variety: coin.variety,
       status: newStatus,
+      quantityOwned: coin.quantityOwned,
       storageLocation: coin.storageLocation,
       grade: coin.grade,
+      value: coin.value,
       notes: coin.notes,
     );
 
@@ -309,8 +877,10 @@ class DatabaseHelper {
       'mint': coin.mint,
       'variety': coin.variety,
       'status': coin.status,
+      'quantity_owned': coin.quantityOwned,
       'storage_location': coin.storageLocation,
       'grade': coin.grade,
+      'value': coin.value,
       'notes': coin.notes,
     };
   }
@@ -323,11 +893,43 @@ class DatabaseHelper {
       mint: row['mint'] as String? ?? '',
       variety: row['variety'] as String? ?? '',
       status: row['status'] as String? ?? '',
+      quantityOwned: _mapInt(row['quantity_owned']),
       storageLocation: row['storage_location'] as String? ?? '',
       grade: row['grade'] as String? ?? '',
+      value: _mapDouble(row['value']),
       notes: row['notes'] as String? ?? '',
     );
   }
+  int _mapInt(Object? value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '') ?? 0;
+  }
+
+  double? _mapDouble(Object? value) {
+    if (value == null) return null;
+    if (value is num) return value.toDouble();
+    return double.tryParse(value.toString());
+  }
+
+  Future<int> replaceStorageLocations(
+    List<Map<String, Object?>> locations,
+  ) async {
+    final database = await this.database;
+
+    return database.transaction((transaction) async {
+      await transaction.delete('storage_locations');
+      final batch = transaction.batch();
+
+      for (final location in locations) {
+        batch.insert('storage_locations', location);
+      }
+
+      await batch.commit(noResult: true);
+      return locations.length;
+    });
+  }
+
   Future<CollectionSummary> getCollectionSummary() async {
     final database = await this.database;
     final rows = await database.rawQuery('''

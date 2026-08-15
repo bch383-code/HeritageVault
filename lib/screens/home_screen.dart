@@ -67,6 +67,20 @@ class _HomeScreenState extends State<HomeScreen> {
       final savedCount = await _databaseHelper.replaceImportedCoins(
         result.coins,
       );
+      final savedStorageCount = await _databaseHelper.replaceStorageLocations(
+        result.storageLocations
+            .map(
+              (location) => <String, Object?>{
+                'brand': location.brand,
+                'color': location.color,
+                'number': location.number,
+                'title': location.title,
+                'year': location.year,
+                'notes': location.notes,
+              },
+            )
+            .toList(),
+      );
       await _loadDashboard();
 
       if (!mounted) return;
@@ -75,7 +89,8 @@ class _HomeScreenState extends State<HomeScreen> {
         builder: (dialogContext) => AlertDialog(
           title: const Text('Collection Imported'),
           content: Text(
-            'Saved $savedCount catalog entries.\n\n'
+            'Saved $savedCount collection entries.\n'
+            'Storage locations: $savedStorageCount\n\n'
             'Owned: ${result.ownedCount}\n'
             'Needed: ${result.neededCount}\n'
             'Untracked: ${result.untrackedCount}',
@@ -119,8 +134,9 @@ class _HomeScreenState extends State<HomeScreen> {
               Text(result.fileName),
               const SizedBox(height: 8),
               Text(
-                '${result.trackedCount} catalog entries across '
-                '${result.sheetCount} coin categories',
+                '${result.trackedCount} collection entries across '
+                '${result.categories.length} categories\n'
+                '${result.storageLocations.length} storage locations found',
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               const SizedBox(height: 12),

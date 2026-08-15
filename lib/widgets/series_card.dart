@@ -20,12 +20,12 @@ class SeriesCard extends StatelessWidget {
     this.onTap,
   });
 
-int get totalCoins => owned + needed + untracked;
+  int get goalTotal => owned + needed;
 
-double get completionRate {
-  if (totalCoins == 0) return 0;
-  return owned / totalCoins;
-}
+  double get completionRate {
+    if (goalTotal == 0) return 0;
+    return owned / goalTotal;
+  }
 
   String? _thumbnailForTitle(String value) {
     final name = value.trim().toLowerCase();
@@ -148,7 +148,7 @@ double get completionRate {
                           ),
                         ),
                         const SizedBox(width: 6),
-                        const Text('complete'),
+                        const Text('Goal completed'),
                       ],
                     ),
                     const SizedBox(height: 6),

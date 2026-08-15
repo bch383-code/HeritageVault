@@ -5,8 +5,10 @@ class ImportedCoin {
   final String mint;
   final String variety;
   final String status;
+  final int quantityOwned;
   final String storageLocation;
   final String grade;
+  final double? value;
   final String notes;
 
   const ImportedCoin({
@@ -16,14 +18,18 @@ class ImportedCoin {
     required this.mint,
     required this.variety,
     required this.status,
+    this.quantityOwned = 0,
     required this.storageLocation,
     required this.grade,
+    this.value,
     required this.notes,
   });
 
   bool get isNeeded => status.toUpperCase() == 'NEED';
 
   bool get isOwned => status.toUpperCase() == 'OWNED';
+
+  double get totalValue => (value ?? 0) * quantityOwned;
 
   String get displayName {
     return [

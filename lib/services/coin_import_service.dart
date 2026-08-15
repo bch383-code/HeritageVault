@@ -22,17 +22,45 @@ class CoinCategorySummary {
   });
 }
 
+class StorageLocationImport {
+  final String brand;
+  final String color;
+  final String number;
+  final String title;
+  final String year;
+  final String notes;
+
+  const StorageLocationImport({
+    required this.brand,
+    required this.color,
+    required this.number,
+    required this.title,
+    required this.year,
+    required this.notes,
+  });
+
+  String get displayName {
+    final parts = <String>[
+      if (number.trim().isNotEmpty) number.trim(),
+      if (title.trim().isNotEmpty) title.trim(),
+    ];
+    return parts.join(' - ');
+  }
+}
+
 class CoinImportResult {
   final String fileName;
   final int sheetCount;
   final List<ImportedCoin> coins;
   final List<CoinCategorySummary> categories;
+  final List<StorageLocationImport> storageLocations;
 
   const CoinImportResult({
     required this.fileName,
     required this.sheetCount,
     required this.coins,
     required this.categories,
+    required this.storageLocations,
   });
 
   int get neededCount => coins.where((coin) => coin.status == 'Need').length;
@@ -43,12 +71,6 @@ class CoinImportResult {
 }
 
 class CoinImportService {
-  static const Set<String> _ignoredSheets = {
-    'Index',
-    'Type',
-    'Boxes',
-  };
-
   Future<CoinImportResult?> chooseAndReadWorkbook() async {
     final pickedFile = await FilePicker.pickFiles(
       type: FileType.custom,
@@ -57,235 +79,434 @@ class CoinImportService {
       withData: true,
     );
 
-    if (pickedFile == null || pickedFile.files.isEmpty) {
-      return null;
-    }
+    if (pickedFile == null || pickedFile.files.isEmpty) return null;
 
     final platformFile = pickedFile.files.single;
     final Uint8List? bytes = platformFile.bytes;
-
     if (bytes == null) {
       throw Exception('Heritage Vault could not read the selected file.');
     }
 
     final workbook = SpreadsheetDecoder.decodeBytes(bytes, update: false);
-    final importedCoins = <ImportedCoin>[];
-    final summaries = <CoinCategorySummary>[];
 
-    for (final sheetName in workbook.tables.keys) {
-      if (_ignoredSheets.contains(sheetName)) {
-        continue;
-      }
-
-      final sheet = workbook.tables[sheetName];
-      if (sheet == null) {
-        continue;
-      }
-
-      final sheetCoins = _readSheet(sheetName, sheet.rows);
-      importedCoins.addAll(sheetCoins);
-
-      summaries.add(
-        CoinCategorySummary(
-          category: sheetName,
-          total: sheetCoins.length,
-          owned: sheetCoins.where((coin) => coin.status == 'Owned').length,
-          needed: sheetCoins.where((coin) => coin.status == 'Need').length,
-          untracked:
-              sheetCoins.where((coin) => coin.status == 'Untracked').length,
-        ),
-      );
+    final mainRows = workbook.tables['Main List']?.rows;
+    if (mainRows == null) {
+      throw Exception('The workbook does not contain a "Main List" sheet.');
     }
 
-    summaries.sort((a, b) => a.category.compareTo(b.category));
+    final coins = _readMainList(mainRows);
+
+    final typeRows = workbook.tables['Type Binder']?.rows;
+    if (typeRows != null) {
+      coins.addAll(_readTypeBinder(typeRows));
+    }
+
+    final setRows = workbook.tables['Sets']?.rows;
+    if (setRows != null) {
+      coins.addAll(_readSets(setRows));
+    }
+
+    final storageRows = workbook.tables['Albums-Bins']?.rows;
+    final storageLocations =
+        storageRows == null ? <StorageLocationImport>[] : _readStorage(storageRows);
+
+    final byCategory = <String, List<ImportedCoin>>{};
+    for (final coin in coins) {
+      byCategory.putIfAbsent(coin.category, () => <ImportedCoin>[]).add(coin);
+    }
+
+    final categories = byCategory.entries.map((entry) {
+      final items = entry.value;
+      return CoinCategorySummary(
+        category: entry.key,
+        total: items.length,
+        owned: items.where((coin) => coin.status == 'Owned').length,
+        needed: items.where((coin) => coin.status == 'Need').length,
+        untracked: items.where((coin) => coin.status == 'Untracked').length,
+      );
+    }).toList()
+      ..sort((a, b) => a.category.compareTo(b.category));
 
     return CoinImportResult(
       fileName: platformFile.name,
-      sheetCount: summaries.length,
-      coins: importedCoins,
-      categories: summaries,
+      sheetCount: workbook.tables.length,
+      coins: coins,
+      categories: categories,
+      storageLocations: storageLocations,
     );
   }
 
-  List<ImportedCoin> _readSheet(
-    String category,
-    List<List<dynamic>> rows,
-  ) {
-    final coins = <ImportedCoin>[];
+  List<ImportedCoin> _readMainList(List<List<dynamic>> rows) {
+    final result = <ImportedCoin>[];
+    if (rows.isEmpty) return result;
 
-    int? yearIndex;
-    int? mintIndex;
-    int? varietyIndex;
-    int notesIndex = -1;
-    List<int> ownershipIndexes = [];
-    List<String> ownershipLabels = [];
-    String currentSeries = '';
+    final headerRow = _findHeaderRow(rows, const ['DENOMINATION', 'SERIES', 'YEAR']);
+    if (headerRow < 0) {
+      throw Exception('Could not find the Main List column headers.');
+    }
 
-    for (final row in rows) {
-      final cells = row.map(_cellText).toList();
-      final normalized = cells.map((cell) => cell.toUpperCase()).toList();
+    final headers = _headers(rows[headerRow]);
 
-      final detectedYearIndex = normalized.indexOf('YEAR');
-      final detectedMintIndex = normalized.indexOf('MINT');
-      final detectedVarietyIndex = normalized.indexOf('VARIETY');
+    for (var i = headerRow + 1; i < rows.length; i++) {
+      final row = rows[i];
+      final denomination = _value(row, headers, ['DENOMINATION']);
+      final series = _value(row, headers, ['SERIES']);
+      final year = _value(row, headers, ['YEAR']);
 
-      if (detectedYearIndex >= 0 &&
-          detectedMintIndex >= 0 &&
-          detectedVarietyIndex >= 0) {
-        yearIndex = detectedYearIndex;
-        mintIndex = detectedMintIndex;
-        varietyIndex = detectedVarietyIndex;
-        notesIndex = normalized.indexOf('NOTES');
+      if (denomination.isEmpty && series.isEmpty && year.isEmpty) continue;
 
-        ownershipIndexes = [];
-        ownershipLabels = [];
+      final rawStatus = _value(
+        row,
+        headers,
+        [
+          'STATUS',
+          'OWNED / NEED / UNTRACKED',
+          'OWNED NEED UNTRACKED',
+          'OWN / NEED / UNTRACKED',
+          'OWN NEED UNTRACKED',
+          'OWN NEED',
+        ],
+      );
+      final normalizedStatus = _normalizeStatus(rawStatus);
+      final quantityText = _value(
+        row,
+        headers,
+        ['QUANTITY OWNED', 'QTY OWNED', 'QUANTITY', 'QTY'],
+      );
+      final valueText = _value(
+        row,
+        headers,
+        ['VALUE', 'ESTIMATED VALUE', 'CURRENT VALUE'],
+      );
 
-      final ownershipEnd =
-    notesIndex >= 0 ? notesIndex : cells.length;
-        for (var index = varietyIndex + 1;
-            index < ownershipEnd;
-            index++) {
-          final label = cells[index].trim();
-          if (_isOwnershipHeader(label)) {
-            ownershipIndexes.add(index);
-            ownershipLabels.add(label);
-          }
-        }
-
-        continue;
-      }
-
-      final detectedSeries = _recognizedSeries(category, cells);
-
-      if (yearIndex == null || mintIndex == null || varietyIndex == null) {
-        if (detectedSeries != null) {
-          currentSeries = detectedSeries;
-        }
-        continue;
-      }
-
-      final year = _cellAt(cells, yearIndex);
-      final mint = _cellAt(cells, mintIndex);
-      final variety = _cellAt(cells, varietyIndex);
-
-      if (!_looksLikeCatalogYear(year)) {
-        if (detectedSeries != null) {
-          currentSeries = detectedSeries;
-        }
-        continue;
-      }
-
-      var status = 'Untracked';
-      final locations = <String>[];
-
-      for (var position = 0;
-          position < ownershipIndexes.length;
-          position++) {
-        final columnIndex = ownershipIndexes[position];
-        final value = _cellAt(cells, columnIndex).toUpperCase();
-        final label = ownershipLabels[position];
-
-        if (value == 'X') {
-          status = 'Owned';
-          locations.add(label);
-        } else if (value == 'NEED') {
-          if (status != 'Owned') {
-            status = 'Need';
-          }
-          locations.add(label);
-        }
-      }
-
-final notes =
-    notesIndex >= 0 ? _cellAt(cells, notesIndex) : '';
-
-      coins.add(
+      result.add(
         ImportedCoin(
-          category: category,
-          series: currentSeries,
+          category: denomination,
+          series: _canonicalSeries(denomination, series),
           year: year,
-          mint: mint,
-          variety: variety,
-          status: status,
-          storageLocation: locations.join(', '),
-          grade: '',
-          notes: notes,
+          mint: _value(row, headers, ['MINT', 'MINT MARK']),
+          variety: _value(row, headers, ['VARIETY']),
+          status: normalizedStatus,
+          quantityOwned: _quantityOwned(quantityText, normalizedStatus),
+          grade: _value(row, headers, ['GRADE']),
+          value: _moneyValue(valueText),
+          storageLocation: _value(
+            row,
+            headers,
+            ['STORAGE LOCATION', 'STORAGE', 'LOCATION'],
+          ),
+          notes: _value(row, headers, ['DESCRIPTION/NOTES', 'NOTES', 'NOTE']),
         ),
       );
     }
 
-    return coins;
+    return result;
   }
 
-  String? _recognizedSeries(String category, List<String> cells) {
-    for (final cell in cells.reversed) {
-      final candidate = cell.trim();
-      if (!_isSeriesText(candidate)) {
+  List<ImportedCoin> _readTypeBinder(List<List<dynamic>> rows) {
+    final result = <ImportedCoin>[];
+    if (rows.isEmpty) return result;
+
+    final headerRow = _findHeaderRow(
+      rows,
+      const ['DENOMINATION', 'SERIES', 'YEAR IN BOOK'],
+    );
+    if (headerRow < 0) return result;
+    final headers = _headers(rows[headerRow]);
+
+    for (var i = headerRow + 1; i < rows.length; i++) {
+      final row = rows[i];
+
+      final denomination = _value(row, headers, ['DENOMINATION']);
+      final sourceSeries = _value(row, headers, ['SERIES']);
+      final yearInBook = _value(row, headers, ['YEAR IN BOOK']);
+      final storage = _value(
+        row,
+        headers,
+        ['STOAGE LOCTION', 'STORAGE LOCATION', 'STORAGE'],
+      );
+
+      if (denomination.isEmpty &&
+          sourceSeries.isEmpty &&
+          yearInBook.isEmpty) {
         continue;
       }
 
-      var reference = CoinSeriesLibrary.find(candidate);
-      if (reference != null) {
-        return reference.series;
-      }
+      final isEmpty = yearInBook.trim().toUpperCase() == 'EMPTY';
+      final status = isEmpty ? 'Need' : 'Owned';
 
-      // Many workbook headings omit the denomination. Add the worksheet
-      // category so names such as "Silver", "Barber", and "Liberty Seated"
-      // can be matched to the correct denomination-specific series.
-      reference = CoinSeriesLibrary.find('$candidate $category');
-      if (reference != null) {
-        return reference.series;
-      }
+      result.add(
+        ImportedCoin(
+          category: 'Type Collection',
+          series: 'Type Collection',
+          year: isEmpty ? '' : yearInBook,
+          mint: '',
+          variety: [
+            denomination,
+            sourceSeries,
+          ].where((value) => value.isNotEmpty).join(' - '),
+          status: status,
+          quantityOwned: isEmpty ? 0 : 1,
+          storageLocation:
+              storage.isEmpty ? 'Type Binder' : storage,
+          grade: _value(row, headers, ['GRADE']),
+          value: _moneyValue(_value(row, headers, ['VALUE'])),
+          notes: '',
+        ),
+      );
     }
 
-    return null;
+    return result;
   }
 
-  bool _isOwnershipHeader(String value) {
+  List<ImportedCoin> _readSets(List<List<dynamic>> rows) {
+    final result = <ImportedCoin>[];
+    if (rows.isEmpty) return result;
+
+    final headerRow = _findHeaderRow(rows, const ['SET SERIES', 'YEAR']);
+    if (headerRow < 0) return result;
+    final headers = _headers(rows[headerRow]);
+
+    for (var i = headerRow + 1; i < rows.length; i++) {
+      final row = rows[i];
+      final year = _value(row, headers, ['YEAR']);
+      final setType = _value(row, headers, ['SET SERIES']);
+
+      if (year.isEmpty && setType.isEmpty) continue;
+
+      final rawStatus = _value(
+        row,
+        headers,
+        [
+          'OWN / NEED / UNTRACKED',
+          'OWN NEED UNTRACKED',
+          'STATUS',
+        ],
+      );
+      final status = _normalizeStatus(rawStatus);
+      final quantityText = _value(
+        row,
+        headers,
+        ['QUANTITY OWNED', 'QTY OWNED', 'QUANTITY', 'QTY'],
+      );
+
+      result.add(
+        ImportedCoin(
+          category: 'Sets',
+          series: _canonicalSetSeries(setType),
+          year: year,
+          mint: _value(row, headers, ['MINT', 'MINT MARK']),
+          variety: _value(row, headers, ['VARIETY']),
+          status: status,
+          quantityOwned: _quantityOwned(quantityText, status),
+          storageLocation: _value(
+            row,
+            headers,
+            ['STORAGE LOCATION', 'STORAGE', 'LOCATION'],
+          ),
+          grade: '',
+          value: null,
+          notes: _value(row, headers, ['OGP']),
+        ),
+      );
+    }
+
+    return result;
+  }
+
+  List<StorageLocationImport> _readStorage(List<List<dynamic>> rows) {
+    final result = <StorageLocationImport>[];
+    if (rows.isEmpty) return result;
+
+    final headerRow = _findHeaderRow(rows, const ['NUMBER']);
+    if (headerRow < 0) return result;
+    final headers = _headers(rows[headerRow]);
+
+    for (var i = headerRow + 1; i < rows.length; i++) {
+      final row = rows[i];
+      final number = _value(row, headers, ['NUMBER', 'NO', '#']);
+      final title = _value(
+        row,
+        headers,
+        ['TITLE/SERIES', 'TITLE SERIES', 'TITLE', 'SERIES'],
+      );
+
+      if (number.isEmpty && title.isEmpty) continue;
+
+      result.add(
+        StorageLocationImport(
+          brand: _value(row, headers, ['BRAND']),
+          color: _value(row, headers, ['COLOR']),
+          number: number,
+          title: title,
+          year: _value(row, headers, ['YEAR', 'YEARS']),
+          notes: _value(row, headers, ['NOTES', 'NOTE']),
+        ),
+      );
+    }
+
+    return result;
+  }
+
+  int _findHeaderRow(List<List<dynamic>> rows, List<String> requiredHeaders) {
+    for (var i = 0; i < rows.length && i < 25; i++) {
+      final normalized = rows[i]
+          .map((value) => _normalizeHeader(_cellText(value)))
+          .toSet();
+
+      final matches = requiredHeaders.every(
+        (header) => normalized.contains(_normalizeHeader(header)),
+      );
+      if (matches) return i;
+    }
+    return -1;
+  }
+
+  Map<String, int> _headers(List<dynamic> row) {
+    final result = <String, int>{};
+    for (var i = 0; i < row.length; i++) {
+      final header = _normalizeHeader(_cellText(row[i]));
+      if (header.isNotEmpty) result[header] = i;
+    }
+    return result;
+  }
+
+  String _value(
+    List<dynamic> row,
+    Map<String, int> headers,
+    List<String> possibleHeaders,
+  ) {
+    for (final possible in possibleHeaders) {
+      final index = headers[_normalizeHeader(possible)];
+      if (index != null && index >= 0 && index < row.length) {
+        return _cellText(row[index]);
+      }
+    }
+    return '';
+  }
+
+  String _canonicalSeries(String denomination, String rawSeries) {
+    final raw = rawSeries.trim();
+    if (raw.isEmpty || raw.toUpperCase() == 'NONE') return '';
+
+    // First let the reference library resolve exact/common aliases.
+    final direct = CoinSeriesLibrary.find(raw);
+    if (direct != null) return direct.series;
+
+    final context = _denominationContext(denomination);
+    final contextual = CoinSeriesLibrary.find('$raw $context');
+    if (contextual != null) return contextual.series;
+
+    // Stable mappings for names used by the new master workbook.
+    final key = _normalizeHeader(raw);
+    const aliases = <String, String>{
+      'LIBERTY FIVE CENT': 'Liberty Head Nickels',
+      'SHIELD FRIVE CENT': 'Shield Nickels',
+      'BUFFALO NICKEL': 'Buffalo Nickels',
+      'JEFFERSON NICKEL': 'Jefferson Nickels',
+      'WALKING LIBERTY': 'Walking Liberty Half Dollars',
+      'LIBERTY SEATER QUARTER': 'Liberty Seated Quarters',
+      'NATIONAL PARK QUARTER': 'America the Beautiful Quarters',
+      'NATIONAL PARKS QUARTER': 'America the Beautiful Quarters',
+      'DC US TERRITORY QUARTER': 'State & Territory Quarters',
+      'US WOMEN QUARTER': 'American Women Quarters',
+      'INNOVATION DOLLAR': 'American Innovation Dollars',
+      'SUSAN B ANTHONY DOLLAR': 'Susan B. Anthony Dollars',
+      '3 CENT SILVER': 'Three Cent Silver',
+      '3 CENT NICKEL': 'Three Cent Nickel',
+    };
+
+    return aliases[key] ?? raw;
+  }
+
+  String _denominationContext(String denomination) {
+    switch (_normalizeHeader(denomination)) {
+      case 'FIVE CENT':
+        return '5 Cent Nickel';
+      case 'TEN CENT':
+        return '10 Cent Dime';
+      case 'QUARTER':
+        return '25 Cent Quarter';
+      case 'HALF DOLLAR':
+        return '50 Cent Half Dollar';
+      case 'ONE DOLLAR':
+        return 'Dollar';
+      case 'ONE CENT':
+        return 'Cent';
+      default:
+        return denomination;
+    }
+  }
+
+  String _canonicalSetSeries(String rawSeries) {
+    final normalized = _normalizeHeader(rawSeries);
+
+    if (normalized.contains('SILVER') &&
+        normalized.contains('PROOF')) {
+      return 'Silver Proof Sets';
+    }
+    if (normalized.contains('PROOF')) {
+      return 'Proof Sets';
+    }
+    if (normalized.contains('MINT') ||
+        normalized.contains('UNCIRCULATED')) {
+      return 'Mint Sets (Uncirculated)';
+    }
+
+    return rawSeries.trim();
+  }
+
+  int _quantityOwned(String value, String status) {
+    final parsed = _intValue(value);
+    if (parsed > 0) return parsed;
+    return status == 'Owned' ? 1 : 0;
+  }
+
+  String _normalizeStatus(String value) {
     final normalized = value.trim().toUpperCase();
-    if (normalized.isEmpty || normalized == 'OGP') {
-      return false;
+
+    if (normalized == 'OWN' ||
+        normalized == 'OWNED' ||
+        normalized == 'YES' ||
+        normalized == 'X') {
+      return 'Owned';
     }
 
-    return normalized.contains('BOOK') ||
-        normalized.contains('BINDER') ||
-        normalized.contains('ALBUM') ||
-        normalized.contains('FOLDER') ||
-        normalized.contains('SET');
-  }
-
-  bool _looksLikeCatalogYear(String value) {
-    final normalized = value.trim();
-    return RegExp(r'^\d{4}(?:-\d{2,4})?$').hasMatch(normalized);
-  }
-
-  bool _isSeriesText(String value) {
-    final normalized = value.trim();
-    if (normalized.isEmpty ||
-        normalized.toUpperCase().startsWith('UNITED STATES') ||
-        normalized.toUpperCase() == 'NOTES' ||
-        normalized.toUpperCase() == 'NO BOOK') {
-      return false;
+    if (normalized == 'NEED' ||
+        normalized == 'WANT' ||
+        normalized == 'WANTED') {
+      return 'Need';
     }
 
-    // Series headings can legitimately begin with a denomination number,
-    // such as "3 Cent Silver" or "20 Cent Liberty Seated".
-    // _recognizedSeries() still validates the text against CoinSeriesLibrary,
-    // so ordinary numeric/year cells will not become series names.
-    return RegExp(r'[A-Za-z]').hasMatch(normalized);
+    return 'Untracked';
   }
 
-  String _cellAt(List<String> row, int index) {
-    if (index < 0 || index >= row.length) {
-      return '';
-    }
-    return row[index].trim();
+  int _intValue(String value) {
+    if (value.trim().isEmpty) return 0;
+    final parsed = num.tryParse(value.replaceAll(',', '').trim());
+    return parsed?.toInt() ?? 0;
+  }
+
+  double? _moneyValue(String value) {
+    final cleaned = value
+        .replaceAll(r'$', '')
+        .replaceAll(',', '')
+        .trim();
+    if (cleaned.isEmpty) return null;
+    return double.tryParse(cleaned);
+  }
+
+  String _normalizeHeader(String value) {
+    return value
+        .trim()
+        .toUpperCase()
+        .replaceAll(RegExp(r'[^A-Z0-9#]+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
   }
 
   String _cellText(dynamic value) {
-    if (value == null) {
-      return '';
-    }
+    if (value == null) return '';
     return value.toString().trim();
   }
 }

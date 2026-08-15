@@ -698,6 +698,17 @@ class CoinSeriesLibrary {
       thumbnailAsset: 'assets/images/series/innovation_dollar_thumb.png',
     ),
     CoinSeriesReference(
+      series: 'Type Collection',
+      denomination: 'Type Collection',
+      years: 'Various',
+      designer: 'Various',
+      composition: 'Various',
+      mints: ['P', 'D', 'S', 'O', 'CC', 'W'],
+      history: 'A personal type collection built around representative examples of United States coin designs and denominations.',
+      imageAsset: '',
+      thumbnailAsset: 'assets/images/series/type_collection_thumb.png',
+    ),
+    CoinSeriesReference(
       series: 'Proof Sets',
       denomination: 'Set',
       years: '1936–Present',
@@ -820,6 +831,10 @@ class CoinSeriesLibrary {
       if (normalized.contains('sacagawea') || normalized.contains('native american')) return _byName('Sacagawea Dollars');
       if (normalized.contains('presidential')) return _byName('Presidential Dollars');
       if (normalized.contains('innovation')) return _byName('American Innovation Dollars');
+    }
+
+    if (normalized.contains('type collection') || normalized.contains('type set')) {
+      return _byName('Type Collection');
     }
 
     if (normalized.contains('silver proof')) return _byName('Silver Proof Sets');
