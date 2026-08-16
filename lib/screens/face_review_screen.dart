@@ -19,12 +19,24 @@ class FaceReviewScreen extends StatefulWidget {
   State<FaceReviewScreen> createState() => _FaceReviewScreenState();
 }
 
+class _KnownMatch {
+  final String personName;
+  final double similarity;
+
+  const _KnownMatch({
+    required this.personName,
+    required this.similarity,
+  });
+}
+
 class _FaceReviewScreenState extends State<FaceReviewScreen> {
   final DatabaseHelper _databaseHelper = DatabaseHelper.instance;
 
   late List<List<DetectedFaceRecord>> _groups;
+  List<DetectedFaceRecord> _knownFaces = const [];
   int _groupIndex = 0;
   bool _saving = false;
+  bool _loadingKnown = true;
 
   @override
   void initState() {
@@ -32,15 +44,137 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
     _groups = FaceRecognitionService.groupSimilarFaces(
       widget.faces.where((face) => !face.confirmed).toList(),
     );
+    _loadKnownFaces();
+  }
+
+  Future<void> _loadKnownFaces() async {
+    final faces = await _databaseHelper.getConfirmedFaces();
+    if (!mounted) return;
+
+    setState(() {
+      _knownFaces = faces;
+      _loadingKnown = false;
+    });
   }
 
   List<DetectedFaceRecord> get _currentGroup =>
       _groups.isEmpty ? const [] : _groups[_groupIndex];
 
+  _KnownMatch? get _currentSuggestion {
+    if (_loadingKnown || _knownFaces.isEmpty || _currentGroup.isEmpty) {
+      return null;
+    }
+
+    final scoresByPerson = <String, double>{};
+
+    for (final candidate in _currentGroup) {
+      for (final known in _knownFaces) {
+        if (known.personName.trim().isEmpty) continue;
+
+        final similarity = FaceRecognitionService.cosineSimilarity(
+          candidate.embedding,
+          known.embedding,
+        );
+
+        final previous = scoresByPerson[known.personName] ?? -1;
+        if (similarity > previous) {
+          scoresByPerson[known.personName] = similarity;
+        }
+      }
+    }
+
+    if (scoresByPerson.isEmpty) return null;
+
+    final best = scoresByPerson.entries.reduce(
+      (a, b) => a.value >= b.value ? a : b,
+    );
+
+    // Conservative threshold for an automatic suggestion. User confirmation
+    // is still required.
+    if (best.value < 0.65) return null;
+
+    return _KnownMatch(
+      personName: best.key,
+      similarity: best.value,
+    );
+  }
+
+  Future<void> _confirmCurrentGroup(String personName) async {
+    if (_currentGroup.isEmpty || personName.trim().isEmpty) return;
+
+    setState(() => _saving = true);
+
+    try {
+      final group = [..._currentGroup];
+      final ids = group.map((face) => face.id).whereType<int>().toList();
+      final cleanName = personName.trim();
+
+      await _databaseHelper.confirmFaceGroup(
+        faceIds: ids,
+        personName: cleanName,
+      );
+
+      for (final photoPath
+          in group.map((face) => face.photoFilePath).toSet()) {
+        final existing =
+            await _databaseHelper.getPhotoCatalogMetadata(photoPath);
+
+        await _databaseHelper.savePhotoCatalogMetadata(
+          PhotoCatalogMetadata(
+            filePath: existing.filePath,
+            people: <String>{...existing.people, cleanName}.toList(),
+            tags: existing.tags,
+            approximateDate: existing.approximateDate,
+            location: existing.location,
+            description: existing.description,
+            notes: existing.notes,
+          ),
+        );
+      }
+
+      // Newly confirmed examples immediately become part of the known-person
+      // reference library for later groups in this same review session.
+      final newKnown = group
+          .map(
+            (face) => DetectedFaceRecord(
+              id: face.id,
+              photoFilePath: face.photoFilePath,
+              faceIndex: face.faceIndex,
+              left: face.left,
+              top: face.top,
+              width: face.width,
+              height: face.height,
+              detectionScore: face.detectionScore,
+              embedding: face.embedding,
+              thumbnailPath: face.thumbnailPath,
+              personName: cleanName,
+              confirmed: true,
+            ),
+          )
+          .toList();
+
+      if (!mounted) return;
+
+      setState(() {
+        _knownFaces = [..._knownFaces, ...newKnown];
+        _groups.removeAt(_groupIndex);
+        if (_groupIndex >= _groups.length && _groupIndex > 0) {
+          _groupIndex--;
+        }
+      });
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
   Future<void> _nameCurrentGroup() async {
     if (_currentGroup.isEmpty) return;
 
-    final controller = TextEditingController();
+    final suggestion = _currentSuggestion;
+    final controller = TextEditingController(
+      text: suggestion?.personName ?? '',
+    );
+
     final name = await showDialog<String>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -53,6 +187,12 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
             hintText: 'Fred Hoffman',
             border: OutlineInputBorder(),
           ),
+          onSubmitted: (value) {
+            final trimmed = value.trim();
+            if (trimmed.isNotEmpty) {
+              Navigator.pop(dialogContext, trimmed);
+            }
+          },
         ),
         actions: [
           TextButton(
@@ -71,47 +211,11 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
         ],
       ),
     );
+
     controller.dispose();
 
-    if (name == null || name.trim().isEmpty) return;
-
-    setState(() => _saving = true);
-    try {
-      final group = [..._currentGroup];
-      final ids = group.map((face) => face.id).whereType<int>().toList();
-
-      await _databaseHelper.confirmFaceGroup(
-        faceIds: ids,
-        personName: name.trim(),
-      );
-
-      for (final photoPath
-          in group.map((face) => face.photoFilePath).toSet()) {
-        final existing =
-            await _databaseHelper.getPhotoCatalogMetadata(photoPath);
-
-        await _databaseHelper.savePhotoCatalogMetadata(
-          PhotoCatalogMetadata(
-            filePath: existing.filePath,
-            people: <String>{...existing.people, name.trim()}.toList(),
-            tags: existing.tags,
-            approximateDate: existing.approximateDate,
-            location: existing.location,
-            description: existing.description,
-            notes: existing.notes,
-          ),
-        );
-      }
-
-      if (!mounted) return;
-      setState(() {
-        _groups.removeAt(_groupIndex);
-        if (_groupIndex >= _groups.length && _groupIndex > 0) {
-          _groupIndex--;
-        }
-      });
-    } finally {
-      if (mounted) setState(() => _saving = false);
+    if (name != null) {
+      await _confirmCurrentGroup(name);
     }
   }
 
@@ -152,6 +256,7 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
     }
 
     final group = _currentGroup;
+    final suggestion = _currentSuggestion;
 
     return Scaffold(
       appBar: AppBar(
@@ -165,23 +270,62 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
             color: Theme.of(context).colorScheme.surfaceContainerLow,
             child: Padding(
               padding: const EdgeInsets.all(16),
-              child: Row(
+              child: Column(
                 children: [
-                  const Icon(Icons.groups_2_outlined),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      '${group.length} face${group.length == 1 ? '' : 's'} '
-                      'look similar. Remove incorrect matches, then name '
-                      'the person when you are confident.',
+                  Row(
+                    children: [
+                      const Icon(Icons.groups_2_outlined),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          '${group.length} face${group.length == 1 ? '' : 's'} '
+                          'look similar. Remove incorrect matches before '
+                          'confirming the person.',
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      FilledButton.icon(
+                        onPressed: _saving ? null : _nameCurrentGroup,
+                        icon: const Icon(Icons.person_add_alt_1),
+                        label: const Text('Name Person'),
+                      ),
+                    ],
+                  ),
+                  if (suggestion != null) ...[
+                    const SizedBox(height: 12),
+                    Card(
+                      child: ListTile(
+                        leading: const Icon(Icons.auto_awesome),
+                        title: Text(
+                          'Possible match: ${suggestion.personName}',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        subtitle: Text(
+                          '${(suggestion.similarity * 100).toStringAsFixed(1)}% similarity '
+                          'to a confirmed face. Heritage Vault will not assign '
+                          'the name until you confirm it.',
+                        ),
+                        trailing: FilledButton(
+                          onPressed: _saving
+                              ? null
+                              : () => _confirmCurrentGroup(
+                                    suggestion.personName,
+                                  ),
+                          child: const Text('Confirm'),
+                        ),
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  FilledButton.icon(
-                    onPressed: _saving ? null : _nameCurrentGroup,
-                    icon: const Icon(Icons.person_add_alt_1),
-                    label: const Text('Name Person'),
-                  ),
+                  ] else if (!_loadingKnown && _knownFaces.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'No confident match to a known person.',
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -212,9 +356,15 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
                               .colorScheme
                               .surfaceContainerHighest,
                           child: thumbnail.existsSync()
-                              ? Image.file(thumbnail, fit: BoxFit.cover)
+                              ? Image.file(
+                                  thumbnail,
+                                  fit: BoxFit.cover,
+                                )
                               : const Center(
-                                  child: Icon(Icons.face_outlined, size: 58),
+                                  child: Icon(
+                                    Icons.face_outlined,
+                                    size: 58,
+                                  ),
                                 ),
                         ),
                       ),
@@ -263,7 +413,9 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
                     padding: const EdgeInsets.symmetric(horizontal: 18),
                     child: Text(
                       '${_groupIndex + 1} of ${_groups.length}',
-                      style: const TextStyle(fontWeight: FontWeight.w800),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
                   ),
                   IconButton.filledTonal(

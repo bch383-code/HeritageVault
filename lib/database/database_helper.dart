@@ -767,6 +767,67 @@ class DatabaseHelper {
     );
   }
 
+
+  Future<List<DetectedFaceRecord>> getConfirmedFaces() async {
+    final database = await this.database;
+    final rows = await database.query(
+      'photo_faces',
+      where: "confirmed = 1 AND person_name <> ''",
+      orderBy: 'person_name COLLATE NOCASE, photo_file_path, face_index',
+    );
+
+    return rows.map(DetectedFaceRecord.fromMap).toList();
+  }
+
+  Future<List<DetectedFaceRecord>> getUnconfirmedFaces() async {
+    final database = await this.database;
+    final rows = await database.query(
+      'photo_faces',
+      where: 'confirmed = 0',
+      orderBy: 'photo_file_path, face_index',
+    );
+
+    return rows.map(DetectedFaceRecord.fromMap).toList();
+  }
+
+  Future<void> renameConfirmedPerson({
+    required String oldName,
+    required String newName,
+  }) async {
+    final database = await this.database;
+    await database.update(
+      'photo_faces',
+      {'person_name': newName.trim()},
+      where: 'confirmed = 1 AND person_name = ?',
+      whereArgs: [oldName],
+    );
+
+    final rows = await database.query('photo_catalog_metadata');
+    for (final row in rows) {
+      final metadata = PhotoCatalogMetadata.fromMap(row);
+      if (!metadata.people.contains(oldName)) continue;
+
+      final updatedPeople = metadata.people
+          .map((person) => person == oldName ? newName.trim() : person)
+          .toSet()
+          .toList();
+
+      await database.insert(
+        'photo_catalog_metadata',
+        PhotoCatalogMetadata(
+          filePath: metadata.filePath,
+          people: updatedPeople,
+          tags: metadata.tags,
+          approximateDate: metadata.approximateDate,
+          location: metadata.location,
+          description: metadata.description,
+          notes: metadata.notes,
+        ).toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+  }
+
   Future<String?> createDatabaseBackup({
     String reason = 'automatic',
   }) async {

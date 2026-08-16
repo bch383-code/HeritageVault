@@ -10,6 +10,7 @@ import '../models/photo_catalog_metadata.dart';
 import 'photo_detail_screen.dart';
 import 'photo_batch_edit_screen.dart';
 import 'face_scan_screen.dart';
+import 'known_people_screen.dart';
 
 class PhotosScreen extends StatefulWidget {
   const PhotosScreen({super.key});
@@ -360,12 +361,13 @@ class _PhotosScreenState extends State<PhotosScreen> {
         ),
       );
 
-    if (proceed != true) return;
-}
+      if (proceed != true) return;
+    }
+
     if (!mounted) return;
 
     await Navigator.push(
-     context,
+      context,
       MaterialPageRoute(
         builder: (context) => FaceScanScreen(photos: selected),
       ),
@@ -382,6 +384,66 @@ class _PhotosScreenState extends State<PhotosScreen> {
       };
       _selectedPaths.clear();
       _selectionMode = false;
+    });
+  }
+
+  Future<void> _scanCurrentFolderFaces() async {
+    final folderPhotos = _filteredPhotosInCurrentFolder;
+
+    if (folderPhotos.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('There are no matching photos in this folder to scan.'),
+        ),
+      );
+      return;
+    }
+
+    if (folderPhotos.length > 250) {
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Large folder face scan'),
+          content: Text(
+            'This folder contains ${folderPhotos.length} matching photos. '
+            'For now, smaller scans are easier to review. Continue anyway?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Continue'),
+            ),
+          ],
+        ),
+      );
+
+      if (proceed != true) return;
+    }
+
+    if (!mounted) return;
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => FaceScanScreen(
+          photos: folderPhotos,
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+
+    final catalogRecords =
+        await _databaseHelper.getAllPhotoCatalogMetadata();
+
+    setState(() {
+      _catalogByPath = <String, PhotoCatalogMetadata>{
+        for (final record in catalogRecords) record.filePath: record,
+      };
     });
   }
 
@@ -495,6 +557,31 @@ class _PhotosScreenState extends State<PhotosScreen> {
                 _selectionMode ? Icons.close : Icons.check_box_outlined,
               ),
               label: Text(_selectionMode ? 'Cancel' : 'Select'),
+            ),
+            IconButton(
+              tooltip: 'Known People',
+              onPressed: _selectionMode
+                  ? null
+                  : () async {
+                      await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => const KnownPeopleScreen(),
+                        ),
+                      );
+
+                      if (!mounted) return;
+
+                      final catalogRecords =
+                          await _databaseHelper.getAllPhotoCatalogMetadata();
+                      setState(() {
+                        _catalogByPath = <String, PhotoCatalogMetadata>{
+                          for (final record in catalogRecords)
+                            record.filePath: record,
+                        };
+                      });
+                    },
+              icon: const Icon(Icons.people_alt_outlined),
             ),
             IconButton(
               tooltip: 'Rescan Photo Library',
@@ -677,13 +764,29 @@ class _PhotosScreenState extends State<PhotosScreen> {
               ..._childFolders.map(_buildFolderCard),
               if (_filteredPhotosInCurrentFolder.isNotEmpty) ...[
                 const SizedBox(height: 18),
-                Text(
-                  _currentFolder.isEmpty
-                      ? 'Photos in Pictures'
-                      : 'Photos in ${path.basename(_currentFolder)}',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w800,
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _currentFolder.isEmpty
+                            ? 'Photos in Pictures'
+                            : 'Photos in ${path.basename(_currentFolder)}',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w800,
+                            ),
                       ),
+                    ),
+                    FilledButton.tonalIcon(
+                      onPressed: _selectionMode
+                          ? null
+                          : _scanCurrentFolderFaces,
+                      icon: const Icon(Icons.face_retouching_natural),
+                      label: Text(
+                        'Scan Faces in This Folder '
+                        '(${_filteredPhotosInCurrentFolder.length})',
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 12),
                 _buildPhotoGrid(_filteredPhotosInCurrentFolder),
