@@ -1,194 +1,88 @@
 import 'package:flutter/material.dart';
 
 import '../database/database_helper.dart';
-import '../services/coin_import_service.dart';
-import '../widgets/collection_card.dart';
-import 'coins_screen.dart';
+import '../models/custom_collection.dart';
+import '../screens/custom_collection_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final VoidCallback? onOpenCollections;
 
-  const HomeScreen({super.key, this.onOpenCollections});
+  const HomeScreen({
+    super.key,
+    this.onOpenCollections,
+  });
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final CoinImportService _importService = CoinImportService();
   final DatabaseHelper _databaseHelper = DatabaseHelper.instance;
 
-  bool _isImporting = false;
-  bool _isLoadingDashboard = true;
-  CollectionSummary _summary = const CollectionSummary(
-    total: 0,
-    owned: 0,
-    needed: 0,
-    untracked: 0,
-    categories: 0,
-  );
-  List<CategoryProgress> _categoryProgress = [];
+  bool _loading = true;
+  List<CustomCollection> _customCollections = const [];
 
   @override
   void initState() {
     super.initState();
-    _loadDashboard();
+    _load();
   }
 
-  Future<void> _loadDashboard() async {
+  Future<void> _load() async {
     try {
-      final summary = await _databaseHelper.getCollectionSummary();
-      final progress = await _databaseHelper.getCategoryProgress();
+      final collections = await _databaseHelper.getCustomCollections();
+      collections.sort(
+        (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+      );
+
       if (!mounted) return;
+
       setState(() {
-        _summary = summary;
-        _categoryProgress = progress;
-        _isLoadingDashboard = false;
+        _customCollections = collections;
+        _loading = false;
       });
     } catch (_) {
       if (!mounted) return;
-      setState(() => _isLoadingDashboard = false);
+      setState(() => _loading = false);
     }
   }
 
-  Future<void> _importSpreadsheet() async {
-    setState(() => _isImporting = true);
-
-    try {
-      final result = await _importService.chooseAndReadWorkbook();
-      if (!mounted || result == null) return;
-
-      final shouldImport = await _showImportPreview(result);
-      if (!mounted || shouldImport != true) return;
-
-      await _databaseHelper.createDatabaseBackup(
-        reason: 'before_spreadsheet_import',
-      );
-      final savedCount = await _databaseHelper.replaceImportedCoins(
-        result.coins,
-      );
-      final savedStorageCount = await _databaseHelper.replaceStorageLocations(
-        result.storageLocations
-            .map(
-              (location) => <String, Object?>{
-                'brand': location.brand,
-                'color': location.color,
-                'number': location.number,
-                'title': location.title,
-                'year': location.year,
-                'notes': location.notes,
-              },
-            )
-            .toList(),
-      );
-      await _loadDashboard();
-
-      if (!mounted) return;
-      await showDialog<void>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Collection Imported'),
-          content: Text(
-            'Saved $savedCount collection entries.\n'
-            'Storage locations: $savedStorageCount\n\n'
-            'Owned: ${result.ownedCount}\n'
-            'Needed: ${result.neededCount}\n'
-            'Untracked: ${result.untrackedCount}',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Close'),
-            ),
-            FilledButton(
-              onPressed: () {
-                Navigator.pop(dialogContext);
-                _openCoins();
-              },
-              child: const Text('View Coins'),
-            ),
-          ],
-        ),
-      );
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not import spreadsheet: $error')),
-      );
-    } finally {
-      if (mounted) setState(() => _isImporting = false);
-    }
-  }
-
-  Future<bool?> _showImportPreview(CoinImportResult result) {
-    return showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Import Preview'),
-        content: SizedBox(
-          width: 650,
-          height: 520,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(result.fileName),
-              const SizedBox(height: 8),
-              Text(
-                '${result.trackedCount} collection entries across '
-                '${result.categories.length} categories\n'
-                '${result.storageLocations.length} storage locations found',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              const SizedBox(height: 12),
-              const Divider(),
-              Expanded(
-                child: ListView.separated(
-                  itemCount: result.categories.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (context, index) {
-                    final category = result.categories[index];
-                    return ListTile(
-                      dense: true,
-                      title: Text(category.category),
-                      subtitle: Text(
-                        'Owned ${category.owned}  •  '
-                        'Need ${category.needed}  •  '
-                        'Untracked ${category.untracked}',
-                      ),
-                      trailing: Text('${category.total}'),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton.icon(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            icon: const Icon(Icons.download_done),
-            label: const Text('Import All'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _openCoins({String? status, String? category}) async {
+  Future<void> _openCustomCollection(CustomCollection collection) async {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => CoinsScreen(
-          initialStatus: status,
-          initialCategory: category,
+        builder: (context) => CustomCollectionScreen(
+          collection: collection,
         ),
       ),
     );
-    await _loadDashboard();
+
+    await _load();
+  }
+
+  IconData _iconForKey(String key) {
+    switch (key) {
+      case 'collections':
+        return Icons.collections_bookmark_outlined;
+      case 'sports':
+        return Icons.sports_baseball_outlined;
+      case 'military':
+        return Icons.military_tech_outlined;
+      case 'jewelry':
+        return Icons.diamond_outlined;
+      case 'book':
+        return Icons.menu_book_outlined;
+      case 'tools':
+        return Icons.handyman_outlined;
+      case 'art':
+        return Icons.palette_outlined;
+      case 'star':
+        return Icons.star_outline;
+      case 'archive':
+        return Icons.archive_outlined;
+      default:
+        return Icons.inventory_2_outlined;
+    }
   }
 
   @override
@@ -196,44 +90,40 @@ class _HomeScreenState extends State<HomeScreen> {
     return CustomScrollView(
       slivers: [
         SliverPadding(
-          padding: const EdgeInsets.fromLTRB(28, 24, 28, 10),
+          padding: const EdgeInsets.fromLTRB(28, 24, 28, 12),
           sliver: SliverToBoxAdapter(
             child: _buildHero(),
           ),
         ),
         SliverPadding(
-          padding: const EdgeInsets.fromLTRB(28, 14, 28, 32),
+          padding: const EdgeInsets.fromLTRB(28, 12, 28, 32),
           sliver: SliverToBoxAdapter(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (_isLoadingDashboard)
-                  const Center(child: CircularProgressIndicator())
-                else ...[
-                  _buildSummaryCards(),
-                  const SizedBox(height: 24),
-                  _buildQuickActions(),
-                  const SizedBox(height: 28),
-                  _buildCategoryProgress(),
-                ],
-                const SizedBox(height: 28),
-                FilledButton.icon(
-                  onPressed: _isImporting ? null : _importSpreadsheet,
-                  icon: _isImporting
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.upload_file),
-                  label: Text(
-                    _isImporting
-                        ? 'Reading Collection...'
-                        : 'Import Coin Spreadsheet',
-                  ),
+                _sectionTitle(
+                  'Your Heritage',
+                  'Start with the people and photographs at the heart of the vault.',
                 ),
-                const SizedBox(height: 16),
-                _buildOtherCollections(),
+                const SizedBox(height: 14),
+                _buildHeritageCards(),
+                const SizedBox(height: 32),
+                _sectionTitle(
+                  'Collections',
+                  'Browse the objects, records, and keepsakes you are preserving.',
+                ),
+                const SizedBox(height: 14),
+                if (_loading)
+                  const Center(child: CircularProgressIndicator())
+                else
+                  _buildCollections(),
+                const SizedBox(height: 32),
+                _sectionTitle(
+                  'Quick Start',
+                  'Common places to continue working in Heritage Vault.',
+                ),
+                const SizedBox(height: 14),
+                _buildQuickStart(),
               ],
             ),
           ),
@@ -243,247 +133,254 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildHero() {
-    final colors = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.all(28),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(24),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [colors.primary, colors.tertiary],
-        ),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Heritage Vault',
-                  style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-                        color: colors.onPrimary,
-                        fontWeight: FontWeight.w800,
-                      ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'A living museum for your family collections and history.',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: colors.onPrimary.withValues(alpha: 0.9),
-                      ),
-                ),
-                const SizedBox(height: 20),
-                FilledButton.tonalIcon(
-                  onPressed: widget.onOpenCollections,
-                  icon: const Icon(Icons.collections_bookmark_outlined),
-                  label: const Text('Explore Collections'),
-                ),
-              ],
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(24),
+      child: AspectRatio(
+        aspectRatio: 16 / 6,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Image.asset(
+              'assets/images/family_heritage_banner.png',
+              fit: BoxFit.cover,
+              alignment: Alignment.center,
+              errorBuilder: (context, error, stackTrace) {
+                return Container(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  alignment: Alignment.center,
+                  child: const Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.image_not_supported_outlined, size: 48),
+                      SizedBox(height: 10),
+                      Text('Home banner image not found'),
+                    ],
+                  ),
+                );
+              },
             ),
-          ),
-          const SizedBox(width: 24),
-          Icon(
-            Icons.account_balance_outlined,
-            size: 88,
-            color: colors.onPrimary.withValues(alpha: 0.86),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildSummaryCards() {
-    final percent = (_summary.completionRate * 100).toStringAsFixed(1);
-    final cards = [
-      ('Cataloged', _summary.total, Icons.inventory_2_outlined, null),
-      ('Owned', _summary.owned, Icons.check_circle_outline, 'Owned'),
-      ('Needed', _summary.needed, Icons.star_outline, 'Need'),
-      ('Untracked', _summary.untracked, Icons.radio_button_unchecked, 'Untracked'),
-      ('Categories', _summary.categories, Icons.category_outlined, null),
-    ];
-
+  Widget _sectionTitle(String title, String subtitle) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Wrap(
-          spacing: 14,
-          runSpacing: 14,
-          children: cards.map((item) {
-            return SizedBox(
-              width: 180,
-              child: Card(
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(12),
-                  onTap: item.$4 == null
-                      ? null
-                      : () => _openCoins(status: item.$4),
-                  child: Padding(
-                    padding: const EdgeInsets.all(18),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Icon(item.$3, size: 30),
-                        const SizedBox(height: 12),
-                        Text(
-                          '${item.$2}',
-                          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                                fontWeight: FontWeight.bold,
-                              ),
-                        ),
-                        Text(item.$1),
-                      ],
+        Text(
+          title,
+          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.w800,
+              ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          subtitle,
+          style: Theme.of(context).textTheme.bodyLarge,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHeritageCards() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Keep Photos, Coin Series, and Family Tree on one row.
+        final width = (constraints.maxWidth - 32) / 3;
+
+        return Wrap(
+          spacing: 16,
+          runSpacing: 16,
+          children: [
+            _largeFeatureCard(
+              width: width,
+              icon: Icons.photo_library_outlined,
+              title: 'Photos',
+              subtitle:
+                  'Browse your family photo archive, people, metadata, and face recognition.',
+              note: 'Open Photos from the left sidebar',
+            ),
+            _largeFeatureCard(
+              width: width,
+              icon: Icons.monetization_on_outlined,
+              title: 'Coin Series',
+              subtitle:
+                  'Explore your coin series, collection checklists, and collecting progress.',
+              note: 'Open Coin Series from All Collections',
+              onTap: widget.onOpenCollections,
+            ),
+            _largeFeatureCard(
+              width: width,
+              icon: Icons.account_tree_outlined,
+              title: 'Family Tree',
+              subtitle:
+                  'Connect generations and build the family relationships behind your archive.',
+              note: 'Family Tree workspace',
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _largeFeatureCard({
+    required double width,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required String note,
+    VoidCallback? onTap,
+  }) {
+    return SizedBox(
+      width: width,
+      child: Card(
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(22),
+            child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Icon(icon, size: 34),
+              ),
+              const SizedBox(width: 18),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
                     ),
-                  ),
+                    const SizedBox(height: 7),
+                    Text(subtitle),
+                    const SizedBox(height: 12),
+                    Text(
+                      note,
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                    ),
+                  ],
                 ),
               ),
-            );
-          }).toList(),
+            ],
+          ),
+          ),
         ),
-        const SizedBox(height: 18),
-        Card(
+      ),
+    );
+  }
+
+  Widget _buildCollections() {
+    final builtIn = <({String name, IconData icon})>[
+      (name: 'Coins', icon: Icons.monetization_on_outlined),
+      (name: 'Antiques', icon: Icons.inventory_2_outlined),
+      (name: 'Postcards', icon: Icons.markunread_mailbox_outlined),
+      (name: 'Valuables', icon: Icons.diamond_outlined),
+      (name: 'Documents', icon: Icons.description_outlined),
+      (name: 'Stories', icon: Icons.menu_book_outlined),
+    ];
+
+    return Wrap(
+      spacing: 14,
+      runSpacing: 14,
+      children: [
+        for (final item in builtIn)
+          _collectionTile(
+            name: item.name,
+            icon: item.icon,
+            onTap: widget.onOpenCollections,
+          ),
+        for (final collection in _customCollections)
+          _collectionTile(
+            name: collection.name,
+            icon: _iconForKey(collection.iconKey),
+            onTap: () => _openCustomCollection(collection),
+          ),
+      ],
+    );
+  }
+
+  Widget _collectionTile({
+    required String name,
+    required IconData icon,
+    required VoidCallback? onTap,
+  }) {
+    return SizedBox(
+      width: 205,
+      child: Card(
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: onTap,
           child: Padding(
             padding: const EdgeInsets.all(18),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    const Icon(Icons.insights_outlined),
-                    const SizedBox(width: 10),
-                    Text(
-                      'Tracked collection completion: $percent%',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                  ],
+                Icon(icon, size: 32),
+                const SizedBox(height: 16),
+                Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
                 ),
-                const SizedBox(height: 12),
-                LinearProgressIndicator(value: _summary.completionRate),
-                const SizedBox(height: 8),
-                const Text('Completion is based on entries marked Owned or Need.'),
               ],
             ),
           ),
         ),
-      ],
+      ),
     );
   }
 
-  Widget _buildQuickActions() {
+  Widget _buildQuickStart() {
     return Wrap(
       spacing: 12,
       runSpacing: 12,
       children: [
-        FilledButton.icon(
-          onPressed: () => _openCoins(status: 'Need'),
-          icon: const Icon(Icons.star_outline),
-          label: const Text('View Needed Coins'),
+        OutlinedButton.icon(
+          onPressed: widget.onOpenCollections,
+          icon: const Icon(Icons.inventory_2_outlined),
+          label: const Text('All Collections'),
         ),
         OutlinedButton.icon(
-          onPressed: _openCoins,
-          icon: const Icon(Icons.monetization_on_outlined),
-          label: const Text('Browse All Coins'),
-        ),
-        OutlinedButton.icon(
-          onPressed: () => _openCoins(status: 'Untracked'),
-          icon: const Icon(Icons.rule_folder_outlined),
-          label: const Text('Review Untracked'),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildCategoryProgress() {
-    if (_categoryProgress.isEmpty) {
-      return const Card(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text('Import your spreadsheet to see category progress.'),
-        ),
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Collection explorer',
-          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.bold,
+          onPressed: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Open Photos from the left sidebar.'),
               ),
-        ),
-        const SizedBox(height: 6),
-        const Text(
-          'Choose a coin category to view its checklist and collection progress.',
-        ),
-        const SizedBox(height: 16),
-        GridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: _categoryProgress.length,
-          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-            maxCrossAxisExtent: 420,
-            mainAxisSpacing: 16,
-            crossAxisSpacing: 16,
-            childAspectRatio: 1.65,
-          ),
-          itemBuilder: (context, index) {
-            final category = _categoryProgress[index];
-
-            return CollectionCard(
-              title: category.category,
-              owned: category.owned,
-              needed: category.needed,
-              untracked: category.untracked,
-              icon: Icons.monetization_on_outlined,
-              onTap: () => _openCoins(category: category.category),
             );
           },
+          icon: const Icon(Icons.photo_library_outlined),
+          label: const Text('Photos'),
         ),
-      ],
-    );
-  }
-
-  Widget _buildOtherCollections() {
-    final items = [
-      ('Photos', Icons.photo_library_outlined),
-      ('Documents', Icons.description_outlined),
-      ('Family Tree', Icons.account_tree_outlined),
-      ('Antiques', Icons.chair_outlined),
-      ('Stories', Icons.menu_book_outlined),
-    ];
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Future collections',
-          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
-        ),
-        const SizedBox(height: 12),
-        Wrap(
-          spacing: 12,
-          runSpacing: 12,
-          children: items.map((item) {
-            return SizedBox(
-              width: 190,
-              child: Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Row(
-                    children: [
-                      Icon(item.$2),
-                      const SizedBox(width: 10),
-                      Expanded(child: Text(item.$1)),
-                    ],
-                  ),
-                ),
+        OutlinedButton.icon(
+          onPressed: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Open Family Tree from the left sidebar.'),
               ),
             );
-          }).toList(),
+          },
+          icon: const Icon(Icons.account_tree_outlined),
+          label: const Text('Family Tree'),
         ),
       ],
     );

@@ -7,76 +7,80 @@ import '../models/detected_face_record.dart';
 import '../models/photo_catalog_metadata.dart';
 import '../services/face_recognition_service.dart';
 
-class FaceReviewScreen extends StatefulWidget {
-  final List<DetectedFaceRecord> faces;
-
-  const FaceReviewScreen({
-    super.key,
-    required this.faces,
-  });
+class UnidentifiedFacesScreen extends StatefulWidget {
+  const UnidentifiedFacesScreen({super.key});
 
   @override
-  State<FaceReviewScreen> createState() => _FaceReviewScreenState();
+  State<UnidentifiedFacesScreen> createState() =>
+      _UnidentifiedFacesScreenState();
 }
 
-class _KnownMatch {
+class _KnownSuggestion {
   final String personName;
   final double similarity;
 
-  const _KnownMatch({
+  const _KnownSuggestion({
     required this.personName,
     required this.similarity,
   });
 }
 
-class _FaceReviewScreenState extends State<FaceReviewScreen> {
+class _UnidentifiedFacesScreenState
+    extends State<UnidentifiedFacesScreen> {
   final DatabaseHelper _databaseHelper = DatabaseHelper.instance;
 
-  late List<List<DetectedFaceRecord>> _groups;
+  bool _loading = true;
+  bool _saving = false;
+  String? _error;
+
+  List<List<DetectedFaceRecord>> _groups = const [];
   List<DetectedFaceRecord> _knownFaces = const [];
   int _groupIndex = 0;
-  bool _saving = false;
-  bool _loadingKnown = true;
 
   @override
   void initState() {
     super.initState();
-    _groups = FaceRecognitionService.groupSimilarFaces(
-      widget.faces.where((face) => !face.confirmed).toList(),
-    );
-    _loadKnownFaces();
+    _load();
   }
 
-  Future<void> _loadKnownFaces() async {
-    final faces = await _databaseHelper.getConfirmedFaces();
-    if (!mounted) return;
+  Future<void> _load() async {
+    try {
+      final results = await Future.wait([
+        _databaseHelper.getUnconfirmedFaces(),
+        _databaseHelper.getConfirmedFaces(),
+      ]);
 
-    setState(() {
-      _knownFaces = faces;
-      _loadingKnown = false;
-    });
-  }
+      final unidentified = results[0];
+      final known = results[1];
 
-  List<String> get _knownNames {
-    final names = _knownFaces
-        .map((face) => face.personName.trim())
-        .where((name) => name.isNotEmpty)
-        .toSet()
-        .toList()
-      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      final groups = FaceRecognitionService.groupSimilarFaces(
+        unidentified,
+      );
 
-    return names;
+      if (!mounted) return;
+
+      setState(() {
+        _groups = groups;
+        _knownFaces = known;
+        _groupIndex = 0;
+        _loading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = error.toString();
+        _loading = false;
+      });
+    }
   }
 
   List<DetectedFaceRecord> get _currentGroup =>
       _groups.isEmpty ? const [] : _groups[_groupIndex];
 
-  _KnownMatch? get _currentSuggestion {
-    if (_loadingKnown || _knownFaces.isEmpty || _currentGroup.isEmpty) {
-      return null;
-    }
+  _KnownSuggestion? get _suggestion {
+    if (_currentGroup.isEmpty || _knownFaces.isEmpty) return null;
 
-    final scoresByPerson = <String, double>{};
+    final bestByPerson = <String, double>{};
 
     for (final candidate in _currentGroup) {
       for (final known in _knownFaces) {
@@ -87,38 +91,36 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
           known.embedding,
         );
 
-        final previous = scoresByPerson[known.personName] ?? -1;
+        final previous = bestByPerson[known.personName] ?? -1;
         if (similarity > previous) {
-          scoresByPerson[known.personName] = similarity;
+          bestByPerson[known.personName] = similarity;
         }
       }
     }
 
-    if (scoresByPerson.isEmpty) return null;
+    if (bestByPerson.isEmpty) return null;
 
-    final best = scoresByPerson.entries.reduce(
+    final best = bestByPerson.entries.reduce(
       (a, b) => a.value >= b.value ? a : b,
     );
 
-    // Conservative threshold for an automatic suggestion. User confirmation
-    // is still required.
     if (best.value < 0.65) return null;
 
-    return _KnownMatch(
+    return _KnownSuggestion(
       personName: best.key,
       similarity: best.value,
     );
   }
 
-  Future<void> _confirmCurrentGroup(String personName) async {
-    if (_currentGroup.isEmpty || personName.trim().isEmpty) return;
+  Future<void> _confirmGroup(String personName) async {
+    final cleanName = personName.trim();
+    if (cleanName.isEmpty || _currentGroup.isEmpty) return;
 
     setState(() => _saving = true);
 
     try {
       final group = [..._currentGroup];
       final ids = group.map((face) => face.id).whereType<int>().toList();
-      final cleanName = personName.trim();
 
       await _databaseHelper.confirmFaceGroup(
         faceIds: ids,
@@ -143,8 +145,6 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
         );
       }
 
-      // Newly confirmed examples immediately become part of the known-person
-      // reference library for later groups in this same review session.
       final newKnown = group
           .map(
             (face) => DetectedFaceRecord(
@@ -178,53 +178,57 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
     }
   }
 
-  Future<void> _nameCurrentGroup() async {
-    if (_currentGroup.isEmpty) return;
-
-    final suggestion = _currentSuggestion;
-    String enteredName = suggestion?.personName ?? '';
+  Future<void> _nameGroup() async {
+    final suggestion = _suggestion;
+    final controller = TextEditingController(
+      text: suggestion?.personName ?? '',
+    );
 
     final name = await showDialog<String>(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Name this person'),
-          content: SizedBox(
-            width: 420,
-            child: _KnownPersonAutocomplete(
-              knownNames: _knownNames,
-              initialValue: enteredName,
-              onSubmitted: (value) {
-                enteredName = value.trim();
-                setDialogState(() {});
-              },
-            ),
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Identify this person'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Person name',
+            hintText: 'Fred Hoffman',
+            border: OutlineInputBorder(),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: enteredName.trim().isEmpty
-                  ? null
-                  : () => Navigator.pop(
-                        dialogContext,
-                        enteredName.trim(),
-                      ),
-              child: const Text('Confirm Group'),
-            ),
-          ],
+          onSubmitted: (value) {
+            final clean = value.trim();
+            if (clean.isNotEmpty) {
+              Navigator.pop(dialogContext, clean);
+            }
+          },
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final clean = controller.text.trim();
+              if (clean.isNotEmpty) {
+                Navigator.pop(dialogContext, clean);
+              }
+            },
+            child: const Text('Confirm'),
+          ),
+        ],
       ),
     );
 
+    controller.dispose();
+
     if (name != null) {
-      await _confirmCurrentGroup(name);
+      await _confirmGroup(name);
     }
   }
 
-  void _removeFace(DetectedFaceRecord face) {
+  void _removeFromGroup(DetectedFaceRecord face) {
     if (_currentGroup.length <= 1) return;
 
     setState(() {
@@ -236,19 +240,52 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
     });
   }
 
+  void _skipGroup() {
+    if (_groups.length <= 1) return;
+
+    setState(() {
+      if (_groupIndex < _groups.length - 1) {
+        _groupIndex++;
+      } else {
+        _groupIndex = 0;
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (_loading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_error != null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Unidentified Faces')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: SelectableText(
+              'Could not load unidentified faces.\n\n$_error',
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
+      );
+    }
+
     if (_groups.isEmpty) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Face Review')),
+        appBar: AppBar(title: const Text('Unidentified Faces')),
         body: const Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.check_circle_outline, size: 72),
+              Icon(Icons.task_alt, size: 72),
               SizedBox(height: 16),
               Text(
-                'No face groups left to review.',
+                'No unidentified faces remain.',
                 style: TextStyle(
                   fontSize: 22,
                   fontWeight: FontWeight.w800,
@@ -261,13 +298,24 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
     }
 
     final group = _currentGroup;
-    final suggestion = _currentSuggestion;
+    final suggestion = _suggestion;
+    final totalFaces =
+        _groups.fold<int>(0, (total, item) => total + item.length);
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          'Face Review • Group ${_groupIndex + 1} of ${_groups.length}',
-        ),
+        title: const Text('Unidentified Faces'),
+        actions: [
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.only(right: 16),
+              child: Text(
+                '$totalFaces faces • ${_groups.length} groups',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -279,20 +327,28 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
                 children: [
                   Row(
                     children: [
-                      const Icon(Icons.groups_2_outlined),
+                      const Icon(Icons.person_search_outlined),
                       const SizedBox(width: 10),
                       Expanded(
                         child: Text(
-                          '${group.length} face${group.length == 1 ? '' : 's'} '
-                          'look similar. Remove incorrect matches before '
-                          'confirming the person.',
+                          'Review Queue • Group ${_groupIndex + 1} of '
+                          '${_groups.length} • ${group.length} similar '
+                          'face${group.length == 1 ? '' : 's'}',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                          ),
                         ),
                       ),
-                      const SizedBox(width: 12),
+                      OutlinedButton.icon(
+                        onPressed: _skipGroup,
+                        icon: const Icon(Icons.skip_next),
+                        label: const Text('Skip for Now'),
+                      ),
+                      const SizedBox(width: 8),
                       FilledButton.icon(
-                        onPressed: _saving ? null : _nameCurrentGroup,
-                        icon: const Icon(Icons.person_add_alt_1),
-                        label: const Text('Name Person'),
+                        onPressed: _saving ? null : _nameGroup,
+                        icon: const Icon(Icons.badge_outlined),
+                        label: const Text('Identify'),
                       ),
                     ],
                   ),
@@ -308,26 +364,17 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
                           ),
                         ),
                         subtitle: Text(
-                          '${(suggestion.similarity * 100).toStringAsFixed(1)}% similarity '
-                          'to a confirmed face. Heritage Vault will not assign '
-                          'the name until you confirm it.',
+                          '${(suggestion.similarity * 100).toStringAsFixed(1)}% '
+                          'similarity to a confirmed Known Person.',
                         ),
                         trailing: FilledButton(
                           onPressed: _saving
                               ? null
-                              : () => _confirmCurrentGroup(
+                              : () => _confirmGroup(
                                     suggestion.personName,
                                   ),
                           child: const Text('Confirm'),
                         ),
-                      ),
-                    ),
-                  ] else if (!_loadingKnown && _knownFaces.isNotEmpty) ...[
-                    const SizedBox(height: 10),
-                    const Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        'No confident match to a known person.',
                       ),
                     ),
                   ],
@@ -341,10 +388,10 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
               itemCount: group.length,
               gridDelegate:
                   const SliverGridDelegateWithMaxCrossAxisExtent(
-                maxCrossAxisExtent: 220,
+                maxCrossAxisExtent: 230,
                 mainAxisSpacing: 14,
                 crossAxisSpacing: 14,
-                childAspectRatio: 0.85,
+                childAspectRatio: 0.82,
               ),
               itemBuilder: (context, index) {
                 final face = group[index];
@@ -385,8 +432,8 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
                             ),
                             if (group.length > 1)
                               IconButton(
-                                tooltip: 'Not this person',
-                                onPressed: () => _removeFace(face),
+                                tooltip: 'Not the same person',
+                                onPressed: () => _removeFromGroup(face),
                                 icon: const Icon(
                                   Icons.person_remove_outlined,
                                 ),
@@ -418,9 +465,7 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
                     padding: const EdgeInsets.symmetric(horizontal: 18),
                     child: Text(
                       '${_groupIndex + 1} of ${_groups.length}',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w800,
-                      ),
+                      style: const TextStyle(fontWeight: FontWeight.w800),
                     ),
                   ),
                   IconButton.filledTonal(
@@ -439,65 +484,3 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
     );
   }
 }
-
-class _KnownPersonAutocomplete extends StatelessWidget {
-  final List<String> knownNames;
-  final String initialValue;
-  final ValueChanged<String> onSubmitted;
-
-  const _KnownPersonAutocomplete({
-    required this.knownNames,
-    required this.initialValue,
-    required this.onSubmitted,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Autocomplete<String>(
-      initialValue: TextEditingValue(text: initialValue),
-      optionsBuilder: (textEditingValue) {
-        final query = textEditingValue.text.trim().toLowerCase();
-        if (query.isEmpty) {
-          return const Iterable<String>.empty();
-        }
-
-        final startsWith = knownNames.where(
-          (name) => name.toLowerCase().startsWith(query),
-        );
-
-        final contains = knownNames.where(
-          (name) =>
-              !name.toLowerCase().startsWith(query) &&
-              name.toLowerCase().contains(query),
-        );
-
-        return [...startsWith, ...contains].take(8);
-      },
-      onSelected: onSubmitted,
-      fieldViewBuilder: (
-        context,
-        controller,
-        focusNode,
-        onFieldSubmitted,
-      ) {
-        return TextField(
-          controller: controller,
-          focusNode: focusNode,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Person name',
-            hintText: 'Start typing a known name...',
-            border: OutlineInputBorder(),
-          ),
-          onSubmitted: (value) {
-            final clean = value.trim();
-            if (clean.isNotEmpty) {
-              onSubmitted(clean);
-            }
-          },
-        );
-      },
-    );
-  }
-}
-

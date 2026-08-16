@@ -97,6 +97,84 @@ class FaceRecognitionService {
     return results;
   }
 
+  Future<void> scanPhotosIncrementally(
+    List<VaultPhoto> photos, {
+    required Future<void> Function(
+      VaultPhoto photo,
+      List<DetectedFaceRecord> faces,
+      FaceScanProgress progress,
+    ) onPhotoComplete,
+    bool Function()? shouldCancel,
+  }) async {
+    final detector = await FaceDetector.create();
+
+    try {
+      for (var photoIndex = 0; photoIndex < photos.length; photoIndex++) {
+        if (shouldCancel?.call() == true) break;
+
+        final photo = photos[photoIndex];
+        final foundFaces = <DetectedFaceRecord>[];
+
+        try {
+          final file = File(photo.filePath);
+
+          if (await file.exists()) {
+            final bytes = await file.readAsBytes();
+            final faces = await detector.detectFacesFromBytes(
+              bytes,
+              mode: FaceDetectionMode.full,
+            );
+
+            for (var faceIndex = 0; faceIndex < faces.length; faceIndex++) {
+              final face = faces[faceIndex];
+              final embedding =
+                  await detector.getFaceEmbedding(face, bytes);
+              final box = face.boundingBox;
+
+              final thumbnailPath = await _writeFaceThumbnail(
+                photo: photo,
+                imageBytes: bytes,
+                faceIndex: faceIndex,
+                left: box.topLeft.x.toDouble(),
+                top: box.topLeft.y.toDouble(),
+                width: box.width.toDouble(),
+                height: box.height.toDouble(),
+              );
+
+              foundFaces.add(
+                DetectedFaceRecord(
+                  photoFilePath: photo.filePath,
+                  faceIndex: faceIndex,
+                  left: box.topLeft.x.toDouble(),
+                  top: box.topLeft.y.toDouble(),
+                  width: box.width.toDouble(),
+                  height: box.height.toDouble(),
+                  detectionScore: face.score,
+                  embedding:
+                      embedding.map((value) => value.toDouble()).toList(),
+                  thumbnailPath: thumbnailPath,
+                ),
+              );
+            }
+          }
+        } catch (_) {
+          // One bad photo should not stop the full-library scan.
+        }
+
+        final progress = FaceScanProgress(
+          currentPhoto: photoIndex + 1,
+          totalPhotos: photos.length,
+          fileName: photo.fileName,
+          facesFound: foundFaces.length,
+        );
+
+        await onPhotoComplete(photo, foundFaces, progress);
+      }
+    } finally {
+      await detector.dispose();
+    }
+  }
+
   Future<String> _writeFaceThumbnail({
     required VaultPhoto photo,
     required Uint8List imageBytes,

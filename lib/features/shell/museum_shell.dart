@@ -8,6 +8,7 @@ import '../../screens/postcards_screen.dart';
 import '../../screens/valuables_screen.dart';
 import '../../screens/antiques_screen.dart';
 import '../../screens/photos_screen.dart';
+import '../../widgets/custom_collections_sidebar.dart';
 
 class MuseumShell extends StatefulWidget {
   const MuseumShell({super.key});
@@ -33,6 +34,7 @@ enum _VaultPage {
 
 class _MuseumShellState extends State<MuseumShell> {
   _VaultPage _selectedPage = _VaultPage.home;
+  bool _allCollectionsExpanded = true;
   bool _coinsExpanded = true;
 
   void _select(_VaultPage page) {
@@ -96,7 +98,11 @@ class _MuseumShellState extends State<MuseumShell> {
               width: 250,
               child: _VaultSidebar(
                 selectedPage: _selectedPage,
+                allCollectionsExpanded: _allCollectionsExpanded,
                 coinsExpanded: _coinsExpanded,
+                onAllCollectionsExpandedChanged: (value) {
+                  setState(() => _allCollectionsExpanded = value);
+                },
                 onCoinsExpandedChanged: (value) {
                   setState(() => _coinsExpanded = value);
                 },
@@ -122,13 +128,17 @@ class _MuseumShellState extends State<MuseumShell> {
 
 class _VaultSidebar extends StatelessWidget {
   final _VaultPage selectedPage;
+  final bool allCollectionsExpanded;
   final bool coinsExpanded;
+  final ValueChanged<bool> onAllCollectionsExpandedChanged;
   final ValueChanged<bool> onCoinsExpandedChanged;
   final ValueChanged<_VaultPage> onSelect;
 
   const _VaultSidebar({
     required this.selectedPage,
+    required this.allCollectionsExpanded,
     required this.coinsExpanded,
+    required this.onAllCollectionsExpandedChanged,
     required this.onCoinsExpandedChanged,
     required this.onSelect,
   });
@@ -137,6 +147,12 @@ class _VaultSidebar extends StatelessWidget {
       selectedPage == _VaultPage.coinSeries ||
       selectedPage == _VaultPage.collection ||
       selectedPage == _VaultPage.needList;
+
+  bool get _builtInCollectionPage =>
+      _coinPage ||
+      selectedPage == _VaultPage.postcards ||
+      selectedPage == _VaultPage.valuables ||
+      selectedPage == _VaultPage.antiques;
 
   @override
   Widget build(BuildContext context) {
@@ -179,7 +195,10 @@ class _VaultSidebar extends StatelessWidget {
           const Divider(height: 1, color: Color(0xFF21405A)),
           Expanded(
             child: ListView(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: 12,
+              ),
               children: [
                 _SidebarItem(
                   icon: Icons.home_outlined,
@@ -190,86 +209,11 @@ class _VaultSidebar extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 _SidebarItem(
-                  icon: Icons.monetization_on_outlined,
-                  selectedIcon: Icons.monetization_on,
-                  label: 'Coins',
-                  selected: _coinPage,
-                  trailing: Icon(
-                    coinsExpanded
-                        ? Icons.keyboard_arrow_up
-                        : Icons.keyboard_arrow_down,
-                  ),
-                  onTap: () => onCoinsExpandedChanged(!coinsExpanded),
-                ),
-                AnimatedCrossFade(
-                  duration: const Duration(milliseconds: 160),
-                  crossFadeState: coinsExpanded
-                      ? CrossFadeState.showFirst
-                      : CrossFadeState.showSecond,
-                  firstChild: Padding(
-                    padding: const EdgeInsets.only(left: 18),
-                    child: Column(
-                      children: [
-                        _SidebarItem(
-                          icon: Icons.grid_view_outlined,
-                          selectedIcon: Icons.grid_view_rounded,
-                          label: 'Coin Series',
-                          selected: selectedPage == _VaultPage.coinSeries,
-                          onTap: () => onSelect(_VaultPage.coinSeries),
-                          compact: true,
-                        ),
-                        _SidebarItem(
-                          icon: Icons.folder_outlined,
-                          selectedIcon: Icons.folder,
-                          label: 'Collection',
-                          selected: selectedPage == _VaultPage.collection,
-                          onTap: () => onSelect(_VaultPage.collection),
-                          compact: true,
-                        ),
-                        _SidebarItem(
-                          icon: Icons.checklist_outlined,
-                          selectedIcon: Icons.checklist_rounded,
-                          label: 'Need List',
-                          selected: selectedPage == _VaultPage.needList,
-                          onTap: () => onSelect(_VaultPage.needList),
-                          compact: true,
-                        ),
-                      ],
-                    ),
-                  ),
-                  secondChild: const SizedBox.shrink(),
-                ),
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 8),
-                  child: Divider(color: Color(0xFF21405A)),
-                ),
-                _SidebarItem(
-                  icon: Icons.markunread_mailbox_outlined,
-                  selectedIcon: Icons.markunread_mailbox,
-                  label: 'Postcards',
-                  selected: selectedPage == _VaultPage.postcards,
-                  onTap: () => onSelect(_VaultPage.postcards),
-                ),
-                _SidebarItem(
-                  icon: Icons.diamond_outlined,
-                  selectedIcon: Icons.diamond,
-                  label: 'Valuables',
-                  selected: selectedPage == _VaultPage.valuables,
-                  onTap: () => onSelect(_VaultPage.valuables),
-                ),
-                _SidebarItem(
                   icon: Icons.photo_library_outlined,
                   selectedIcon: Icons.photo_library,
                   label: 'Photos',
                   selected: selectedPage == _VaultPage.photos,
                   onTap: () => onSelect(_VaultPage.photos),
-                ),
-                _SidebarItem(
-                  icon: Icons.description_outlined,
-                  selectedIcon: Icons.description,
-                  label: 'Documents',
-                  selected: selectedPage == _VaultPage.documents,
-                  onTap: () => onSelect(_VaultPage.documents),
                 ),
                 _SidebarItem(
                   icon: Icons.account_tree_outlined,
@@ -278,12 +222,124 @@ class _VaultSidebar extends StatelessWidget {
                   selected: selectedPage == _VaultPage.familyTree,
                   onTap: () => onSelect(_VaultPage.familyTree),
                 ),
+                const SizedBox(height: 4),
                 _SidebarItem(
                   icon: Icons.inventory_2_outlined,
                   selectedIcon: Icons.inventory_2,
-                  label: 'Antiques',
-                  selected: selectedPage == _VaultPage.antiques,
-                  onTap: () => onSelect(_VaultPage.antiques),
+                  label: 'All Collections',
+                  selected: _builtInCollectionPage,
+                  trailing: Icon(
+                    allCollectionsExpanded
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
+                  ),
+                  onTap: () => onAllCollectionsExpandedChanged(
+                    !allCollectionsExpanded,
+                  ),
+                ),
+                AnimatedCrossFade(
+                  duration: const Duration(milliseconds: 160),
+                  crossFadeState: allCollectionsExpanded
+                      ? CrossFadeState.showFirst
+                      : CrossFadeState.showSecond,
+                  firstChild: Padding(
+                    padding: const EdgeInsets.only(left: 18),
+                    child: Column(
+                      children: [
+                        _SidebarItem(
+                          icon: Icons.monetization_on_outlined,
+                          selectedIcon: Icons.monetization_on,
+                          label: 'Coins',
+                          selected: _coinPage,
+                          trailing: Icon(
+                            coinsExpanded
+                                ? Icons.keyboard_arrow_up
+                                : Icons.keyboard_arrow_down,
+                          ),
+                          onTap: () =>
+                              onCoinsExpandedChanged(!coinsExpanded),
+                          compact: true,
+                        ),
+                        AnimatedCrossFade(
+                          duration: const Duration(milliseconds: 160),
+                          crossFadeState: coinsExpanded
+                              ? CrossFadeState.showFirst
+                              : CrossFadeState.showSecond,
+                          firstChild: Padding(
+                            padding: const EdgeInsets.only(left: 14),
+                            child: Column(
+                              children: [
+                                _SidebarItem(
+                                  icon: Icons.grid_view_outlined,
+                                  selectedIcon: Icons.grid_view_rounded,
+                                  label: 'Coin Series',
+                                  selected:
+                                      selectedPage == _VaultPage.coinSeries,
+                                  onTap: () =>
+                                      onSelect(_VaultPage.coinSeries),
+                                  compact: true,
+                                ),
+                                _SidebarItem(
+                                  icon: Icons.folder_outlined,
+                                  selectedIcon: Icons.folder,
+                                  label: 'Collection',
+                                  selected:
+                                      selectedPage == _VaultPage.collection,
+                                  onTap: () =>
+                                      onSelect(_VaultPage.collection),
+                                  compact: true,
+                                ),
+                                _SidebarItem(
+                                  icon: Icons.checklist_outlined,
+                                  selectedIcon: Icons.checklist_rounded,
+                                  label: 'Need List',
+                                  selected:
+                                      selectedPage == _VaultPage.needList,
+                                  onTap: () =>
+                                      onSelect(_VaultPage.needList),
+                                  compact: true,
+                                ),
+                              ],
+                            ),
+                          ),
+                          secondChild: const SizedBox.shrink(),
+                        ),
+                        _SidebarItem(
+                          icon: Icons.markunread_mailbox_outlined,
+                          selectedIcon: Icons.markunread_mailbox,
+                          label: 'Postcards',
+                          selected: selectedPage == _VaultPage.postcards,
+                          onTap: () => onSelect(_VaultPage.postcards),
+                          compact: true,
+                        ),
+                        _SidebarItem(
+                          icon: Icons.diamond_outlined,
+                          selectedIcon: Icons.diamond,
+                          label: 'Valuables',
+                          selected: selectedPage == _VaultPage.valuables,
+                          onTap: () => onSelect(_VaultPage.valuables),
+                          compact: true,
+                        ),
+                        _SidebarItem(
+                          icon: Icons.inventory_2_outlined,
+                          selectedIcon: Icons.inventory_2,
+                          label: 'Antiques',
+                          selected: selectedPage == _VaultPage.antiques,
+                          onTap: () => onSelect(_VaultPage.antiques),
+                          compact: true,
+                        ),
+                        const CustomCollectionsSidebar(),
+                      ],
+                    ),
+                  ),
+                  secondChild: const SizedBox.shrink(),
+                ),
+                _SidebarItem(
+                  icon: Icons.description_outlined,
+                  selectedIcon: Icons.description,
+                  label: 'Documents',
+                  selected: selectedPage == _VaultPage.documents,
+                  onTap: () => onSelect(_VaultPage.documents),
                 ),
                 _SidebarItem(
                   icon: Icons.menu_book_outlined,
@@ -296,6 +352,10 @@ class _VaultSidebar extends StatelessWidget {
             ),
           ),
           const Divider(height: 1, color: Color(0xFF21405A)),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
+            child: const AddCollectionSidebarButton(),
+          ),
           Padding(
             padding: const EdgeInsets.all(10),
             child: _SidebarItem(

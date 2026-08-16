@@ -11,6 +11,8 @@ import '../models/valuable.dart';
 import '../models/antique.dart';
 import '../models/vault_photo.dart';
 import '../models/photo_catalog_metadata.dart';
+import '../models/custom_collection.dart';
+import '../models/custom_collection_item.dart';
 import '../models/detected_face_record.dart';
 
 class DatabaseHelper {
@@ -47,7 +49,7 @@ class DatabaseHelper {
     return databaseFactory.openDatabase(
       _databasePath!,
       options: OpenDatabaseOptions(
-        version: 10,
+        version: 14,
         onCreate: (database, version) async {
           await _createManualCoinsTable(database);
           await _createImportedCoinsTable(database);
@@ -58,6 +60,10 @@ class DatabaseHelper {
           await _createPhotoLibraryTables(database);
           await _createPhotoCatalogMetadataTable(database);
           await _createPhotoFacesTable(database);
+          await _createPhotoFaceScanStateTable(database);
+          await _createPhotoMetadataImportStateTable(database);
+          await _createCustomCollectionsTable(database);
+          await _createCustomCollectionItemsTable(database);
         },
         onUpgrade: (database, oldVersion, newVersion) async {
           if (oldVersion < 2) {
@@ -92,6 +98,18 @@ class DatabaseHelper {
           }
           if (oldVersion < 10) {
             await _createPhotoFacesTable(database);
+          }
+          if (oldVersion < 11) {
+            await _createPhotoFaceScanStateTable(database);
+          }
+          if (oldVersion < 12) {
+            await _createPhotoMetadataImportStateTable(database);
+          }
+          if (oldVersion < 13) {
+            await _createCustomCollectionsTable(database);
+          }
+          if (oldVersion < 14) {
+            await _createCustomCollectionItemsTable(database);
           }
         },
       ),
@@ -779,6 +797,17 @@ class DatabaseHelper {
     return rows.map(DetectedFaceRecord.fromMap).toList();
   }
 
+  Future<int> getUnconfirmedFaceCount() async {
+    final database = await this.database;
+    final rows = await database.rawQuery('''
+      SELECT COUNT(*) AS total
+      FROM photo_faces
+      WHERE confirmed = 0
+    ''');
+
+    return _mapInt(rows.first['total']);
+  }
+
   Future<List<DetectedFaceRecord>> getUnconfirmedFaces() async {
     final database = await this.database;
     final rows = await database.query(
@@ -826,6 +855,230 @@ class DatabaseHelper {
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
     }
+  }
+
+
+  static Future<void> _createPhotoFaceScanStateTable(
+    Database database,
+  ) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS photo_face_scan_state (
+        file_path TEXT PRIMARY KEY,
+        modified_milliseconds INTEGER NOT NULL DEFAULT 0,
+        scanned_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        face_count INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+  }
+
+  Future<Map<String, int>> getPhotoFaceScanVersions() async {
+    final database = await this.database;
+    final rows = await database.query(
+      'photo_face_scan_state',
+      columns: ['file_path', 'modified_milliseconds'],
+    );
+
+    return {
+      for (final row in rows)
+        row['file_path'] as String? ?? '':
+            _mapInt(row['modified_milliseconds']),
+    };
+  }
+
+  Future<void> markPhotoFaceScanned({
+    required VaultPhoto photo,
+    required int faceCount,
+  }) async {
+    final database = await this.database;
+    await database.insert(
+      'photo_face_scan_state',
+      {
+        'file_path': photo.filePath,
+        'modified_milliseconds': photo.modifiedMilliseconds,
+        'scanned_at_milliseconds':
+            DateTime.now().millisecondsSinceEpoch,
+        'face_count': faceCount,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  static Future<void> _createPhotoMetadataImportStateTable(
+    Database database,
+  ) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS photo_metadata_import_state (
+        file_path TEXT PRIMARY KEY,
+        modified_milliseconds INTEGER NOT NULL DEFAULT 0,
+        imported_at_milliseconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+  }
+
+  Future<Map<String, int>> getPhotoMetadataImportVersions() async {
+    final database = await this.database;
+    final rows = await database.query(
+      'photo_metadata_import_state',
+      columns: ['file_path', 'modified_milliseconds'],
+    );
+
+    return {
+      for (final row in rows)
+        row['file_path'] as String? ?? '':
+            _mapInt(row['modified_milliseconds']),
+    };
+  }
+
+  Future<void> markPhotoMetadataImported(
+    VaultPhoto photo,
+  ) async {
+    final database = await this.database;
+    await database.insert(
+      'photo_metadata_import_state',
+      {
+        'file_path': photo.filePath,
+        'modified_milliseconds': photo.modifiedMilliseconds,
+        'imported_at_milliseconds':
+            DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  static Future<void> _createCustomCollectionsTable(
+    Database database,
+  ) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS custom_collections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        icon_key TEXT NOT NULL DEFAULT 'inventory',
+        enabled_fields_json TEXT NOT NULL DEFAULT '[]',
+        created_at_milliseconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    await database.execute('''
+      CREATE UNIQUE INDEX IF NOT EXISTS custom_collections_name_index
+      ON custom_collections(name COLLATE NOCASE)
+    ''');
+  }
+
+  Future<List<CustomCollection>> getCustomCollections() async {
+    final database = await this.database;
+    final rows = await database.query(
+      'custom_collections',
+      orderBy: 'name COLLATE NOCASE',
+    );
+    return rows.map(CustomCollection.fromMap).toList();
+  }
+
+  Future<int> insertCustomCollection(CustomCollection collection) async {
+    final database = await this.database;
+    final map = collection.toMap();
+    map.remove('id');
+    return database.insert('custom_collections', map,
+        conflictAlgorithm: ConflictAlgorithm.abort);
+  }
+
+  Future<int> updateCustomCollection(CustomCollection collection) async {
+    final id = collection.id;
+    if (id == null) throw ArgumentError('A collection ID is required.');
+    final database = await this.database;
+    final map = collection.toMap();
+    map.remove('id');
+    return database.update('custom_collections', map,
+        where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<int> deleteCustomCollection(int id) async {
+    final database = await this.database;
+    return database.delete('custom_collections',
+        where: 'id = ?', whereArgs: [id]);
+  }
+
+  static Future<void> _createCustomCollectionItemsTable(
+    Database database,
+  ) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS custom_collection_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        collection_id INTEGER NOT NULL,
+        values_json TEXT NOT NULL DEFAULT '{}',
+        photo_paths_json TEXT NOT NULL DEFAULT '[]',
+        document_paths_json TEXT NOT NULL DEFAULT '[]',
+        created_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        updated_at_milliseconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS custom_collection_items_collection_index
+      ON custom_collection_items(collection_id)
+    ''');
+  }
+
+  Future<List<CustomCollectionItem>> getCustomCollectionItems(
+    int collectionId,
+  ) async {
+    final database = await this.database;
+    final rows = await database.query(
+      'custom_collection_items',
+      where: 'collection_id = ?',
+      whereArgs: [collectionId],
+      orderBy: 'updated_at_milliseconds DESC, id DESC',
+    );
+    return rows.map(CustomCollectionItem.fromMap).toList();
+  }
+
+  Future<int> insertCustomCollectionItem(
+    CustomCollectionItem item,
+  ) async {
+    final database = await this.database;
+    final map = item.toMap();
+    map.remove('id');
+    return database.insert('custom_collection_items', map);
+  }
+
+  Future<int> updateCustomCollectionItem(
+    CustomCollectionItem item,
+  ) async {
+    final id = item.id;
+    if (id == null) {
+      throw ArgumentError('An item ID is required.');
+    }
+    final database = await this.database;
+    final map = item.toMap();
+    map.remove('id');
+    return database.update(
+      'custom_collection_items',
+      map,
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<int> moveCustomCollectionItem({
+    required int itemId,
+    required int destinationCollectionId,
+  }) async {
+    final database = await this.database;
+    return database.update(
+      'custom_collection_items',
+      {
+        'collection_id': destinationCollectionId,
+        'updated_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [itemId],
+    );
+  }
+
+  Future<int> deleteCustomCollectionItem(int id) async {
+    final database = await this.database;
+    return database.delete(
+      'custom_collection_items',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 
   Future<String?> createDatabaseBackup({

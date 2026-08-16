@@ -11,6 +11,9 @@ import 'photo_detail_screen.dart';
 import 'photo_batch_edit_screen.dart';
 import 'face_scan_screen.dart';
 import 'known_people_screen.dart';
+import 'whole_library_face_scan_screen.dart';
+import 'unidentified_faces_screen.dart';
+import 'photo_metadata_import_screen.dart';
 
 class PhotosScreen extends StatefulWidget {
   const PhotosScreen({super.key});
@@ -447,6 +450,50 @@ class _PhotosScreenState extends State<PhotosScreen> {
     });
   }
 
+  Future<void> _openWholeLibraryFaceScan() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => WholeLibraryFaceScanScreen(
+          photos: _photos,
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+
+    final catalogRecords =
+        await _databaseHelper.getAllPhotoCatalogMetadata();
+
+    setState(() {
+      _catalogByPath = <String, PhotoCatalogMetadata>{
+        for (final record in catalogRecords) record.filePath: record,
+      };
+    });
+  }
+
+  Future<void> _openMetadataImport() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => PhotoMetadataImportScreen(
+          photos: _photos,
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+
+    final catalogRecords =
+        await _databaseHelper.getAllPhotoCatalogMetadata();
+
+    setState(() {
+      _catalogByPath = <String, PhotoCatalogMetadata>{
+        for (final record in catalogRecords) record.filePath: record,
+      };
+    });
+  }
+
   bool _matchesSearch(VaultPhoto photo) {
     final query = _searchController.text.trim().toLowerCase();
     final metadata = _catalogByPath[photo.filePath];
@@ -557,6 +604,46 @@ class _PhotosScreenState extends State<PhotosScreen> {
                 _selectionMode ? Icons.close : Icons.check_box_outlined,
               ),
               label: Text(_selectionMode ? 'Cancel' : 'Select'),
+            ),
+            IconButton(
+              tooltip: 'Import Embedded Photo Metadata',
+              onPressed: _selectionMode
+                  ? null
+                  : _openMetadataImport,
+              icon: const Icon(Icons.file_download_outlined),
+            ),
+            IconButton(
+              tooltip: 'Scan Entire Photo Library for Faces',
+              onPressed: _selectionMode
+                  ? null
+                  : _openWholeLibraryFaceScan,
+              icon: const Icon(Icons.manage_search),
+            ),
+            IconButton(
+              tooltip: 'Unidentified Faces',
+              onPressed: _selectionMode
+                  ? null
+                  : () async {
+                      await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) =>
+                              const UnidentifiedFacesScreen(),
+                        ),
+                      );
+
+                      if (!mounted) return;
+
+                      final catalogRecords =
+                          await _databaseHelper.getAllPhotoCatalogMetadata();
+                      setState(() {
+                        _catalogByPath = <String, PhotoCatalogMetadata>{
+                          for (final record in catalogRecords)
+                            record.filePath: record,
+                        };
+                      });
+                    },
+              icon: const Icon(Icons.person_search_outlined),
             ),
             IconButton(
               tooltip: 'Known People',

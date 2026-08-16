@@ -67,6 +67,7 @@ flutter:
   assets:
     - assets/images/series/
     - assets/images/heritage_vault_logo.png
+    - assets/images/family_heritage_banner.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:
