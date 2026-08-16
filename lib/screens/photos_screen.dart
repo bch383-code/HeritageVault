@@ -9,6 +9,7 @@ import '../models/vault_photo.dart';
 import '../models/photo_catalog_metadata.dart';
 import 'photo_detail_screen.dart';
 import 'photo_batch_edit_screen.dart';
+import 'face_scan_screen.dart';
 
 class PhotosScreen extends StatefulWidget {
   const PhotosScreen({super.key});
@@ -330,6 +331,60 @@ class _PhotosScreenState extends State<PhotosScreen> {
     }
   }
 
+  Future<void> _scanSelectedFaces() async {
+    final selected = _photos
+        .where((photo) => _selectedPaths.contains(photo.filePath))
+        .toList();
+
+    if (selected.isEmpty) return;
+
+    if (selected.length > 250) {
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Large face scan'),
+          content: Text(
+            'You selected ${selected.length} photos. Smaller groups are '
+            'easier to review while facial recognition is new. Continue?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Continue'),
+            ),
+          ],
+        ),
+      );
+
+    if (proceed != true) return;
+}
+    if (!mounted) return;
+
+    await Navigator.push(
+     context,
+      MaterialPageRoute(
+        builder: (context) => FaceScanScreen(photos: selected),
+      ),
+    );
+
+    if (!mounted) return;
+
+    final catalogRecords =
+        await _databaseHelper.getAllPhotoCatalogMetadata();
+
+    setState(() {
+      _catalogByPath = <String, PhotoCatalogMetadata>{
+        for (final record in catalogRecords) record.filePath: record,
+      };
+      _selectedPaths.clear();
+      _selectionMode = false;
+    });
+  }
+
   bool _matchesSearch(VaultPhoto photo) {
     final query = _searchController.text.trim().toLowerCase();
     final metadata = _catalogByPath[photo.filePath];
@@ -398,6 +453,14 @@ class _PhotosScreenState extends State<PhotosScreen> {
                 onPressed: _openBatchEditor,
                 icon: const Icon(Icons.edit_note_outlined),
                 label: Text('Batch Edit (${_selectedPaths.length})'),
+              ),
+            if (_selectionMode && _selectedPaths.isNotEmpty)
+              const SizedBox(width: 8),
+            if (_selectionMode && _selectedPaths.isNotEmpty)
+              OutlinedButton.icon(
+                onPressed: _scanSelectedFaces,
+                icon: const Icon(Icons.face_retouching_natural),
+                label: Text('Scan Faces (${_selectedPaths.length})'),
               ),
             if (_selectionMode && _selectedPaths.isNotEmpty)
               const SizedBox(width: 8),

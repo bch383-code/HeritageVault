@@ -11,6 +11,7 @@ import '../models/valuable.dart';
 import '../models/antique.dart';
 import '../models/vault_photo.dart';
 import '../models/photo_catalog_metadata.dart';
+import '../models/detected_face_record.dart';
 
 class DatabaseHelper {
   DatabaseHelper._();
@@ -46,7 +47,7 @@ class DatabaseHelper {
     return databaseFactory.openDatabase(
       _databasePath!,
       options: OpenDatabaseOptions(
-        version: 9,
+        version: 10,
         onCreate: (database, version) async {
           await _createManualCoinsTable(database);
           await _createImportedCoinsTable(database);
@@ -56,6 +57,7 @@ class DatabaseHelper {
           await _createAntiquesTables(database);
           await _createPhotoLibraryTables(database);
           await _createPhotoCatalogMetadataTable(database);
+          await _createPhotoFacesTable(database);
         },
         onUpgrade: (database, oldVersion, newVersion) async {
           if (oldVersion < 2) {
@@ -87,6 +89,9 @@ class DatabaseHelper {
           }
           if (oldVersion < 9) {
             await _createPhotoCatalogMetadataTable(database);
+          }
+          if (oldVersion < 10) {
+            await _createPhotoFacesTable(database);
           }
         },
       ),
@@ -658,6 +663,107 @@ class DatabaseHelper {
       'photo_catalog_metadata',
       metadata.toMap(),
       conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+
+  static Future<void> _createPhotoFacesTable(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS photo_faces (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        photo_file_path TEXT NOT NULL,
+        face_index INTEGER NOT NULL DEFAULT 0,
+        box_left REAL NOT NULL DEFAULT 0,
+        box_top REAL NOT NULL DEFAULT 0,
+        box_width REAL NOT NULL DEFAULT 0,
+        box_height REAL NOT NULL DEFAULT 0,
+        detection_score REAL NOT NULL DEFAULT 0,
+        embedding_json TEXT NOT NULL DEFAULT '[]',
+        thumbnail_path TEXT NOT NULL DEFAULT '',
+        person_name TEXT NOT NULL DEFAULT '',
+        confirmed INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(photo_file_path, face_index)
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS photo_faces_photo_path_index
+      ON photo_faces(photo_file_path)
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS photo_faces_person_name_index
+      ON photo_faces(person_name)
+    ''');
+  }
+
+  Future<void> replaceFacesForPhotos(
+    List<String> photoPaths,
+    List<DetectedFaceRecord> faces,
+  ) async {
+    final database = await this.database;
+
+    await database.transaction((transaction) async {
+      for (final photoPath in photoPaths) {
+        await transaction.delete(
+          'photo_faces',
+          where: 'photo_file_path = ?',
+          whereArgs: [photoPath],
+        );
+      }
+
+      final batch = transaction.batch();
+      for (final face in faces) {
+        final map = face.toMap();
+        map.remove('id');
+        batch.insert(
+          'photo_faces',
+          map,
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+
+      await batch.commit(noResult: true);
+    });
+  }
+
+  Future<List<DetectedFaceRecord>> getFacesForPhotoPaths(
+    List<String> photoPaths,
+  ) async {
+    if (photoPaths.isEmpty) return const [];
+
+    final database = await this.database;
+    final placeholders = List.filled(photoPaths.length, '?').join(',');
+
+    final rows = await database.rawQuery(
+      '''
+      SELECT *
+      FROM photo_faces
+      WHERE photo_file_path IN ($placeholders)
+      ORDER BY photo_file_path, face_index
+      ''',
+      photoPaths,
+    );
+
+    return rows.map(DetectedFaceRecord.fromMap).toList();
+  }
+
+  Future<void> confirmFaceGroup({
+    required List<int> faceIds,
+    required String personName,
+  }) async {
+    if (faceIds.isEmpty) return;
+
+    final database = await this.database;
+    final placeholders = List.filled(faceIds.length, '?').join(',');
+
+    await database.rawUpdate(
+      '''
+      UPDATE photo_faces
+      SET person_name = ?, confirmed = 1
+      WHERE id IN ($placeholders)
+      ''',
+      [personName, ...faceIds],
     );
   }
 
