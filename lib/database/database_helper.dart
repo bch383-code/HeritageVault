@@ -14,6 +14,7 @@ import '../models/photo_catalog_metadata.dart';
 import '../models/custom_collection.dart';
 import '../models/custom_collection_item.dart';
 import '../models/detected_face_record.dart';
+import '../models/family_person.dart';
 
 class DatabaseHelper {
   DatabaseHelper._();
@@ -49,7 +50,7 @@ class DatabaseHelper {
     return databaseFactory.openDatabase(
       _databasePath!,
       options: OpenDatabaseOptions(
-        version: 14,
+        version: 17,
         onCreate: (database, version) async {
           await _createManualCoinsTable(database);
           await _createImportedCoinsTable(database);
@@ -64,6 +65,9 @@ class DatabaseHelper {
           await _createPhotoMetadataImportStateTable(database);
           await _createCustomCollectionsTable(database);
           await _createCustomCollectionItemsTable(database);
+          await _createFamilyPeopleTable(database);
+          await _createFamilyRelationshipsTables(database);
+          await _createGedcomImportTables(database);
         },
         onUpgrade: (database, oldVersion, newVersion) async {
           if (oldVersion < 2) {
@@ -110,6 +114,15 @@ class DatabaseHelper {
           }
           if (oldVersion < 14) {
             await _createCustomCollectionItemsTable(database);
+          }
+          if (oldVersion < 15) {
+            await _createFamilyPeopleTable(database);
+          }
+          if (oldVersion < 16) {
+            await _createFamilyRelationshipsTables(database);
+          }
+          if (oldVersion < 17) {
+            await _createGedcomImportTables(database);
           }
         },
       ),
@@ -1079,6 +1092,383 @@ class DatabaseHelper {
       where: 'id = ?',
       whereArgs: [id],
     );
+  }
+
+  static Future<void> _createFamilyPeopleTable(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS family_people (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        first_name TEXT NOT NULL DEFAULT '',
+        middle_name TEXT NOT NULL DEFAULT '',
+        last_name TEXT NOT NULL DEFAULT '',
+        birth_name TEXT NOT NULL DEFAULT '',
+        sex TEXT NOT NULL DEFAULT '',
+        birth_date TEXT NOT NULL DEFAULT '',
+        birth_place TEXT NOT NULL DEFAULT '',
+        death_date TEXT NOT NULL DEFAULT '',
+        death_place TEXT NOT NULL DEFAULT '',
+        biography TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        profile_photo_path TEXT NOT NULL DEFAULT '',
+        created_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        updated_at_milliseconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+  }
+
+  Future<int> insertFamilyPerson(FamilyPerson person) async {
+    final database = await this.database;
+    final map = person.toMap()..remove('id');
+    return database.insert('family_people', map);
+  }
+
+  Future<int> updateFamilyPerson(FamilyPerson person) async {
+    if (person.id == null) throw ArgumentError('A family person ID is required.');
+    final database = await this.database;
+    final map = person.toMap()..remove('id');
+    return database.update('family_people', map, where: 'id = ?', whereArgs: [person.id]);
+  }
+
+  Future<FamilyPerson?> getFamilyPerson(int id) async {
+    final database = await this.database;
+    final rows = await database.query('family_people', where: 'id = ?', whereArgs: [id], limit: 1);
+    return rows.isEmpty ? null : FamilyPerson.fromMap(rows.first);
+  }
+
+  Future<List<FamilyPerson>> getFamilyPeople({String searchText = ''}) async {
+    final database = await this.database;
+    final search = searchText.trim();
+    final rows = await database.query(
+      'family_people',
+      where: search.isEmpty ? null : 'first_name LIKE ? OR middle_name LIKE ? OR last_name LIKE ? OR birth_name LIKE ? OR birth_place LIKE ? OR death_place LIKE ?',
+      whereArgs: search.isEmpty ? null : List<Object?>.filled(6, '%$search%'),
+      orderBy: 'last_name COLLATE NOCASE, first_name COLLATE NOCASE, middle_name COLLATE NOCASE',
+    );
+    return rows.map(FamilyPerson.fromMap).toList();
+  }
+
+  Future<int> deleteFamilyPerson(int id) async {
+    final database = await this.database;
+    return database.delete('family_people', where: 'id = ?', whereArgs: [id]);
+  }
+
+  static Future<void> _createFamilyRelationshipsTables(
+    Database database,
+  ) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS family_parent_child (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_id INTEGER NOT NULL,
+        child_id INTEGER NOT NULL,
+        parent_role TEXT NOT NULL DEFAULT 'Parent',
+        UNIQUE(parent_id, child_id)
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS family_parent_child_parent_index
+      ON family_parent_child(parent_id)
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS family_parent_child_child_index
+      ON family_parent_child(child_id)
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS family_spouses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        person1_id INTEGER NOT NULL,
+        person2_id INTEGER NOT NULL,
+        UNIQUE(person1_id, person2_id)
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS family_spouses_person1_index
+      ON family_spouses(person1_id)
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS family_spouses_person2_index
+      ON family_spouses(person2_id)
+    ''');
+  }
+
+  Future<void> addFamilyParentChild({
+    required int parentId,
+    required int childId,
+    required String parentRole,
+  }) async {
+    if (parentId == childId) {
+      throw ArgumentError('A person cannot be their own parent.');
+    }
+
+    final database = await this.database;
+    await database.insert(
+      'family_parent_child',
+      {
+        'parent_id': parentId,
+        'child_id': childId,
+        'parent_role': parentRole,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> addFamilySpouse({
+    required int person1Id,
+    required int person2Id,
+  }) async {
+    if (person1Id == person2Id) {
+      throw ArgumentError('A person cannot be their own spouse.');
+    }
+
+    final low = person1Id < person2Id ? person1Id : person2Id;
+    final high = person1Id < person2Id ? person2Id : person1Id;
+
+    final database = await this.database;
+    await database.insert(
+      'family_spouses',
+      {
+        'person1_id': low,
+        'person2_id': high,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+  }
+
+  Future<List<FamilyPerson>> getFamilyParents(int childId) async {
+    final database = await this.database;
+    final rows = await database.rawQuery(
+      '''
+      SELECT p.*
+      FROM family_people p
+      INNER JOIN family_parent_child r ON r.parent_id = p.id
+      WHERE r.child_id = ?
+      ORDER BY
+        CASE r.parent_role
+          WHEN 'Father' THEN 0
+          WHEN 'Mother' THEN 1
+          ELSE 2
+        END,
+        p.last_name COLLATE NOCASE,
+        p.first_name COLLATE NOCASE
+      ''',
+      [childId],
+    );
+
+    return rows.map(FamilyPerson.fromMap).toList();
+  }
+
+  Future<List<FamilyPerson>> getFamilyChildren(int parentId) async {
+    final database = await this.database;
+    final rows = await database.rawQuery(
+      '''
+      SELECT p.*
+      FROM family_people p
+      INNER JOIN family_parent_child r ON r.child_id = p.id
+      WHERE r.parent_id = ?
+      ORDER BY p.last_name COLLATE NOCASE, p.first_name COLLATE NOCASE
+      ''',
+      [parentId],
+    );
+
+    return rows.map(FamilyPerson.fromMap).toList();
+  }
+
+  Future<List<FamilyPerson>> getFamilySpouses(int personId) async {
+    final database = await this.database;
+    final rows = await database.rawQuery(
+      '''
+      SELECT p.*
+      FROM family_people p
+      INNER JOIN family_spouses s
+        ON (
+          (s.person1_id = ? AND p.id = s.person2_id)
+          OR
+          (s.person2_id = ? AND p.id = s.person1_id)
+        )
+      ORDER BY p.last_name COLLATE NOCASE, p.first_name COLLATE NOCASE
+      ''',
+      [personId, personId],
+    );
+
+    return rows.map(FamilyPerson.fromMap).toList();
+  }
+
+  Future<String> getFamilyParentRole({
+    required int parentId,
+    required int childId,
+  }) async {
+    final database = await this.database;
+    final rows = await database.query(
+      'family_parent_child',
+      columns: ['parent_role'],
+      where: 'parent_id = ? AND child_id = ?',
+      whereArgs: [parentId, childId],
+      limit: 1,
+    );
+
+    if (rows.isEmpty) return 'Parent';
+    return rows.first['parent_role'] as String? ?? 'Parent';
+  }
+
+  Future<void> removeFamilyParentChild({
+    required int parentId,
+    required int childId,
+  }) async {
+    final database = await this.database;
+    await database.delete(
+      'family_parent_child',
+      where: 'parent_id = ? AND child_id = ?',
+      whereArgs: [parentId, childId],
+    );
+  }
+
+  Future<void> removeFamilySpouse({
+    required int person1Id,
+    required int person2Id,
+  }) async {
+    final low = person1Id < person2Id ? person1Id : person2Id;
+    final high = person1Id < person2Id ? person2Id : person1Id;
+
+    final database = await this.database;
+    await database.delete(
+      'family_spouses',
+      where: 'person1_id = ? AND person2_id = ?',
+      whereArgs: [low, high],
+    );
+  }
+
+
+  static Future<void> _createGedcomImportTables(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS gedcom_imports (
+        import_key TEXT PRIMARY KEY,
+        file_name TEXT NOT NULL DEFAULT '',
+        file_size INTEGER NOT NULL DEFAULT 0,
+        modified_milliseconds INTEGER NOT NULL DEFAULT 0,
+        individual_count INTEGER NOT NULL DEFAULT 0,
+        family_count INTEGER NOT NULL DEFAULT 0,
+        imported_at_milliseconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS gedcom_person_links (
+        import_key TEXT NOT NULL,
+        gedcom_xref TEXT NOT NULL,
+        person_id INTEGER NOT NULL,
+        PRIMARY KEY(import_key, gedcom_xref)
+      )
+    ''');
+  }
+
+  Future<Map<String, int>> getGedcomPersonLinks(String importKey) async {
+    final database = await this.database;
+    final rows = await database.query(
+      'gedcom_person_links',
+      columns: ['gedcom_xref', 'person_id'],
+      where: 'import_key = ?',
+      whereArgs: [importKey],
+    );
+
+    return {
+      for (final row in rows)
+        row['gedcom_xref'] as String? ?? '': _mapInt(row['person_id']),
+    };
+  }
+
+  Future<void> saveGedcomPersonLinks({
+    required String importKey,
+    required Map<String, int> links,
+  }) async {
+    if (links.isEmpty) return;
+    final database = await this.database;
+
+    await database.transaction((transaction) async {
+      final batch = transaction.batch();
+      for (final entry in links.entries) {
+        batch.insert(
+          'gedcom_person_links',
+          {
+            'import_key': importKey,
+            'gedcom_xref': entry.key,
+            'person_id': entry.value,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
+  Future<void> saveGedcomImportRecord({
+    required String importKey,
+    required String fileName,
+    required int fileSize,
+    required int modifiedMilliseconds,
+    required int individualCount,
+    required int familyCount,
+  }) async {
+    final database = await this.database;
+    await database.insert(
+      'gedcom_imports',
+      {
+        'import_key': importKey,
+        'file_name': fileName,
+        'file_size': fileSize,
+        'modified_milliseconds': modifiedMilliseconds,
+        'individual_count': individualCount,
+        'family_count': familyCount,
+        'imported_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> importFamilyRelationshipsBatch({
+    required List<Map<String, Object?>> parentChildLinks,
+    required List<Map<String, Object?>> spouseLinks,
+  }) async {
+    final database = await this.database;
+
+    await database.transaction((transaction) async {
+      const chunkSize = 1000;
+
+      for (var start = 0; start < parentChildLinks.length; start += chunkSize) {
+        final end = (start + chunkSize < parentChildLinks.length)
+            ? start + chunkSize
+            : parentChildLinks.length;
+        final batch = transaction.batch();
+
+        for (var index = start; index < end; index++) {
+          batch.insert(
+            'family_parent_child',
+            parentChildLinks[index],
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+        await batch.commit(noResult: true);
+      }
+
+      for (var start = 0; start < spouseLinks.length; start += chunkSize) {
+        final end = (start + chunkSize < spouseLinks.length)
+            ? start + chunkSize
+            : spouseLinks.length;
+        final batch = transaction.batch();
+
+        for (var index = start; index < end; index++) {
+          batch.insert(
+            'family_spouses',
+            spouseLinks[index],
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        }
+        await batch.commit(noResult: true);
+      }
+    });
   }
 
   Future<String?> createDatabaseBackup({

@@ -8,6 +8,7 @@ import '../../screens/postcards_screen.dart';
 import '../../screens/valuables_screen.dart';
 import '../../screens/antiques_screen.dart';
 import '../../screens/photos_screen.dart';
+import '../../screens/family_tree_screen.dart';
 import '../../widgets/custom_collections_sidebar.dart';
 
 class MuseumShell extends StatefulWidget {
@@ -66,11 +67,7 @@ class _MuseumShellState extends State<MuseumShell> {
           icon: Icons.description_outlined,
         );
       case _VaultPage.familyTree:
-        return const _ComingSoonPage(
-          title: 'Family Tree',
-          subtitle: 'Connect people, relationships, and generations.',
-          icon: Icons.account_tree_outlined,
-        );
+        return const FamilyTreeScreen();
       case _VaultPage.antiques:
         return const AntiquesScreen();
       case _VaultPage.stories:
