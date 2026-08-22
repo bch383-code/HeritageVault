@@ -6,6 +6,7 @@ import '../database/database_helper.dart';
 import '../models/family_person.dart';
 import 'family_person_edit_screen.dart';
 import 'family_relationship_picker_screen.dart';
+import 'family_visual_tree_screen.dart';
 
 class FamilyPersonScreen extends StatefulWidget {
   final FamilyPerson person;
@@ -189,6 +190,21 @@ class _FamilyPersonScreenState extends State<FamilyPersonScreen> {
       appBar: AppBar(
         title: Text(_person.displayName),
         actions: [
+          IconButton(
+            tooltip: 'View family tree',
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => FamilyVisualTreeScreen(
+                    initialPerson: _person,
+                  ),
+                ),
+              );
+              await _loadAll();
+            },
+            icon: const Icon(Icons.account_tree_outlined),
+          ),
           PopupMenuButton<String>(
             tooltip: 'Add relationship',
             icon: const Icon(Icons.group_add_outlined),

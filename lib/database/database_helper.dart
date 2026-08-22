@@ -1471,6 +1471,189 @@ class DatabaseHelper {
     });
   }
 
+
+  Future<Map<String, Object?>> getFamilyDiagnostics() async {
+    final database = await this.database;
+
+    Future<int> count(String table) async {
+      final rows = await database.rawQuery(
+        'SELECT COUNT(*) AS total FROM $table',
+      );
+      return _mapInt(rows.first['total']);
+    }
+
+    final databasePath = _databasePath ?? '';
+    final backupDirectory = databasePath.isEmpty
+        ? null
+        : Directory(path.join(path.dirname(databasePath), 'Backups'));
+
+    final backupPaths = <String>[];
+    if (backupDirectory != null && await backupDirectory.exists()) {
+      final files = await backupDirectory
+          .list()
+          .where((entity) => entity is File && entity.path.toLowerCase().endsWith('.db'))
+          .cast<File>()
+          .toList();
+
+      files.sort(
+        (a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()),
+      );
+      backupPaths.addAll(files.map((file) => file.path));
+    }
+
+    return {
+      'database_path': databasePath,
+      'family_people': await count('family_people'),
+      'parent_child_links': await count('family_parent_child'),
+      'spouse_links': await count('family_spouses'),
+      'gedcom_imports': await count('gedcom_imports'),
+      'gedcom_person_links': await count('gedcom_person_links'),
+      'backup_paths': backupPaths,
+    };
+  }
+
+
+
+  Future<List<Map<String, Object?>>> inspectDatabaseBackups() async {
+    final sourcePath = _databasePath;
+    if (sourcePath == null || sourcePath.isEmpty) return const [];
+
+    final backupDirectory =
+        Directory(path.join(path.dirname(sourcePath), 'Backups'));
+    if (!await backupDirectory.exists()) return const [];
+
+    final files = await backupDirectory.list()
+        .where((e) => e is File && e.path.toLowerCase().endsWith('.db'))
+        .cast<File>().toList();
+    files.sort((a, b) =>
+        b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+
+    Future<int> countTable(Database db, String table) async {
+      final exists = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+        [table],
+      );
+      if (exists.isEmpty) return 0;
+      final rows =
+          await db.rawQuery('SELECT COUNT(*) AS total FROM $table');
+      return _mapInt(rows.first['total']);
+    }
+
+    final results = <Map<String, Object?>>[];
+    for (final file in files) {
+      Database? backupDb;
+      try {
+        backupDb = await databaseFactory.openDatabase(
+          file.path,
+          options: OpenDatabaseOptions(
+            readOnly: true,
+            singleInstance: false,
+          ),
+        );
+        results.add({
+          'name': path.basename(file.path),
+          'path': file.path,
+          'modified': file.lastModifiedSync().millisecondsSinceEpoch,
+          'people': await countTable(backupDb, 'family_people'),
+          'parent_child':
+              await countTable(backupDb, 'family_parent_child'),
+          'spouses': await countTable(backupDb, 'family_spouses'),
+          'gedcom_imports': await countTable(backupDb, 'gedcom_imports'),
+          'gedcom_links':
+              await countTable(backupDb, 'gedcom_person_links'),
+          'error': '',
+        });
+      } catch (error) {
+        results.add({
+          'name': path.basename(file.path),
+          'path': file.path,
+          'modified': file.lastModifiedSync().millisecondsSinceEpoch,
+          'people': 0,
+          'parent_child': 0,
+          'spouses': 0,
+          'gedcom_imports': 0,
+          'gedcom_links': 0,
+          'error': error.toString(),
+        });
+      } finally {
+        await backupDb?.close();
+      }
+    }
+    return results;
+  }
+
+
+  Future<Map<String, Object?>> inspectDatabaseFile(String filePath) async {
+    Database? checkDb;
+    Future<int> countTable(Database db, String table) async {
+      final exists = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+        [table],
+      );
+      if (exists.isEmpty) return 0;
+      final rows = await db.rawQuery('SELECT COUNT(*) AS total FROM $table');
+      return _mapInt(rows.first['total']);
+    }
+
+    try {
+      checkDb = await databaseFactory.openDatabase(
+        filePath,
+        options: OpenDatabaseOptions(readOnly: true, singleInstance: false),
+      );
+      return {
+        'database_path': filePath,
+        'family_people': await countTable(checkDb, 'family_people'),
+        'parent_child_links': await countTable(checkDb, 'family_parent_child'),
+        'spouse_links': await countTable(checkDb, 'family_spouses'),
+        'gedcom_imports': await countTable(checkDb, 'gedcom_imports'),
+        'gedcom_person_links': await countTable(checkDb, 'gedcom_person_links'),
+      };
+    } finally {
+      await checkDb?.close();
+    }
+  }
+
+  Future<Map<String, Object?>> createVerifiedFamilyBackup({
+    String label = 'family_tree_verified',
+  }) async {
+    final db = await database;
+    final sourcePath = _databasePath;
+    if (sourcePath == null || sourcePath.isEmpty) {
+      throw StateError('Database path is not available.');
+    }
+
+    await db.execute('PRAGMA wal_checkpoint(FULL)');
+    final backupDirectory =
+        Directory(path.join(path.dirname(sourcePath), 'Backups'));
+    await backupDirectory.create(recursive: true);
+
+    final now = DateTime.now();
+    String two(int n) => n.toString().padLeft(2, '0');
+    final stamp = '${now.year}${two(now.month)}${two(now.day)}_'
+        '${two(now.hour)}${two(now.minute)}${two(now.second)}';
+    final safeLabel = label.trim()
+        .replaceAll(RegExp(r'[^A-Za-z0-9_-]+'), '_')
+        .replaceAll(RegExp(r'_+'), '_');
+
+    final destination = path.join(
+      backupDirectory.path,
+      'heritage_vault_${stamp}_${safeLabel.isEmpty ? 'family_tree_verified' : safeLabel}.db',
+    );
+
+    await db.execute("VACUUM INTO '${destination.replaceAll("'", "''")}'");
+
+    final backup = await inspectDatabaseFile(destination);
+    final live = await getFamilyDiagnostics();
+    final verified =
+        backup['family_people'] == live['family_people'] &&
+        backup['parent_child_links'] == live['parent_child_links'] &&
+        backup['spouse_links'] == live['spouse_links'] &&
+        backup['gedcom_person_links'] == live['gedcom_person_links'];
+
+    return {'path': destination, 'verified': verified, 'backup': backup};
+  }
+
+
   Future<String?> createDatabaseBackup({
     String reason = 'automatic',
   }) async {
