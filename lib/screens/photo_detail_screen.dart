@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../database/database_helper.dart';
+import '../models/family_person.dart';
 import '../models/photo_catalog_metadata.dart';
 import '../models/vault_photo.dart';
 import '../services/photo_metadata_reader.dart';
@@ -38,6 +39,7 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
   List<String> _knownPeople = [];
   List<String> _knownTags = [];
   List<String> _knownLocations = [];
+  List<FamilyPerson> _linkedFamilyPeople = [];
 
   String _dateType = 'Approximate';
   bool _loading = true;
@@ -103,10 +105,12 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
       final results = await Future.wait([
         PhotoMetadataReader.read(_photo.filePath),
         _databaseHelper.getPhotoCatalogMetadata(_photo.filePath),
+        _databaseHelper.getFamilyPeopleForPhoto(_photo.filePath),
       ]);
 
       final embedded = results[0] as PhotoMetadata;
       final catalog = results[1] as PhotoCatalogMetadata;
+      final linkedFamilyPeople = results[2] as List<FamilyPerson>;
 
       if (!mounted) return;
 
@@ -123,6 +127,7 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
 
       setState(() {
         _embeddedMetadata = embedded;
+        _linkedFamilyPeople = linkedFamilyPeople;
         _loading = false;
       });
     } catch (error) {
@@ -287,6 +292,49 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
     }
   }
 
+  Future<void> _chooseFamilyTreePeople() async {
+    final allPeople = await _databaseHelper.getFamilyPeople();
+
+    if (!mounted) return;
+
+    final selectedIds = await showDialog<Set<int>>(
+      context: context,
+      builder: (dialogContext) => _FamilyTreePeoplePickerDialog(
+        people: allPeople,
+        initiallySelectedIds: _linkedFamilyPeople
+            .where((person) => person.id != null)
+            .map((person) => person.id!)
+            .toSet(),
+      ),
+    );
+
+    if (selectedIds == null) return;
+
+    await _databaseHelper.replaceFamilyPeopleForPhoto(
+      photoFilePath: _photo.filePath,
+      personIds: selectedIds,
+    );
+
+    final linked =
+        await _databaseHelper.getFamilyPeopleForPhoto(_photo.filePath);
+
+    if (!mounted) return;
+
+    setState(() {
+      _linkedFamilyPeople = linked;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          linked.isEmpty
+              ? 'Family Tree links cleared.'
+              : '${linked.length} ${linked.length == 1 ? 'person' : 'people'} linked to this photo.',
+        ),
+      ),
+    );
+  }
+
   void _addPerson(String value) {
     final item = value.trim();
     if (item.isEmpty || _people.contains(item)) return;
@@ -412,8 +460,13 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
                                 ?.copyWith(fontWeight: FontWeight.w800),
                           ),
                           const SizedBox(height: 18),
+                          _FamilyTreeLinksCard(
+                            people: _linkedFamilyPeople,
+                            onEdit: _chooseFamilyTreePeople,
+                          ),
+                          const SizedBox(height: 18),
                           _ChipEditor(
-                            label: 'People',
+                            label: 'People / metadata keywords',
                             hint: 'Add a person',
                             values: _people,
                             suggestions: _knownPeople,
@@ -614,6 +667,201 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
           SelectableText(value),
         ],
       ),
+    );
+  }
+}
+
+
+class _FamilyTreeLinksCard extends StatelessWidget {
+  final List<FamilyPerson> people;
+  final VoidCallback onEdit;
+
+  const _FamilyTreeLinksCard({
+    required this.people,
+    required this.onEdit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.account_tree_outlined),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Family Tree Links',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: onEdit,
+                  icon: const Icon(Icons.link),
+                  label: Text(people.isEmpty ? 'Link People' : 'Edit Links'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              people.isEmpty
+                  ? 'Connect this photo to people in your Family Tree. '
+                      'Atlas Book will use these links to gather photos automatically.'
+                  : 'This photo is connected to ${people.length} '
+                      '${people.length == 1 ? 'person' : 'people'} in your Family Tree.',
+            ),
+            if (people.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: people
+                    .map(
+                      (person) => Chip(
+                        avatar: const Icon(Icons.person_outline, size: 18),
+                        label: Text(
+                          person.lifeSpan.isEmpty
+                              ? person.displayName
+                              : '${person.displayName} • ${person.lifeSpan}',
+                        ),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FamilyTreePeoplePickerDialog extends StatefulWidget {
+  final List<FamilyPerson> people;
+  final Set<int> initiallySelectedIds;
+
+  const _FamilyTreePeoplePickerDialog({
+    required this.people,
+    required this.initiallySelectedIds,
+  });
+
+  @override
+  State<_FamilyTreePeoplePickerDialog> createState() =>
+      _FamilyTreePeoplePickerDialogState();
+}
+
+class _FamilyTreePeoplePickerDialogState
+    extends State<_FamilyTreePeoplePickerDialog> {
+  final TextEditingController _searchController = TextEditingController();
+  late Set<int> _selectedIds;
+  String _query = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedIds = {...widget.initiallySelectedIds};
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final query = _query.trim().toLowerCase();
+    final visiblePeople = widget.people.where((person) {
+      if (query.isEmpty) return true;
+
+      return person.displayName.toLowerCase().contains(query) ||
+          person.birthName.toLowerCase().contains(query) ||
+          person.birthPlace.toLowerCase().contains(query) ||
+          person.lifeSpan.toLowerCase().contains(query);
+    }).toList();
+
+    return AlertDialog(
+      title: const Text('Link Family Tree People'),
+      content: SizedBox(
+        width: 700,
+        height: 600,
+        child: Column(
+          children: [
+            TextField(
+              controller: _searchController,
+              autofocus: true,
+              onChanged: (value) => setState(() => _query = value),
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.search),
+                labelText: 'Search Family Tree',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '${_selectedIds.length} '
+                '${_selectedIds.length == 1 ? 'person' : 'people'} selected',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: visiblePeople.isEmpty
+                  ? const Center(child: Text('No matching people found.'))
+                  : ListView.builder(
+                      itemCount: visiblePeople.length,
+                      itemBuilder: (context, index) {
+                        final person = visiblePeople[index];
+                        final id = person.id;
+
+                        if (id == null) return const SizedBox.shrink();
+
+                        return CheckboxListTile(
+                          value: _selectedIds.contains(id),
+                          title: Text(person.displayName),
+                          subtitle: Text(
+                            [
+                              if (person.lifeSpan.isNotEmpty) person.lifeSpan,
+                              if (person.birthPlace.isNotEmpty)
+                                person.birthPlace,
+                            ].join(' • '),
+                          ),
+                          onChanged: (selected) {
+                            setState(() {
+                              if (selected ?? false) {
+                                _selectedIds.add(id);
+                              } else {
+                                _selectedIds.remove(id);
+                              }
+                            });
+                          },
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton.icon(
+          onPressed: () => Navigator.pop(context, _selectedIds),
+          icon: const Icon(Icons.link),
+          label: const Text('Save Links'),
+        ),
+      ],
     );
   }
 }

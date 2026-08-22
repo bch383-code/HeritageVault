@@ -10,6 +10,7 @@ import '../../screens/antiques_screen.dart';
 import '../../screens/photos_screen.dart';
 import '../../screens/family_tree_screen.dart';
 import '../../widgets/custom_collections_sidebar.dart';
+import '../atlas_book/screens/atlas_book_screen.dart';
 
 class MuseumShell extends StatefulWidget {
   const MuseumShell({super.key});
@@ -28,6 +29,7 @@ enum _VaultPage {
   photos,
   documents,
   familyTree,
+  atlasBook,
   antiques,
   stories,
   settings,
@@ -68,6 +70,8 @@ class _MuseumShellState extends State<MuseumShell> {
         );
       case _VaultPage.familyTree:
         return const FamilyTreeScreen();
+      case _VaultPage.atlasBook:
+        return const AtlasBookScreen();
       case _VaultPage.antiques:
         return const AntiquesScreen();
       case _VaultPage.stories:
@@ -79,7 +83,7 @@ class _MuseumShellState extends State<MuseumShell> {
       case _VaultPage.settings:
         return const _ComingSoonPage(
           title: 'Settings',
-          subtitle: 'Heritage Vault preferences and collection settings.',
+          subtitle: 'Heirloom Atlas preferences and collection settings.',
           icon: Icons.settings_outlined,
         );
     }
@@ -178,7 +182,7 @@ class _VaultSidebar extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'HERITAGE VAULT',
+                  'HEIRLOOM ATLAS',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         color: antiqueGold,
@@ -219,6 +223,13 @@ class _VaultSidebar extends StatelessWidget {
                   selected: selectedPage == _VaultPage.familyTree,
                   onTap: () => onSelect(_VaultPage.familyTree),
                 ),
+                _SidebarItem(
+                  icon: Icons.auto_stories_outlined,
+                  selectedIcon: Icons.auto_stories,
+                  label: 'Atlas Book',
+                  selected: selectedPage == _VaultPage.atlasBook,
+                  onTap: () => onSelect(_VaultPage.atlasBook),
+                  ),
                 const SizedBox(height: 4),
                 _SidebarItem(
                   icon: Icons.inventory_2_outlined,

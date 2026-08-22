@@ -50,7 +50,7 @@ class DatabaseHelper {
     return databaseFactory.openDatabase(
       _databasePath!,
       options: OpenDatabaseOptions(
-        version: 17,
+        version: 18,
         onCreate: (database, version) async {
           await _createManualCoinsTable(database);
           await _createImportedCoinsTable(database);
@@ -68,6 +68,7 @@ class DatabaseHelper {
           await _createFamilyPeopleTable(database);
           await _createFamilyRelationshipsTables(database);
           await _createGedcomImportTables(database);
+          await _createFamilyPersonLinksTable(database);
         },
         onUpgrade: (database, oldVersion, newVersion) async {
           if (oldVersion < 2) {
@@ -123,6 +124,9 @@ class DatabaseHelper {
           }
           if (oldVersion < 17) {
             await _createGedcomImportTables(database);
+          }
+          if (oldVersion < 18) {
+            await _createFamilyPersonLinksTable(database);
           }
         },
       ),
@@ -1149,7 +1153,20 @@ class DatabaseHelper {
 
   Future<int> deleteFamilyPerson(int id) async {
     final database = await this.database;
-    return database.delete('family_people', where: 'id = ?', whereArgs: [id]);
+
+    return database.transaction((transaction) async {
+      await transaction.delete(
+        'family_person_links',
+        where: 'person_id = ?',
+        whereArgs: [id],
+      );
+
+      return transaction.delete(
+        'family_people',
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    });
   }
 
   static Future<void> _createFamilyRelationshipsTables(
@@ -1338,6 +1355,217 @@ class DatabaseHelper {
       'family_spouses',
       where: 'person1_id = ? AND person2_id = ?',
       whereArgs: [low, high],
+    );
+  }
+
+
+  static Future<void> _createFamilyPersonLinksTable(
+    Database database,
+  ) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS family_person_links (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        person_id INTEGER NOT NULL,
+        item_type TEXT NOT NULL,
+        item_key TEXT NOT NULL,
+        created_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(person_id, item_type, item_key)
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS family_person_links_person_index
+      ON family_person_links(person_id)
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS family_person_links_item_index
+      ON family_person_links(item_type, item_key)
+    ''');
+  }
+
+  Future<void> linkFamilyPersonToItem({
+    required int personId,
+    required String itemType,
+    required String itemKey,
+  }) async {
+    final cleanType = itemType.trim().toLowerCase();
+    final cleanKey = itemKey.trim();
+
+    if (cleanType.isEmpty) {
+      throw ArgumentError('An item type is required.');
+    }
+    if (cleanKey.isEmpty) {
+      throw ArgumentError('An item key is required.');
+    }
+
+    final database = await this.database;
+    await database.insert(
+      'family_person_links',
+      {
+        'person_id': personId,
+        'item_type': cleanType,
+        'item_key': cleanKey,
+        'created_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+  }
+
+  Future<void> unlinkFamilyPersonFromItem({
+    required int personId,
+    required String itemType,
+    required String itemKey,
+  }) async {
+    final database = await this.database;
+    await database.delete(
+      'family_person_links',
+      where: 'person_id = ? AND item_type = ? AND item_key = ?',
+      whereArgs: [personId, itemType.trim().toLowerCase(), itemKey.trim()],
+    );
+  }
+
+  Future<void> replaceFamilyPeopleForItem({
+    required String itemType,
+    required String itemKey,
+    required Iterable<int> personIds,
+  }) async {
+    final cleanType = itemType.trim().toLowerCase();
+    final cleanKey = itemKey.trim();
+
+    if (cleanType.isEmpty) {
+      throw ArgumentError('An item type is required.');
+    }
+    if (cleanKey.isEmpty) {
+      throw ArgumentError('An item key is required.');
+    }
+
+    final database = await this.database;
+    await database.transaction((transaction) async {
+      await transaction.delete(
+        'family_person_links',
+        where: 'item_type = ? AND item_key = ?',
+        whereArgs: [cleanType, cleanKey],
+      );
+
+      final now = DateTime.now().millisecondsSinceEpoch;
+      for (final personId in personIds.toSet()) {
+        await transaction.insert(
+          'family_person_links',
+          {
+            'person_id': personId,
+            'item_type': cleanType,
+            'item_key': cleanKey,
+            'created_at_milliseconds': now,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      }
+    });
+  }
+
+  Future<List<int>> getFamilyPersonIdsForItem({
+    required String itemType,
+    required String itemKey,
+  }) async {
+    final database = await this.database;
+    final rows = await database.query(
+      'family_person_links',
+      columns: ['person_id'],
+      where: 'item_type = ? AND item_key = ?',
+      whereArgs: [itemType.trim().toLowerCase(), itemKey.trim()],
+      orderBy: 'created_at_milliseconds ASC, id ASC',
+    );
+
+    return rows.map((row) => _mapInt(row['person_id'])).toList();
+  }
+
+  Future<List<FamilyPerson>> getFamilyPeopleForItem({
+    required String itemType,
+    required String itemKey,
+  }) async {
+    final database = await this.database;
+    final rows = await database.rawQuery(
+      '''
+      SELECT p.*
+      FROM family_people p
+      INNER JOIN family_person_links l ON l.person_id = p.id
+      WHERE l.item_type = ? AND l.item_key = ?
+      ORDER BY p.last_name COLLATE NOCASE,
+               p.first_name COLLATE NOCASE,
+               p.middle_name COLLATE NOCASE
+      ''',
+      [itemType.trim().toLowerCase(), itemKey.trim()],
+    );
+
+    return rows.map(FamilyPerson.fromMap).toList();
+  }
+
+  Future<List<String>> getItemKeysForFamilyPeople({
+    required Iterable<int> personIds,
+    required String itemType,
+  }) async {
+    final ids = personIds.toSet().toList();
+    if (ids.isEmpty) return const [];
+
+    final cleanType = itemType.trim().toLowerCase();
+    final database = await this.database;
+    final placeholders = List.filled(ids.length, '?').join(',');
+
+    final rows = await database.rawQuery(
+      '''
+      SELECT DISTINCT item_key
+      FROM family_person_links
+      WHERE item_type = ?
+        AND person_id IN ($placeholders)
+      ORDER BY item_key COLLATE NOCASE
+      ''',
+      [cleanType, ...ids],
+    );
+
+    return rows
+        .map((row) => row['item_key'] as String? ?? '')
+        .where((value) => value.isNotEmpty)
+        .toList();
+  }
+
+  Future<List<String>> getPhotoPathsForFamilyPeople(
+    Iterable<int> personIds,
+  ) {
+    return getItemKeysForFamilyPeople(
+      personIds: personIds,
+      itemType: 'photo',
+    );
+  }
+
+  Future<void> linkFamilyPersonToPhoto({
+    required int personId,
+    required String photoFilePath,
+  }) {
+    return linkFamilyPersonToItem(
+      personId: personId,
+      itemType: 'photo',
+      itemKey: photoFilePath,
+    );
+  }
+
+  Future<void> replaceFamilyPeopleForPhoto({
+    required String photoFilePath,
+    required Iterable<int> personIds,
+  }) {
+    return replaceFamilyPeopleForItem(
+      itemType: 'photo',
+      itemKey: photoFilePath,
+      personIds: personIds,
+    );
+  }
+
+  Future<List<FamilyPerson>> getFamilyPeopleForPhoto(
+    String photoFilePath,
+  ) {
+    return getFamilyPeopleForItem(
+      itemType: 'photo',
+      itemKey: photoFilePath,
     );
   }
 
