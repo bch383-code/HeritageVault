@@ -87,13 +87,13 @@ class _ValuableEditScreenState extends State<ValuableEditScreen> {
       withData: false,
     );
 
-    if (result == null || result.files.isEmpty) return;
+    if (result == null || result.isEmpty) return;
 
     final documentsDirectory = await getApplicationDocumentsDirectory();
     final imageDirectory = Directory(
       path.join(
         documentsDirectory.path,
-        'Heritage Vault',
+        'Heirloom Atlas',
         'Valuables',
         'Images',
       ),
@@ -105,7 +105,7 @@ class _ValuableEditScreenState extends State<ValuableEditScreen> {
 
     final copied = <String>[];
 
-    for (final pickedFile in result.files) {
+    for (final pickedFile in result) {
       final sourcePath = pickedFile.path;
       if (sourcePath == null || sourcePath.isEmpty) continue;
 
@@ -173,7 +173,7 @@ class _ValuableEditScreenState extends State<ValuableEditScreen> {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Delete valuable?'),
         content: const Text(
-          'This removes the valuable record from Heritage Vault. '
+          'This removes the valuable record from Heirloom Atlas. '
           'Copied image files will remain in the Valuables image folder.',
         ),
         actions: [
@@ -433,3 +433,4 @@ class _ValuableEditScreenState extends State<ValuableEditScreen> {
     );
   }
 }
+

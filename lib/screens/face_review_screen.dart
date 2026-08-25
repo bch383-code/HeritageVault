@@ -309,7 +309,7 @@ class _FaceReviewScreenState extends State<FaceReviewScreen> {
                         ),
                         subtitle: Text(
                           '${(suggestion.similarity * 100).toStringAsFixed(1)}% similarity '
-                          'to a confirmed face. Heritage Vault will not assign '
+                          'to a confirmed face. Heirloom Atlas will not assign '
                           'the name until you confirm it.',
                         ),
                         trailing: FilledButton(

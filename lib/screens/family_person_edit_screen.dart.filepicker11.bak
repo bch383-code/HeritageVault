@@ -90,7 +90,7 @@ class _FamilyPersonEditScreenState extends State<FamilyPersonEditScreen> {
       allowMultiple: false,
     );
 
-    final pickedPath = result?.single.path;
+    final pickedPath = result?.files.single.path;
 
     if (pickedPath != null && mounted) {
       setState(() => _photoPath = pickedPath);
@@ -287,4 +287,3 @@ class _FamilyPersonEditScreenState extends State<FamilyPersonEditScreen> {
     );
   }
 }
-

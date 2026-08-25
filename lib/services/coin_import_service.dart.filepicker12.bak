@@ -79,11 +79,13 @@ class CoinImportService {
       withData: true,
     );
 
-    if (pickedFile.isEmpty) return null;
+    if (pickedFile == null || pickedFile.files.isEmpty) return null;
 
-    final platformFile = pickedFile.single;
-    final Uint8List bytes = await platformFile.readAsBytes();
-
+    final platformFile = pickedFile.files.single;
+    final Uint8List? bytes = platformFile.bytes;
+    if (bytes == null) {
+      throw Exception('Heritage Vault could not read the selected file.');
+    }
 
     final workbook = SpreadsheetDecoder.decodeBytes(bytes, update: false);
 
@@ -508,5 +510,3 @@ class CoinImportService {
     return value.toString().trim();
   }
 }
-
-

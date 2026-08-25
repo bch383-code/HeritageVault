@@ -382,7 +382,7 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
   List<VaultPhoto> _photosForPerson(String name) {
     final matchedPaths = <String>{};
 
-    // Primary source: Heritage Vault People metadata.
+    // Primary source: Heirloom Atlas People metadata.
     for (final entry in _catalogByPath.entries) {
       if (entry.value.people.contains(name)) {
         matchedPaths.add(entry.key);

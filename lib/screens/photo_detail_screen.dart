@@ -202,7 +202,7 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
       if (!mounted) return;
       if (showMessage) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Heritage Vault metadata saved.')),
+          const SnackBar(content: Text('Heirloom Atlas metadata saved.')),
         );
       }
     } catch (error) {
@@ -233,9 +233,9 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Write metadata to original photo?'),
         content: const Text(
-          'Heritage Vault will create a backup first, then write Description, '
+          'Heirloom Atlas will create a backup first, then write Description, '
           'Tags, People-as-keywords, and Location into the original image. '
-          'Archival Date and Notes remain in Heritage Vault only.',
+          'Archival Date and Notes remain in Heirloom Atlas only.',
         ),
         actions: [
           TextButton(
@@ -611,7 +611,7 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
                             controller: _notesController,
                             maxLines: 4,
                             decoration: const InputDecoration(
-                              labelText: 'Heritage Vault Notes',
+                              labelText: 'Heirloom Atlas Notes',
                               border: OutlineInputBorder(),
                             ),
                           ),

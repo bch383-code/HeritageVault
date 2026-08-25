@@ -66,7 +66,7 @@ class _CustomCollectionItemEditScreenState
 
     if (result == null) return;
 
-    final paths = result
+    final paths = result.files
         .map((file) => file.path)
         .whereType<String>()
         .where((value) => value.trim().isNotEmpty)
@@ -91,7 +91,7 @@ class _CustomCollectionItemEditScreenState
 
     if (result == null) return;
 
-    final paths = result
+    final paths = result.files
         .map((file) => file.path)
         .whereType<String>()
         .where((value) => value.trim().isNotEmpty)
@@ -290,4 +290,3 @@ class _CustomCollectionItemEditScreenState
     );
   }
 }
-

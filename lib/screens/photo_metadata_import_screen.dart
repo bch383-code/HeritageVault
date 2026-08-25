@@ -186,9 +186,9 @@ class _PhotoMetadataImportScreenState
                     ),
                     const SizedBox(height: 10),
                     const Text(
-                      'Heritage Vault reads metadata already embedded in '
+                      'Heirloom Atlas reads metadata already embedded in '
                       'your photos and merges it into the searchable catalog. '
-                      'Existing Heritage Vault information is preserved.',
+                      'Existing Heirloom Atlas information is preserved.',
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 18),
@@ -198,7 +198,7 @@ class _PhotoMetadataImportScreenState
                         child: Text(
                           'Merge rules: Tags and People are added without '
                           'duplicates. Date, Location, and Description are '
-                          'imported only when the Heritage Vault field is empty. '
+                          'imported only when the Heirloom Atlas field is empty. '
                           'Notes are never changed.',
                         ),
                       ),

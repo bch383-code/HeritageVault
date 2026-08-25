@@ -8,6 +8,7 @@ import '../../screens/postcards_screen.dart';
 import '../../screens/valuables_screen.dart';
 import '../../screens/antiques_screen.dart';
 import '../../screens/photos_screen.dart';
+import '../../screens/sports_cards_screen.dart';
 import '../../screens/family_tree_screen.dart';
 import '../../widgets/custom_collections_sidebar.dart';
 import '../atlas_book/screens/atlas_book_screen.dart';
@@ -31,6 +32,7 @@ enum _VaultPage {
   familyTree,
   atlasBook,
   antiques,
+  sportsCards,
   stories,
   settings,
 }
@@ -74,6 +76,8 @@ class _MuseumShellState extends State<MuseumShell> {
         return const AtlasBookScreen();
       case _VaultPage.antiques:
         return const AntiquesScreen();
+      case _VaultPage.sportsCards:
+        return const SportsCardsScreen();
       case _VaultPage.stories:
         return const _ComingSoonPage(
           title: 'Stories',
@@ -153,7 +157,8 @@ class _VaultSidebar extends StatelessWidget {
       _coinPage ||
       selectedPage == _VaultPage.postcards ||
       selectedPage == _VaultPage.valuables ||
-      selectedPage == _VaultPage.antiques;
+      selectedPage == _VaultPage.antiques ||
+      selectedPage == _VaultPage.sportsCards;
 
   @override
   Widget build(BuildContext context) {
@@ -169,26 +174,18 @@ class _VaultSidebar extends StatelessWidget {
             child: Column(
               children: [
                 SizedBox(
-                  height: 118,
+                  height: 142,
+                  width: double.infinity,
                   child: Image.asset(
-                    'assets/images/heritage_vault_logo.png',
+                    'assets/branding/heirloom_atlas_logo.png',
                     fit: BoxFit.contain,
+                    filterQuality: FilterQuality.high,
                     errorBuilder: (context, error, stackTrace) => const Icon(
                       Icons.account_balance_outlined,
                       size: 72,
                       color: antiqueGold,
                     ),
                   ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'HEIRLOOM ATLAS',
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: antiqueGold,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 1.5,
-                      ),
                 ),
               ],
             ),
@@ -334,6 +331,14 @@ class _VaultSidebar extends StatelessWidget {
                           label: 'Antiques',
                           selected: selectedPage == _VaultPage.antiques,
                           onTap: () => onSelect(_VaultPage.antiques),
+                          compact: true,
+                        ),
+                        _SidebarItem(
+                          icon: Icons.sports_baseball_outlined,
+                          selectedIcon: Icons.sports_baseball,
+                          label: 'Sports Cards',
+                          selected: selectedPage == _VaultPage.sportsCards,
+                          onTap: () => onSelect(_VaultPage.sportsCards),
                           compact: true,
                         ),
                         const CustomCollectionsSidebar(),

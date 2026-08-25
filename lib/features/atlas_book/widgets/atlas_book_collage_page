@@ -1,0 +1,342 @@
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+
+enum AtlasCollageLayout {
+  automatic,
+  grid,
+  feature,
+}
+
+class AtlasBookCollagePage extends StatelessWidget {
+  final String? title;
+  final String? caption;
+  final List<String> imagePaths;
+  final AtlasCollageLayout layout;
+
+  const AtlasBookCollagePage({
+    super.key,
+    this.title,
+    this.caption,
+    required this.imagePaths,
+    this.layout = AtlasCollageLayout.automatic,
+  });
+
+  static const Color paperColor = Color(0xFFF4EBDD);
+  static const Color inkColor = Color(0xFF4B382A);
+  static const Color mutedInkColor = Color(0xFF796454);
+  static const Color frameColor = Color(0xFFB69A7A);
+
+  @override
+  Widget build(BuildContext context) {
+    return AspectRatio(
+      aspectRatio: 8.5 / 11,
+      child: Container(
+        decoration: BoxDecoration(
+          color: paperColor,
+          border: Border.all(
+            color: const Color(0xFFD6C3A8),
+          ),
+          boxShadow: const [
+            BoxShadow(
+              blurRadius: 12,
+              offset: Offset(0, 5),
+              color: Color(0x22000000),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.all(34),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (title != null && title!.trim().isNotEmpty) ...[
+              Text(
+                title!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontFamily: 'Georgia',
+                  fontSize: 28,
+                  fontWeight: FontWeight.w600,
+                  color: inkColor,
+                  letterSpacing: 0.4,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Center(
+                child: Container(
+                  width: 80,
+                  height: 1,
+                  color: frameColor,
+                ),
+              ),
+              const SizedBox(height: 24),
+            ],
+
+            Expanded(
+              child: imagePaths.isEmpty
+                  ? _buildEmptyState()
+                  : _buildCollage(),
+            ),
+
+            if (caption != null && caption!.trim().isNotEmpty) ...[
+              const SizedBox(height: 20),
+              Text(
+                caption!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontFamily: 'Georgia',
+                  fontSize: 14,
+                  fontStyle: FontStyle.italic,
+                  color: mutedInkColor,
+                  height: 1.4,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(
+          color: frameColor.withValues(alpha: 0.65),
+        ),
+      ),
+      child: const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.photo_library_outlined,
+              size: 54,
+              color: mutedInkColor,
+            ),
+            SizedBox(height: 14),
+            Text(
+              'Choose photos for this collage',
+              style: TextStyle(
+                fontFamily: 'Georgia',
+                fontSize: 17,
+                color: mutedInkColor,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCollage() {
+    final visibleImages = imagePaths.take(6).toList();
+
+    switch (layout) {
+      case AtlasCollageLayout.grid:
+        return _buildGridLayout(visibleImages);
+
+      case AtlasCollageLayout.feature:
+        return _buildFeatureLayout(visibleImages);
+
+      case AtlasCollageLayout.automatic:
+        return _buildAutomaticLayout(visibleImages);
+    }
+  }
+
+  Widget _buildAutomaticLayout(List<String> images) {
+    switch (images.length) {
+      case 1:
+        return _photo(images[0]);
+
+      case 2:
+        return Row(
+          children: [
+            Expanded(child: _photo(images[0])),
+            const SizedBox(width: 12),
+            Expanded(child: _photo(images[1])),
+          ],
+        );
+
+      case 3:
+        return Row(
+          children: [
+            Expanded(
+              flex: 3,
+              child: _photo(images[0]),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              flex: 2,
+              child: Column(
+                children: [
+                  Expanded(child: _photo(images[1])),
+                  const SizedBox(height: 12),
+                  Expanded(child: _photo(images[2])),
+                ],
+              ),
+            ),
+          ],
+        );
+
+      case 4:
+        return _buildGridLayout(images);
+
+      case 5:
+        return Column(
+          children: [
+            Expanded(
+              flex: 3,
+              child: Row(
+                children: [
+                  Expanded(child: _photo(images[0])),
+                  const SizedBox(width: 12),
+                  Expanded(child: _photo(images[1])),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              flex: 2,
+              child: Row(
+                children: [
+                  Expanded(child: _photo(images[2])),
+                  const SizedBox(width: 12),
+                  Expanded(child: _photo(images[3])),
+                  const SizedBox(width: 12),
+                  Expanded(child: _photo(images[4])),
+                ],
+              ),
+            ),
+          ],
+        );
+
+      default:
+        return _buildSixPhotoLayout(images);
+    }
+  }
+
+  Widget _buildGridLayout(List<String> images) {
+    final columns = images.length <= 2 ? images.length : 2;
+
+    return GridView.builder(
+      physics: const NeverScrollableScrollPhysics(),
+      padding: EdgeInsets.zero,
+      itemCount: images.length,
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: columns == 0 ? 1 : columns,
+        crossAxisSpacing: 12,
+        mainAxisSpacing: 12,
+      ),
+      itemBuilder: (context, index) {
+        return _photo(images[index]);
+      },
+    );
+  }
+
+  Widget _buildFeatureLayout(List<String> images) {
+    if (images.length == 1) {
+      return _photo(images.first);
+    }
+
+    return Column(
+      children: [
+        Expanded(
+          flex: 3,
+          child: _photo(images.first),
+        ),
+        const SizedBox(height: 12),
+        Expanded(
+          flex: 2,
+          child: Row(
+            children: [
+              for (int i = 1; i < images.length; i++) ...[
+                if (i > 1) const SizedBox(width: 12),
+                Expanded(
+                  child: _photo(images[i]),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSixPhotoLayout(List<String> images) {
+    return Column(
+      children: [
+        Expanded(
+          child: Row(
+            children: [
+              Expanded(child: _photo(images[0])),
+              const SizedBox(width: 12),
+              Expanded(child: _photo(images[1])),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        Expanded(
+          child: Row(
+            children: [
+              Expanded(child: _photo(images[2])),
+              const SizedBox(width: 12),
+              Expanded(child: _photo(images[3])),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        Expanded(
+          child: Row(
+            children: [
+              Expanded(child: _photo(images[4])),
+              const SizedBox(width: 12),
+              Expanded(child: _photo(images[5])),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _photo(String path) {
+    final file = File(path);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFFE5D7C4),
+        border: Border.all(
+          color: frameColor,
+          width: 1.5,
+        ),
+      ),
+      padding: const EdgeInsets.all(4),
+      child: ClipRect(
+        child: file.existsSync()
+            ? Image.file(
+                file,
+                fit: BoxFit.cover,
+                width: double.infinity,
+                height: double.infinity,
+                errorBuilder: (_, __, ___) {
+                  return _missingPhoto();
+                },
+              )
+            : _missingPhoto(),
+      ),
+    );
+  }
+
+  Widget _missingPhoto() {
+    return const ColoredBox(
+      color: Color(0xFFE5D7C4),
+      child: Center(
+        child: Icon(
+          Icons.broken_image_outlined,
+          size: 38,
+          color: mutedInkColor,
+        ),
+      ),
+    );
+  }
+}

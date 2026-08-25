@@ -33,7 +33,7 @@ class CoinSeriesLibrary {
       designer: 'Various',
       composition: 'Copper',
       mints: ['P'],
-      history: 'Heritage Vault groups the early United States half-cent types together as Liberty Head Half Cents.',
+      history: 'Heirloom Atlas groups the early United States half-cent types together as Liberty Head Half Cents.',
       imageAsset: '',
       thumbnailAsset: 'assets/images/series/liberty_head_half_cent_thumb.png',
     ),

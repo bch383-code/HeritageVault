@@ -15,6 +15,7 @@ import '../models/custom_collection.dart';
 import '../models/custom_collection_item.dart';
 import '../models/detected_face_record.dart';
 import '../models/family_person.dart';
+import '../models/sports_card.dart';
 
 class DatabaseHelper {
   DatabaseHelper._();
@@ -50,7 +51,7 @@ class DatabaseHelper {
     return databaseFactory.openDatabase(
       _databasePath!,
       options: OpenDatabaseOptions(
-        version: 18,
+        version: 23,
         onCreate: (database, version) async {
           await _createManualCoinsTable(database);
           await _createImportedCoinsTable(database);
@@ -63,12 +64,15 @@ class DatabaseHelper {
           await _createPhotoFacesTable(database);
           await _createPhotoFaceScanStateTable(database);
           await _createPhotoMetadataImportStateTable(database);
+          await _createPhotoFingerprintTable(database);
           await _createCustomCollectionsTable(database);
           await _createCustomCollectionItemsTable(database);
           await _createFamilyPeopleTable(database);
           await _createFamilyRelationshipsTables(database);
           await _createGedcomImportTables(database);
           await _createFamilyPersonLinksTable(database);
+          await _createSportsCardsTable(database);
+          await _createSportsCardCatalogTables(database);
         },
         onUpgrade: (database, oldVersion, newVersion) async {
           if (oldVersion < 2) {
@@ -127,6 +131,32 @@ class DatabaseHelper {
           }
           if (oldVersion < 18) {
             await _createFamilyPersonLinksTable(database);
+          }
+          if (oldVersion < 19) {
+            await _createSportsCardsTable(database);
+          }
+          if (oldVersion < 20) {
+            await _createSportsCardCatalogTables(database);
+            await _migrateLegacySportsCards(database);
+          }
+          if (oldVersion < 21) {
+            await database.execute(
+              "ALTER TABLE sports_card_collection "
+              "ADD COLUMN value_source TEXT NOT NULL DEFAULT ''",
+            );
+            await database.execute(
+              "ALTER TABLE sports_card_collection "
+              "ADD COLUMN value_updated_at_milliseconds INTEGER NOT NULL DEFAULT 0",
+            );
+          }
+          if (oldVersion < 22) {
+            await database.execute(
+              "ALTER TABLE sports_card_collection "
+              "ADD COLUMN image_path TEXT NOT NULL DEFAULT ''",
+            );
+          }
+          if (oldVersion < 23) {
+            await _createPhotoFingerprintTable(database);
           }
         },
       ),
@@ -649,6 +679,79 @@ class DatabaseHelper {
     return rows.map(VaultPhoto.fromMap).toList();
   }
 
+
+  static Future<void> _createPhotoFingerprintTable(
+    Database database,
+  ) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS photo_fingerprints (
+        file_path TEXT PRIMARY KEY,
+        file_size INTEGER NOT NULL DEFAULT 0,
+        modified_milliseconds INTEGER NOT NULL DEFAULT 0,
+        hash_hex TEXT NOT NULL DEFAULT '',
+        average_r INTEGER NOT NULL DEFAULT 0,
+        average_g INTEGER NOT NULL DEFAULT 0,
+        average_b INTEGER NOT NULL DEFAULT 0,
+        analyzed_at_milliseconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+  }
+
+  Future<Map<String, Map<String, Object?>>> getPhotoFingerprints() async {
+    final database = await this.database;
+    final rows = await database.query('photo_fingerprints');
+    return {
+      for (final row in rows)
+        row['file_path'] as String? ?? '': Map<String, Object?>.from(row),
+    };
+  }
+
+  Future<void> savePhotoFingerprint({
+    required String filePath,
+    required int fileSize,
+    required int modifiedMilliseconds,
+    required String hashHex,
+    required int averageR,
+    required int averageG,
+    required int averageB,
+  }) async {
+    final database = await this.database;
+    await database.insert(
+      'photo_fingerprints',
+      {
+        'file_path': filePath,
+        'file_size': fileSize,
+        'modified_milliseconds': modifiedMilliseconds,
+        'hash_hex': hashHex,
+        'average_r': averageR,
+        'average_g': averageG,
+        'average_b': averageB,
+        'analyzed_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> deletePhotoFingerprintsNotIn(Iterable<String> filePaths) async {
+    final database = await this.database;
+    final keep = filePaths.toSet();
+    final rows = await database.query(
+      'photo_fingerprints',
+      columns: ['file_path'],
+    );
+    final batch = database.batch();
+    for (final row in rows) {
+      final filePath = row['file_path'] as String? ?? '';
+      if (!keep.contains(filePath)) {
+        batch.delete(
+          'photo_fingerprints',
+          where: 'file_path = ?',
+          whereArgs: [filePath],
+        );
+      }
+    }
+    await batch.commit(noResult: true);
+  }
 
   static Future<void> _createPhotoCatalogMetadataTable(
     Database database,
@@ -2210,6 +2313,465 @@ class DatabaseHelper {
       );
     }).toList();
   }
+
+
+  static Future<void> _createSportsCardsTable(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS sports_cards (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sport TEXT NOT NULL DEFAULT '',
+        year TEXT NOT NULL DEFAULT '',
+        brand TEXT NOT NULL DEFAULT '',
+        set_name TEXT NOT NULL DEFAULT '',
+        card_number TEXT NOT NULL DEFAULT '',
+        player TEXT NOT NULL DEFAULT '',
+        team TEXT NOT NULL DEFAULT '',
+        attributes TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'Untracked',
+        quantity_owned INTEGER NOT NULL DEFAULT 0,
+        grade TEXT NOT NULL DEFAULT '',
+        storage_location TEXT NOT NULL DEFAULT '',
+        value REAL,
+        notes TEXT NOT NULL DEFAULT '',
+        UNIQUE(sport, year, brand, set_name, card_number)
+      )
+    ''');
+  }
+
+  static Future<void> _createSportsCardCatalogTables(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS sports_card_sets (
+        source_key TEXT PRIMARY KEY,
+        source_name TEXT NOT NULL DEFAULT 'CardLists',
+        sport TEXT NOT NULL DEFAULT '',
+        year TEXT NOT NULL DEFAULT '',
+        brand TEXT NOT NULL DEFAULT '',
+        set_name TEXT NOT NULL DEFAULT '',
+        installed_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        refreshed_at_milliseconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS sports_card_catalog (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_key TEXT NOT NULL,
+        sport TEXT NOT NULL DEFAULT '',
+        year TEXT NOT NULL DEFAULT '',
+        brand TEXT NOT NULL DEFAULT '',
+        set_name TEXT NOT NULL DEFAULT '',
+        card_number TEXT NOT NULL DEFAULT '',
+        player TEXT NOT NULL DEFAULT '',
+        team TEXT NOT NULL DEFAULT '',
+        attributes TEXT NOT NULL DEFAULT '',
+        catalog_notes TEXT NOT NULL DEFAULT '',
+        UNIQUE(source_key, card_number)
+      )
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS sports_card_collection (
+        catalog_id INTEGER PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'Untracked',
+        quantity_owned INTEGER NOT NULL DEFAULT 0,
+        grade TEXT NOT NULL DEFAULT '',
+        storage_location TEXT NOT NULL DEFAULT '',
+        value REAL,
+        value_source TEXT NOT NULL DEFAULT '',
+        value_updated_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        image_path TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        updated_at_milliseconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS sports_card_catalog_set_index
+      ON sports_card_catalog(source_key, card_number)
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS sports_card_collection_status_index
+      ON sports_card_collection(status)
+    ''');
+  }
+
+  static Future<void> _migrateLegacySportsCards(Database database) async {
+    final rows = await database.query('sports_cards');
+    if (rows.isEmpty) return;
+
+    await database.transaction((transaction) async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final grouped = <String, List<Map<String, Object?>>>{};
+
+      for (final row in rows) {
+        final sport = row['sport'] as String? ?? '';
+        final year = row['year'] as String? ?? '';
+        final brand = row['brand'] as String? ?? '';
+        final setName = row['set_name'] as String? ?? '';
+        final sourceKey = 'legacy:$sport:$year:$brand:$setName';
+        grouped.putIfAbsent(sourceKey, () => []).add(row);
+      }
+
+      for (final entry in grouped.entries) {
+        final first = entry.value.first;
+
+        await transaction.insert(
+          'sports_card_sets',
+          {
+            'source_key': entry.key,
+            'source_name': 'Migrated',
+            'sport': first['sport'] as String? ?? '',
+            'year': first['year'] as String? ?? '',
+            'brand': first['brand'] as String? ?? '',
+            'set_name': first['set_name'] as String? ?? '',
+            'installed_at_milliseconds': now,
+            'refreshed_at_milliseconds': now,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+
+        for (final row in entry.value) {
+          final catalogId = await transaction.insert(
+            'sports_card_catalog',
+            {
+              'source_key': entry.key,
+              'sport': row['sport'] as String? ?? '',
+              'year': row['year'] as String? ?? '',
+              'brand': row['brand'] as String? ?? '',
+              'set_name': row['set_name'] as String? ?? '',
+              'card_number': row['card_number'] as String? ?? '',
+              'player': row['player'] as String? ?? '',
+              'team': row['team'] as String? ?? '',
+              'attributes': row['attributes'] as String? ?? '',
+              'catalog_notes': row['notes'] as String? ?? '',
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+
+          var resolvedId = catalogId;
+          if (resolvedId == 0) {
+            final match = await transaction.query(
+              'sports_card_catalog',
+              columns: ['id'],
+              where: 'source_key = ? AND card_number = ?',
+              whereArgs: [entry.key, row['card_number'] as String? ?? ''],
+              limit: 1,
+            );
+            if (match.isEmpty) continue;
+            resolvedId = _staticMapInt(match.first['id']);
+          }
+
+          await transaction.insert(
+            'sports_card_collection',
+            {
+              'catalog_id': resolvedId,
+              'status': row['status'] as String? ?? 'Untracked',
+              'quantity_owned': _staticMapInt(row['quantity_owned']),
+              'grade': row['grade'] as String? ?? '',
+              'storage_location': row['storage_location'] as String? ?? '',
+              'value': row['value'],
+              'notes': row['notes'] as String? ?? '',
+              'updated_at_milliseconds': now,
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        }
+      }
+    });
+  }
+
+  static int _staticMapInt(Object? value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '') ?? 0;
+  }
+
+  Future<List<Map<String, Object?>>> getInstalledSportsCardSets() async {
+    final db = await database;
+    return db.query(
+      'sports_card_sets',
+      orderBy: 'sport COLLATE NOCASE, year DESC, brand COLLATE NOCASE, set_name COLLATE NOCASE',
+    );
+  }
+
+  Future<int> importSportsCardSet({
+    required String sourceKey,
+    required String sourceName,
+    required String sport,
+    required String year,
+    required String brand,
+    required String setName,
+    required List<SportsCard> cards,
+  }) async {
+    final db = await database;
+
+    return db.transaction((transaction) async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      final existingSet = await transaction.query(
+        'sports_card_sets',
+        columns: ['installed_at_milliseconds'],
+        where: 'source_key = ?',
+        whereArgs: [sourceKey],
+        limit: 1,
+      );
+
+      final installedAt = existingSet.isEmpty
+          ? now
+          : _staticMapInt(existingSet.first['installed_at_milliseconds']);
+
+      await transaction.insert(
+        'sports_card_sets',
+        {
+          'source_key': sourceKey,
+          'source_name': sourceName,
+          'sport': sport,
+          'year': year,
+          'brand': brand,
+          'set_name': setName,
+          'installed_at_milliseconds': installedAt,
+          'refreshed_at_milliseconds': now,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+
+      final oldRows = await transaction.rawQuery(
+        '''
+        SELECT c.card_number, u.status, u.quantity_owned, u.grade,
+               u.storage_location, u.value, u.value_source,
+               u.value_updated_at_milliseconds, u.image_path, u.notes
+        FROM sports_card_catalog c
+        LEFT JOIN sports_card_collection u ON u.catalog_id = c.id
+        WHERE c.source_key = ?
+        ''',
+        [sourceKey],
+      );
+
+      final userByNumber = <String, Map<String, Object?>>{
+        for (final row in oldRows)
+          row['card_number'] as String? ?? '': row,
+      };
+
+      final oldCatalog = await transaction.query(
+        'sports_card_catalog',
+        columns: ['id'],
+        where: 'source_key = ?',
+        whereArgs: [sourceKey],
+      );
+
+      for (final row in oldCatalog) {
+        await transaction.delete(
+          'sports_card_collection',
+          where: 'catalog_id = ?',
+          whereArgs: [row['id']],
+        );
+      }
+
+      await transaction.delete(
+        'sports_card_catalog',
+        where: 'source_key = ?',
+        whereArgs: [sourceKey],
+      );
+
+      var imported = 0;
+
+      for (final card in cards) {
+        final catalogId = await transaction.insert(
+          'sports_card_catalog',
+          {
+            'source_key': sourceKey,
+            'sport': sport,
+            'year': year,
+            'brand': brand,
+            'set_name': setName,
+            'card_number': card.cardNumber,
+            'player': card.player,
+            'team': card.team,
+            'attributes': card.attributes,
+            'catalog_notes': card.notes,
+          },
+        );
+
+        final previous = userByNumber[card.cardNumber];
+
+        await transaction.insert(
+          'sports_card_collection',
+          {
+            'catalog_id': catalogId,
+            'status': previous?['status'] as String? ?? 'Untracked',
+            'quantity_owned': _staticMapInt(previous?['quantity_owned']),
+            'grade': previous?['grade'] as String? ?? '',
+            'storage_location': previous?['storage_location'] as String? ?? '',
+            'value': previous?['value'],
+            'value_source': previous?['value_source'] as String? ?? '',
+            'value_updated_at_milliseconds':
+                _staticMapInt(previous?['value_updated_at_milliseconds']),
+            'image_path': previous?['image_path'] as String? ?? '',
+            'notes': previous?['notes'] as String? ?? '',
+            'updated_at_milliseconds': now,
+          },
+        );
+
+        imported++;
+      }
+
+      return imported;
+    });
+  }
+
+  Future<List<SportsCard>> getSportsCards({
+    required String sourceKey,
+    String searchText = '',
+    String status = 'All',
+  }) async {
+    final db = await database;
+    final where = <String>['c.source_key = ?'];
+    final args = <Object?>[sourceKey];
+
+    if (status != 'All') {
+      where.add("COALESCE(u.status, 'Untracked') = ?");
+      args.add(status);
+    }
+
+    if (searchText.trim().isNotEmpty) {
+      where.add('''
+        (c.player LIKE ? OR c.team LIKE ? OR c.card_number LIKE ? OR
+         c.year LIKE ? OR c.brand LIKE ? OR c.set_name LIKE ? OR
+         c.attributes LIKE ?)
+      ''');
+      final pattern = '%${searchText.trim()}%';
+      args.addAll(List<Object?>.filled(7, pattern));
+    }
+
+    final rows = await db.rawQuery(
+      '''
+      SELECT c.id, c.sport, c.year, c.brand, c.set_name, c.card_number,
+             c.player, c.team, c.attributes,
+             COALESCE(u.status, 'Untracked') AS status,
+             COALESCE(u.quantity_owned, 0) AS quantity_owned,
+             COALESCE(u.grade, '') AS grade,
+             COALESCE(u.storage_location, '') AS storage_location,
+             u.value,
+             COALESCE(u.value_source, '') AS value_source,
+             COALESCE(u.value_updated_at_milliseconds, 0)
+               AS value_updated_at_milliseconds,
+             COALESCE(u.image_path, '') AS image_path,
+             COALESCE(u.notes, '') AS notes
+      FROM sports_card_catalog c
+      LEFT JOIN sports_card_collection u ON u.catalog_id = c.id
+      WHERE ${where.join(' AND ')}
+      ORDER BY CAST(c.card_number AS INTEGER), c.card_number COLLATE NOCASE
+      ''',
+      args,
+    );
+
+    return rows.map(SportsCard.fromMap).toList();
+  }
+
+  Future<SportsCard?> findSportsCard({
+    required String year,
+    required String brand,
+    required String cardNumber,
+    String setName = '',
+  }) async {
+    final db = await database;
+
+    final where = <String>[
+      'c.year = ?',
+      'LOWER(c.brand) = LOWER(?)',
+      'LOWER(c.card_number) = LOWER(?)',
+    ];
+
+    final args = <Object?>[
+      year.trim(),
+      brand.trim(),
+      cardNumber.trim(),
+    ];
+
+    if (setName.trim().isNotEmpty) {
+      where.add('LOWER(c.set_name) = LOWER(?)');
+      args.add(setName.trim());
+    }
+
+    final rows = await db.rawQuery(
+      '''
+      SELECT c.id, c.sport, c.year, c.brand, c.set_name, c.card_number,
+             c.player, c.team, c.attributes,
+             COALESCE(u.status, 'Untracked') AS status,
+             COALESCE(u.quantity_owned, 0) AS quantity_owned,
+             COALESCE(u.grade, '') AS grade,
+             COALESCE(u.storage_location, '') AS storage_location,
+             u.value,
+             COALESCE(u.value_source, '') AS value_source,
+             COALESCE(u.value_updated_at_milliseconds, 0)
+               AS value_updated_at_milliseconds,
+             COALESCE(u.image_path, '') AS image_path,
+             COALESCE(u.notes, '') AS notes
+      FROM sports_card_catalog c
+      LEFT JOIN sports_card_collection u ON u.catalog_id = c.id
+      WHERE ${where.join(' AND ')}
+      LIMIT 2
+      ''',
+      args,
+    );
+
+    if (rows.length != 1) {
+      return null;
+    }
+
+    return SportsCard.fromMap(rows.first);
+  }
+
+  Future<int> updateSportsCard(SportsCard card) async {
+    if (card.id == null) throw ArgumentError('Sports card catalog ID required.');
+    final db = await database;
+
+    return db.insert(
+      'sports_card_collection',
+      {
+        'catalog_id': card.id,
+        'status': card.status,
+        'quantity_owned': card.quantityOwned,
+        'grade': card.grade,
+        'storage_location': card.storageLocation,
+        'value': card.value,
+        'value_source': card.valueSource,
+        'value_updated_at_milliseconds': card.valueUpdatedAtMilliseconds,
+        'image_path': card.imagePath,
+        'notes': card.notes,
+        'updated_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<Map<String, int>> getSportsCardSummary({
+    required String sourceKey,
+  }) async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT COUNT(*) AS total,
+        SUM(CASE WHEN COALESCE(u.status, 'Untracked') = 'Owned' THEN 1 ELSE 0 END) AS owned,
+        SUM(CASE WHEN COALESCE(u.status, 'Untracked') = 'Need' THEN 1 ELSE 0 END) AS needed,
+        SUM(CASE WHEN COALESCE(u.status, 'Untracked') = 'Untracked' THEN 1 ELSE 0 END) AS untracked
+      FROM sports_card_catalog c
+      LEFT JOIN sports_card_collection u ON u.catalog_id = c.id
+      WHERE c.source_key = ?
+      ''',
+      [sourceKey],
+    );
+
+    final row = rows.first;
+    return {
+      'total': _mapInt(row['total']),
+      'owned': _mapInt(row['owned']),
+      'needed': _mapInt(row['needed']),
+      'untracked': _mapInt(row['untracked']),
+    };
+  }
+
 
 }
 

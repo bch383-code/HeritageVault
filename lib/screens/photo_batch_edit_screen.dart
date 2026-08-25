@@ -102,12 +102,12 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
           _writeToOriginals
               ? 'People and Tags will be added to each photo without removing '
                   'existing values. Enabled Date, Location, and Description '
-                  'fields will replace those Heritage Vault fields. Heritage '
+                  'fields will replace those Heirloom Atlas fields. Heritage '
                   'Vault will then create a backup of each original image and '
                   'write supported metadata to the selected OneDrive photos.'
               : 'People and Tags will be added to each photo without removing '
                   'existing values. Enabled Date, Location, and Description '
-                  'fields will replace those Heritage Vault fields. Original '
+                  'fields will replace those Heirloom Atlas fields. Original '
                   'image files will not be modified.',
         ),
         actions: [
@@ -202,7 +202,7 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Saved to Heritage Vault: $_savedCount'),
+                  Text('Saved to Heirloom Atlas: $_savedCount'),
                   Text('Written to original photos: $_writtenCount'),
                   Text('Write errors: $_writeErrorCount'),
                   if (_writeErrors.isNotEmpty) ...[
@@ -371,9 +371,9 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                       style: TextStyle(fontWeight: FontWeight.w800),
                     ),
                     subtitle: const Text(
-                      'Creates a Heritage Vault backup of each original first, '
+                      'Creates a Heirloom Atlas backup of each original first, '
                       'then writes supported XMP metadata using ExifTool. '
-                      'Archival Date and Notes remain in Heritage Vault only.',
+                      'Archival Date and Notes remain in Heirloom Atlas only.',
                     ),
                     secondary: const Icon(Icons.edit_note_outlined),
                   ),
@@ -420,7 +420,7 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                   },
                   title: 'Archival Date',
                   subtitle:
-                      'Replace the Heritage Vault archival date on all selected photos.',
+                      'Replace the Heirloom Atlas archival date on all selected photos.',
                   child: LayoutBuilder(
                     builder: (context, constraints) {
                       final narrow = constraints.maxWidth < 500;
@@ -492,7 +492,7 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                   },
                   title: 'Location',
                   subtitle:
-                      'Replace the Heritage Vault location on all selected photos.',
+                      'Replace the Heirloom Atlas location on all selected photos.',
                   child: TextField(
                     controller: _locationController,
                     enabled: !_saving,
@@ -510,7 +510,7 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                   },
                   title: 'Description',
                   subtitle:
-                      'Replace the Heritage Vault description on all selected photos.',
+                      'Replace the Heirloom Atlas description on all selected photos.',
                   child: TextField(
                     controller: _descriptionController,
                     enabled: !_saving,

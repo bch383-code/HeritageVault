@@ -87,13 +87,13 @@ class _AntiqueEditScreenState extends State<AntiqueEditScreen> {
       withData: false,
     );
 
-    if (result == null || result.isEmpty) return;
+    if (result == null || result.files.isEmpty) return;
 
     final documentsDirectory = await getApplicationDocumentsDirectory();
     final imageDirectory = Directory(
       path.join(
         documentsDirectory.path,
-        'Heirloom Atlas',
+        'Heritage Vault',
         'Antiques',
         'Images',
       ),
@@ -105,7 +105,7 @@ class _AntiqueEditScreenState extends State<AntiqueEditScreen> {
 
     final copied = <String>[];
 
-    for (final pickedFile in result) {
+    for (final pickedFile in result.files) {
       final sourcePath = pickedFile.path;
       if (sourcePath == null || sourcePath.isEmpty) continue;
 
@@ -173,7 +173,7 @@ class _AntiqueEditScreenState extends State<AntiqueEditScreen> {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Delete antique?'),
         content: const Text(
-          'This removes the antique record from Heirloom Atlas. '
+          'This removes the antique record from Heritage Vault. '
           'Copied image files will remain in the Antiques image folder.',
         ),
         actions: [
@@ -433,4 +433,3 @@ class _AntiqueEditScreenState extends State<AntiqueEditScreen> {
     );
   }
 }
-

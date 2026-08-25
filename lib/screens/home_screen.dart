@@ -120,7 +120,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 const SizedBox(height: 32),
                 _sectionTitle(
                   'Quick Start',
-                  'Common places to continue working in Heritage Vault.',
+                  'Common places to continue working in Heirloom Atlas.',
                 ),
                 const SizedBox(height: 14),
                 _buildQuickStart(),
@@ -141,7 +141,7 @@ class _HomeScreenState extends State<HomeScreen> {
           fit: StackFit.expand,
           children: [
             Image.asset(
-              'assets/images/family_heritage_banner.png',
+              'assets/branding/heirloom_atlas_banner.png',
               fit: BoxFit.cover,
               alignment: Alignment.center,
               errorBuilder: (context, error, stackTrace) {

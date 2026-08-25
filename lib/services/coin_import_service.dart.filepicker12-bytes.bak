@@ -1,4 +1,4 @@
-import 'dart:typed_data';
+﻿import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:spreadsheet_decoder/spreadsheet_decoder.dart';
@@ -82,8 +82,10 @@ class CoinImportService {
     if (pickedFile.isEmpty) return null;
 
     final platformFile = pickedFile.single;
-    final Uint8List bytes = await platformFile.readAsBytes();
-
+    final Uint8List? bytes = platformFile.bytes;
+    if (bytes == null) {
+      throw Exception('Heritage Vault could not read the selected file.');
+    }
 
     final workbook = SpreadsheetDecoder.decodeBytes(bytes, update: false);
 
@@ -508,5 +510,4 @@ class CoinImportService {
     return value.toString().trim();
   }
 }
-
 

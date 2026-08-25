@@ -19,7 +19,7 @@ class AtlasBookRepository {
     _database = await databaseFactory.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 6,
+        version: 8,
         onCreate: (db, version) async {
           await db.execute('''
             CREATE TABLE atlas_books (
@@ -60,6 +60,17 @@ class AtlasBookRepository {
             await db.execute(
               'ALTER TABLE atlas_book_pages '
               'ADD COLUMN related_person_id INTEGER',
+            );
+          }
+
+          if (oldVersion < 7) {
+            await db.execute(
+              'ALTER TABLE atlas_book_pages '
+              "ADD COLUMN collage_photo_paths_json TEXT NOT NULL DEFAULT '[]'",
+            );
+            await db.execute(
+              'ALTER TABLE atlas_book_pages '
+              "ADD COLUMN collage_layout_key TEXT NOT NULL DEFAULT 'balanced'",
             );
           }
         },
@@ -106,6 +117,8 @@ class AtlasBookRepository {
         related_person_id INTEGER,
         hero_photo_path TEXT NOT NULL DEFAULT '',
         generation_count INTEGER NOT NULL DEFAULT 4,
+        collage_photo_paths_json TEXT NOT NULL DEFAULT '[]',
+        collage_layout_key TEXT NOT NULL DEFAULT 'balanced',
         sort_order INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -281,9 +294,27 @@ class AtlasBookRepository {
       relatedPersonId: page.relatedPersonId,
       heroPhotoPath: page.heroPhotoPath,
       generationCount: page.generationCount,
+      collagePhotoPathsJson: page.collagePhotoPathsJson,
+      collageLayoutKey: page.collageLayoutKey,
       sortOrder: page.sortOrder,
       createdAt: page.createdAt,
       updatedAt: page.updatedAt,
+    );
+  }
+
+  Future<void> updateBookPage(AtlasBookPage page) async {
+    final pageId = page.id;
+    if (pageId == null) return;
+
+    final db = await database;
+    final map = page.toMap();
+    map.remove('id');
+
+    await db.update(
+      'atlas_book_pages',
+      map,
+      where: 'id = ?',
+      whereArgs: [pageId],
     );
   }
 

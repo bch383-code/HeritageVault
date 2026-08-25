@@ -89,16 +89,16 @@ class _PostcardEditScreenState extends State<PostcardEditScreen> {
       withData: false,
     );
 
-    if (result == null || result.files.isEmpty) return null;
+    if (result == null || result.isEmpty) return null;
 
-    final sourcePath = result.files.single.path;
+    final sourcePath = result.single.path;
     if (sourcePath == null || sourcePath.isEmpty) return null;
 
     final documentsDirectory = await getApplicationDocumentsDirectory();
     final imageDirectory = Directory(
       path.join(
         documentsDirectory.path,
-        'Heritage Vault',
+        'Heirloom Atlas',
         'Postcards',
         'Images',
       ),
@@ -181,7 +181,7 @@ class _PostcardEditScreenState extends State<PostcardEditScreen> {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Delete postcard?'),
         content: const Text(
-          'This removes the postcard record from Heritage Vault. '
+          'This removes the postcard record from Heirloom Atlas. '
           'The copied image files will be left in the Postcards image folder.',
         ),
         actions: [
@@ -431,3 +431,4 @@ class _PostcardEditScreenState extends State<PostcardEditScreen> {
     );
   }
 }
+

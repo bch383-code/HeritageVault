@@ -208,7 +208,7 @@ class _WholeLibraryFaceScanScreenState
                     ),
                     const SizedBox(height: 10),
                     const Text(
-                      'Heritage Vault saves progress after every photo. '
+                      'Heirloom Atlas saves progress after every photo. '
                       'Photos already scanned are skipped unless the file '
                       'has changed, so you can stop and resume later.',
                       textAlign: TextAlign.center,

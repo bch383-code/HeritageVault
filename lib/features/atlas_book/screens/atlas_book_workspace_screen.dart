@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -203,7 +204,66 @@ class _AtlasBookWorkspaceScreenState
       await _createAncestryFanChartPage();
     } else if (pageType == 'family_group_sheet') {
       await _createFamilyGroupSheetPage();
+    } else if (pageType == 'collage') {
+      await _createCollagePage();
     }
+  }
+
+  Future<void> _createCollagePage() async {
+    final bookId = widget.book.id;
+    if (bookId == null) return;
+
+    final availablePhotos = _selectedPhotoPaths
+        .where((path) => path.isNotEmpty && File(path).existsSync())
+        .toList();
+
+    if (availablePhotos.length < 2) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Save at least two photos to this book before adding a collage.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final result = await showDialog<_CollagePageResult>(
+      context: context,
+      builder: (_) => _CollagePageDialog(
+        photoPaths: availablePhotos,
+      ),
+    );
+
+    if (result == null) return;
+
+    final now = DateTime.now();
+
+    await _repository.insertBookPage(
+      AtlasBookPage(
+        bookId: bookId,
+        pageType: 'collage',
+        collagePhotoPathsJson: jsonEncode(result.photoPaths),
+        collageLayoutKey: result.layoutKey,
+        collageLayoutSeed: result.layoutSeed,
+        collageTitle: result.title,
+        collageSubtitle: result.subtitle,
+        collagePhotoLayoutJson: result.photoLayoutJson,
+        sortOrder: await _repository.getNextBookPageSortOrder(bookId),
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+
+    await _loadBookPages();
+
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Collage page saved to this book.'),
+      ),
+    );
   }
 
   Future<void> _createPersonProfilePage() async {
@@ -457,6 +517,201 @@ class _AtlasBookWorkspaceScreenState
     );
   }
 
+  Future<void> _editPage(AtlasBookPage page) async {
+    final pageId = page.id;
+    if (pageId == null) return;
+
+    if (page.pageType != 'collage' && _selectedPeople.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Choose people for this book before editing pages.'),
+        ),
+      );
+      return;
+    }
+
+    final now = DateTime.now();
+
+    if (page.pageType == 'collage') {
+      final availablePhotos = _selectedPhotoPaths
+          .where((path) => path.isNotEmpty && File(path).existsSync())
+          .toList();
+
+      if (availablePhotos.length < 2) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Save at least two photos to this book before editing a collage.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      List<String> initialPhotos = [];
+      try {
+        final decoded = jsonDecode(page.collagePhotoPathsJson);
+        if (decoded is List) {
+          initialPhotos = decoded
+              .whereType<String>()
+              .where((path) => File(path).existsSync())
+              .toList();
+        }
+      } catch (_) {
+        initialPhotos = [];
+      }
+
+      final result = await showDialog<_CollagePageResult>(
+        context: context,
+        builder: (_) => _CollagePageDialog(
+          photoPaths: availablePhotos,
+          initialSelectedPaths: initialPhotos,
+          initialLayoutKey: page.collageLayoutKey,
+          initialLayoutSeed: page.collageLayoutSeed,
+          initialTitle: page.collageTitle,
+          initialSubtitle: page.collageSubtitle,
+          initialPhotoLayoutJson: page.collagePhotoLayoutJson,
+          isEditing: true,
+        ),
+      );
+
+      if (result == null) return;
+
+      await _repository.updateBookPage(
+        AtlasBookPage(
+          id: pageId,
+          bookId: page.bookId,
+          pageType: page.pageType,
+          personId: page.personId,
+          relatedPersonId: page.relatedPersonId,
+          heroPhotoPath: page.heroPhotoPath,
+          generationCount: page.generationCount,
+          collagePhotoPathsJson: jsonEncode(result.photoPaths),
+          collageLayoutKey: result.layoutKey,
+          collageLayoutSeed: result.layoutSeed,
+          collageTitle: result.title,
+          collageSubtitle: result.subtitle,
+          collagePhotoLayoutJson: result.photoLayoutJson,
+          sortOrder: page.sortOrder,
+          createdAt: page.createdAt,
+          updatedAt: now,
+        ),
+      );
+    } else if (page.pageType == 'person_profile') {
+      final result = await showDialog<_PersonProfilePageResult>(
+        context: context,
+        builder: (_) => _PersonProfilePageDialog(
+          people: _selectedPeople,
+          photoPaths: _selectedPhotoPaths
+              .where((path) => path.isNotEmpty && File(path).existsSync())
+              .toList(),
+          initialPersonId: page.personId,
+          initialHeroPhotoPath: page.heroPhotoPath,
+          isEditing: true,
+        ),
+      );
+
+      if (result == null) return;
+
+      await _repository.updateBookPage(
+        AtlasBookPage(
+          id: pageId,
+          bookId: page.bookId,
+          pageType: page.pageType,
+          personId: result.personId,
+          relatedPersonId: page.relatedPersonId,
+          heroPhotoPath: result.heroPhotoPath ?? '',
+          generationCount: page.generationCount,
+          collagePhotoPathsJson: page.collagePhotoPathsJson,
+          collageLayoutKey: page.collageLayoutKey,
+          collageLayoutSeed: page.collageLayoutSeed,
+          collageTitle: page.collageTitle,
+          collageSubtitle: page.collageSubtitle,
+          collagePhotoLayoutJson: page.collagePhotoLayoutJson,
+          sortOrder: page.sortOrder,
+          createdAt: page.createdAt,
+          updatedAt: now,
+        ),
+      );
+    } else if (page.pageType == 'ancestry_fan_chart') {
+      final result = await showDialog<_FanChartPageResult>(
+        context: context,
+        builder: (_) => _FanChartSetupDialog(
+          people: _selectedPeople,
+          databaseHelper: _databaseHelper,
+          initialPersonId: page.personId,
+          initialGenerationCount: page.generationCount,
+          isEditing: true,
+        ),
+      );
+
+      if (result == null) return;
+
+      await _repository.updateBookPage(
+        AtlasBookPage(
+          id: pageId,
+          bookId: page.bookId,
+          pageType: page.pageType,
+          personId: result.personId,
+          relatedPersonId: page.relatedPersonId,
+          heroPhotoPath: page.heroPhotoPath,
+          generationCount: result.generationCount,
+          collagePhotoPathsJson: page.collagePhotoPathsJson,
+          collageLayoutKey: page.collageLayoutKey,
+          collageLayoutSeed: page.collageLayoutSeed,
+          collageTitle: page.collageTitle,
+          collageSubtitle: page.collageSubtitle,
+          collagePhotoLayoutJson: page.collagePhotoLayoutJson,
+          sortOrder: page.sortOrder,
+          createdAt: page.createdAt,
+          updatedAt: now,
+        ),
+      );
+    } else if (page.pageType == 'family_group_sheet') {
+      final result = await showDialog<_FamilyGroupSheetResult>(
+        context: context,
+        builder: (_) => _FamilyGroupSheetSetupDialog(
+          people: _selectedPeople,
+          databaseHelper: _databaseHelper,
+          initialPrimaryPersonId: page.personId,
+          initialSpousePersonId: page.relatedPersonId,
+          isEditing: true,
+        ),
+      );
+
+      if (result == null) return;
+
+      await _repository.updateBookPage(
+        AtlasBookPage(
+          id: pageId,
+          bookId: page.bookId,
+          pageType: page.pageType,
+          personId: result.primaryPersonId,
+          relatedPersonId: result.spousePersonId,
+          heroPhotoPath: page.heroPhotoPath,
+          generationCount: page.generationCount,
+          collagePhotoPathsJson: page.collagePhotoPathsJson,
+          collageLayoutKey: page.collageLayoutKey,
+          collageLayoutSeed: page.collageLayoutSeed,
+          collageTitle: page.collageTitle,
+          collageSubtitle: page.collageSubtitle,
+          collagePhotoLayoutJson: page.collagePhotoLayoutJson,
+          sortOrder: page.sortOrder,
+          createdAt: page.createdAt,
+          updatedAt: now,
+        ),
+      );
+    }
+
+    await _loadBookPages();
+
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Page changes saved.')),
+    );
+  }
+
   Future<void> _deletePage(AtlasBookPage page) async {
     if (page.id == null) return;
     await _repository.deleteBookPage(page.id!);
@@ -488,6 +743,37 @@ class _AtlasBookWorkspaceScreenState
   }
 
   Future<void> _previewSavedPage(AtlasBookPage page) async {
+    if (page.pageType == 'collage') {
+      List<String> photoPaths = [];
+
+      try {
+        final decoded = jsonDecode(page.collagePhotoPathsJson);
+        if (decoded is List) {
+          photoPaths = decoded
+              .whereType<String>()
+              .where((path) => File(path).existsSync())
+              .toList();
+        }
+      } catch (_) {
+        photoPaths = [];
+      }
+
+      if (!mounted) return;
+
+      await showDialog<void>(
+        context: context,
+        builder: (_) => _SavedCollagePreviewDialog(
+          photoPaths: photoPaths,
+          layoutKey: page.collageLayoutKey,
+          layoutSeed: page.collageLayoutSeed,
+          title: page.collageTitle,
+          subtitle: page.collageSubtitle,
+          photoLayoutJson: page.collagePhotoLayoutJson,
+        ),
+      );
+      return;
+    }
+
     if (page.personId == null) return;
 
     if (page.pageType == 'family_group_sheet') {
@@ -550,6 +836,30 @@ class _AtlasBookWorkspaceScreenState
     final previewPages = <_BookPreviewPageData>[];
 
     for (final page in _bookPages) {
+      if (page.pageType == 'collage') {
+        List<String> photoPaths = [];
+
+        try {
+          final decoded = jsonDecode(page.collagePhotoPathsJson);
+          if (decoded is List) {
+            photoPaths = decoded
+                .whereType<String>()
+                .where((path) => File(path).existsSync())
+                .toList();
+          }
+        } catch (_) {
+          photoPaths = [];
+        }
+
+        previewPages.add(
+          _BookPreviewPageData(
+            page: page,
+            collagePhotoPaths: photoPaths,
+          ),
+        );
+        continue;
+      }
+
       if (page.personId == null) continue;
 
       if (page.pageType == 'ancestry_fan_chart') {
@@ -718,6 +1028,7 @@ class _AtlasBookWorkspaceScreenState
                   people: _selectedPeople,
                   onAddPage: _addPage,
                   onPreview: _previewSavedPage,
+                  onEdit: _editPage,
                   onDelete: _deletePage,
                   onMoveUp: (index) => _movePage(index, -1),
                   onMoveDown: (index) => _movePage(index, 1),
@@ -1096,6 +1407,19 @@ class _AddPageTypeDialog extends StatelessWidget {
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.pop(context, 'family_group_sheet'),
             ),
+            const SizedBox(height: 10),
+            ListTile(
+              leading: const Icon(Icons.grid_view_outlined, size: 34),
+              title: const Text(
+                'Collage',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              subtitle: const Text(
+                'Arrange several saved photos into a themed heritage page.',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.pop(context, 'collage'),
+            ),
             const ListTile(
               enabled: false,
               leading: Icon(Icons.photo_library_outlined, size: 34),
@@ -1142,6 +1466,7 @@ class _BookPagesPanel extends StatelessWidget {
   final List<FamilyPerson> people;
   final VoidCallback onAddPage;
   final ValueChanged<AtlasBookPage> onPreview;
+  final ValueChanged<AtlasBookPage> onEdit;
   final ValueChanged<AtlasBookPage> onDelete;
   final ValueChanged<int> onMoveUp;
   final ValueChanged<int> onMoveDown;
@@ -1152,6 +1477,7 @@ class _BookPagesPanel extends StatelessWidget {
     required this.people,
     required this.onAddPage,
     required this.onPreview,
+    required this.onEdit,
     required this.onDelete,
     required this.onMoveUp,
     required this.onMoveDown,
@@ -1163,6 +1489,15 @@ class _BookPagesPanel extends StatelessWidget {
       if (person.id == id) return person;
     }
     return null;
+  }
+
+  int _collagePhotoCount(AtlasBookPage page) {
+    try {
+      final decoded = jsonDecode(page.collagePhotoPathsJson);
+      return decoded is List ? decoded.length : 0;
+    } catch (_) {
+      return 0;
+    }
   }
 
   @override
@@ -1229,6 +1564,8 @@ class _BookPagesPanel extends StatelessWidget {
                   page.pageType == 'ancestry_fan_chart';
               final isFamilyGroup =
                   page.pageType == 'family_group_sheet';
+              final isCollage =
+                  page.pageType == 'collage';
 
               return Card(
                 child: ListTile(
@@ -1238,23 +1575,29 @@ class _BookPagesPanel extends StatelessWidget {
                         ? Icons.hub_outlined
                         : isFamilyGroup
                             ? Icons.family_restroom_outlined
-                            : Icons.description_outlined,
+                            : isCollage
+                                ? Icons.grid_view_outlined
+                                : Icons.description_outlined,
                   ),
                   title: Text(
-                    person?.displayName ??
-                        (isFanChart
-                            ? 'Ancestry Fan Chart'
-                            : isFamilyGroup
-                                ? 'Family Group Sheet'
-                                : 'Person Profile'),
+                    isCollage
+                        ? 'Photo Collage'
+                        : person?.displayName ??
+                            (isFanChart
+                                ? 'Ancestry Fan Chart'
+                                : isFamilyGroup
+                                    ? 'Family Group Sheet'
+                                    : 'Person Profile'),
                     style: const TextStyle(fontWeight: FontWeight.w800),
                   ),
                   subtitle: Text(
-                    isFanChart
-                        ? 'Ancestry Fan Chart • ${page.generationCount} generations'
-                        : isFamilyGroup
-                            ? 'Family Group Sheet'
-                            : 'Person Profile',
+                    isCollage
+                        ? 'Collage • ${_collagePhotoCount(page)} photos'
+                        : isFanChart
+                            ? 'Ancestry Fan Chart • ${page.generationCount} generations'
+                            : isFamilyGroup
+                                ? 'Family Group Sheet'
+                                : 'Person Profile',
                   ),
                   trailing: Wrap(
                     spacing: 2,
@@ -1270,6 +1613,11 @@ class _BookPagesPanel extends StatelessWidget {
                             ? null
                             : () => onMoveDown(index),
                         icon: const Icon(Icons.arrow_downward),
+                      ),
+                      IconButton(
+                        tooltip: 'Edit page',
+                        onPressed: () => onEdit(page),
+                        icon: const Icon(Icons.edit_outlined),
                       ),
                       IconButton(
                         tooltip: 'Remove page',
@@ -1345,10 +1693,16 @@ class _FanAncestorNode {
 class _FanChartSetupDialog extends StatefulWidget {
   final List<FamilyPerson> people;
   final DatabaseHelper databaseHelper;
+  final int? initialPersonId;
+  final int? initialGenerationCount;
+  final bool isEditing;
 
   const _FanChartSetupDialog({
     required this.people,
     required this.databaseHelper,
+    this.initialPersonId,
+    this.initialGenerationCount,
+    this.isEditing = false,
   });
 
   @override
@@ -1365,7 +1719,11 @@ class _FanChartSetupDialogState extends State<_FanChartSetupDialog> {
   @override
   void initState() {
     super.initState();
-    _rootPerson = widget.people.first;
+    _rootPerson = widget.people.firstWhere(
+      (person) => person.id == widget.initialPersonId,
+      orElse: () => widget.people.first,
+    );
+    _generationCount = widget.initialGenerationCount ?? 4;
     _refreshPreview();
   }
 
@@ -1438,7 +1796,7 @@ class _FanChartSetupDialogState extends State<_FanChartSetupDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Add Ancestry Fan Chart'),
+      title: Text(widget.isEditing ? 'Edit Ancestry Fan Chart' : 'Add Ancestry Fan Chart'),
       content: SizedBox(
         width: 980,
         height: 720,
@@ -1550,7 +1908,7 @@ class _FanChartSetupDialogState extends State<_FanChartSetupDialog> {
                     ),
                   ),
           icon: const Icon(Icons.add),
-          label: const Text('Add Fan Chart'),
+          label: Text(widget.isEditing ? 'Save Changes' : 'Add Fan Chart'),
         ),
       ],
     );
@@ -1876,12 +2234,14 @@ class _BookPreviewPageData {
   final FamilyPerson? person;
   final List<_FanAncestorNode>? fanNodes;
   final _FamilyGroupSheetData? familyGroupData;
+  final List<String>? collagePhotoPaths;
 
   const _BookPreviewPageData({
     required this.page,
     this.person,
     this.fanNodes,
     this.familyGroupData,
+    this.collagePhotoPaths,
   });
 }
 
@@ -1914,6 +2274,17 @@ class _WholeBookPreviewDialogState
   }
 
   Widget _buildPage(_BookPreviewPageData data) {
+    if (data.page.pageType == 'collage') {
+      return _CollagePagePreview(
+        photoPaths: data.collagePhotoPaths ?? const [],
+        layoutKey: data.page.collageLayoutKey,
+        layoutSeed: data.page.collageLayoutSeed,
+        title: data.page.collageTitle,
+        subtitle: data.page.collageSubtitle,
+        photoLayoutJson: data.page.collagePhotoLayoutJson,
+      );
+    }
+
     if (data.page.pageType == 'ancestry_fan_chart') {
       return _FanChartPagePreview(
         nodes: data.fanNodes ?? const [],
@@ -2080,10 +2451,16 @@ class _FamilyGroupSheetData {
 class _FamilyGroupSheetSetupDialog extends StatefulWidget {
   final List<FamilyPerson> people;
   final DatabaseHelper databaseHelper;
+  final int? initialPrimaryPersonId;
+  final int? initialSpousePersonId;
+  final bool isEditing;
 
   const _FamilyGroupSheetSetupDialog({
     required this.people,
     required this.databaseHelper,
+    this.initialPrimaryPersonId,
+    this.initialSpousePersonId,
+    this.isEditing = false,
   });
 
   @override
@@ -2102,11 +2479,14 @@ class _FamilyGroupSheetSetupDialogState
   @override
   void initState() {
     super.initState();
-    _primary = widget.people.first;
-    _refresh();
+    _primary = widget.people.firstWhere(
+      (person) => person.id == widget.initialPrimaryPersonId,
+      orElse: () => widget.people.first,
+    );
+    _refresh(initialSpousePersonId: widget.initialSpousePersonId);
   }
 
-  Future<void> _refresh() async {
+  Future<void> _refresh({int? initialSpousePersonId}) async {
     final primaryId = _primary.id;
     if (primaryId == null) return;
 
@@ -2116,6 +2496,15 @@ class _FamilyGroupSheetSetupDialogState
         await widget.databaseHelper.getFamilySpouses(primaryId);
 
     FamilyPerson? selectedSpouse = _spouse;
+
+    if (initialSpousePersonId != null) {
+      for (final person in spouses) {
+        if (person.id == initialSpousePersonId) {
+          selectedSpouse = person;
+          break;
+        }
+      }
+    }
 
     if (selectedSpouse == null ||
         !spouses.any((person) => person.id == selectedSpouse?.id)) {
@@ -2183,7 +2572,7 @@ class _FamilyGroupSheetSetupDialogState
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Add Family Group Sheet'),
+      title: Text(widget.isEditing ? 'Edit Family Group Sheet' : 'Add Family Group Sheet'),
       content: SizedBox(
         width: 1040,
         height: 720,
@@ -2301,7 +2690,7 @@ class _FamilyGroupSheetSetupDialogState
                     ),
                   ),
           icon: const Icon(Icons.add),
-          label: const Text('Add Family Group Sheet'),
+          label: Text(widget.isEditing ? 'Save Changes' : 'Add Family Group Sheet'),
         ),
       ],
     );
@@ -2621,6 +3010,1518 @@ class _FamilyGroupSheetPreview extends StatelessWidget {
   }
 }
 
+class _CollagePageResult {
+  final List<String> photoPaths;
+  final String layoutKey;
+  final int layoutSeed;
+  final String title;
+  final String subtitle;
+  final String photoLayoutJson;
+
+  const _CollagePageResult({
+    required this.photoPaths,
+    required this.layoutKey,
+    required this.layoutSeed,
+    required this.title,
+    required this.subtitle,
+    required this.photoLayoutJson,
+  });
+}
+
+class _CollagePageDialog extends StatefulWidget {
+  final List<String> photoPaths;
+  final List<String> initialSelectedPaths;
+  final String initialLayoutKey;
+  final int initialLayoutSeed;
+  final String initialTitle;
+  final String initialSubtitle;
+  final String initialPhotoLayoutJson;
+  final bool isEditing;
+
+  const _CollagePageDialog({
+    required this.photoPaths,
+    this.initialSelectedPaths = const [],
+    this.initialLayoutKey = 'balanced',
+    this.initialLayoutSeed = 0,
+    this.initialTitle = 'Family Memories',
+    this.initialSubtitle = '',
+    this.initialPhotoLayoutJson = '{}',
+    this.isEditing = false,
+  });
+
+  @override
+  State<_CollagePageDialog> createState() => _CollagePageDialogState();
+}
+
+class _CollagePageDialogState extends State<_CollagePageDialog> {
+  late Set<String> _selectedPaths;
+  late String _layoutKey;
+  late int _layoutSeed;
+  late final TextEditingController _titleController;
+  late final TextEditingController _subtitleController;
+  late Map<String, _ManualCollageTransform> _manualTransforms;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _selectedPaths = widget.initialSelectedPaths.isNotEmpty
+        ? widget.initialSelectedPaths.where(widget.photoPaths.contains).toSet()
+        : widget.photoPaths.take(4).toSet();
+
+    _layoutKey = const {
+      'balanced',
+      'featured',
+      'filmstrip',
+      'corkboard',
+    }.contains(widget.initialLayoutKey)
+        ? widget.initialLayoutKey
+        : 'balanced';
+
+    _layoutSeed = widget.initialLayoutSeed == 0
+        ? DateTime.now().microsecondsSinceEpoch & 0x7fffffff
+        : widget.initialLayoutSeed;
+
+    _titleController = TextEditingController(text: widget.initialTitle);
+    _subtitleController = TextEditingController(text: widget.initialSubtitle);
+    _manualTransforms = _decodeManualTransforms(
+      widget.initialPhotoLayoutJson,
+    );
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _subtitleController.dispose();
+    super.dispose();
+  }
+
+  List<String> get _orderedSelectedPaths =>
+      widget.photoPaths.where(_selectedPaths.contains).toList();
+
+  void _togglePhoto(String path, bool selected) {
+    setState(() {
+      if (selected) {
+        if (_selectedPaths.length < 8) {
+          _selectedPaths.add(path);
+        }
+      } else {
+        _selectedPaths.remove(path);
+      }
+    });
+  }
+
+  void _shuffleCorkboard() {
+    setState(() {
+      _layoutSeed = math.Random().nextInt(0x7fffffff);
+      _manualTransforms = {};
+    });
+  }
+
+  void _updateManualTransforms(
+    Map<String, _ManualCollageTransform> transforms,
+  ) {
+    setState(() {
+      _manualTransforms = transforms;
+    });
+  }
+
+  String _encodeCurrentTransforms() {
+    return jsonEncode({
+      for (final entry in _manualTransforms.entries)
+        entry.key: entry.value.toJson(),
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = _orderedSelectedPaths;
+    final canSave = selected.length >= 2;
+
+    return AlertDialog(
+      title: Text(widget.isEditing ? 'Edit Collage Page' : 'Add Collage Page'),
+      content: SizedBox(
+        width: 1080,
+        height: 720,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 315,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Page title',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _titleController,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      hintText: 'Family Memories',
+                    ),
+                    onChanged: (_) => setState(() {}),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Subtitle',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _subtitleController,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      hintText: 'Optional',
+                    ),
+                    onChanged: (_) => setState(() {}),
+                  ),
+                  const SizedBox(height: 18),
+                  const Text(
+                    'Choose photos',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 4),
+                  Text('${selected.length} selected • choose 2–8'),
+                  const SizedBox(height: 12),
+                  Expanded(
+                    child: GridView.builder(
+                      gridDelegate:
+                          const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 2,
+                        crossAxisSpacing: 8,
+                        mainAxisSpacing: 8,
+                        childAspectRatio: 1,
+                      ),
+                      itemCount: widget.photoPaths.length,
+                      itemBuilder: (context, index) {
+                        final path = widget.photoPaths[index];
+                        final isSelected = _selectedPaths.contains(path);
+                        final atLimit =
+                            _selectedPaths.length >= 8 && !isSelected;
+
+                        return Card(
+                          clipBehavior: Clip.antiAlias,
+                          child: InkWell(
+                            onTap: atLimit
+                                ? null
+                                : () => _togglePhoto(path, !isSelected),
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                Image.file(File(path), fit: BoxFit.cover),
+                                Positioned(
+                                  top: 6,
+                                  right: 6,
+                                  child: Material(
+                                    color:
+                                        Theme.of(context).colorScheme.surface,
+                                    shape: const CircleBorder(),
+                                    child: Checkbox(
+                                      value: isSelected,
+                                      onChanged: atLimit
+                                          ? null
+                                          : (value) => _togglePhoto(
+                                                path,
+                                                value ?? false,
+                                              ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Layout',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<String>(
+                    initialValue: _layoutKey,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                    ),
+                    items: const [
+                      DropdownMenuItem(
+                        value: 'balanced',
+                        child: Text('Balanced Grid'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'featured',
+                        child: Text('Featured Photo'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'filmstrip',
+                        child: Text('Heritage Filmstrip'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'corkboard',
+                        child: Text('Corkboard / Random'),
+                      ),
+                    ],
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setState(() => _layoutKey = value);
+                    },
+                  ),
+                  if (_layoutKey == 'corkboard') ...[
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: _shuffleCorkboard,
+                        icon: const Icon(Icons.shuffle),
+                        label: const Text('Shuffle Layout'),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Shuffle until you find an arrangement you like. '
+                      'The saved page will keep that arrangement.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const VerticalDivider(width: 32),
+            Expanded(
+              child: selected.length < 2
+                  ? Center(
+                      child: Text(
+                        'Choose at least two photos to preview the collage.',
+                        style: Theme.of(context).textTheme.titleMedium,
+                        textAlign: TextAlign.center,
+                      ),
+                    )
+                  : _layoutKey == 'corkboard'
+                      ? _EditableCorkboardPagePreview(
+                          photoPaths: selected,
+                          layoutSeed: _layoutSeed,
+                          title: _titleController.text,
+                          subtitle: _subtitleController.text,
+                          initialTransforms: _manualTransforms,
+                          onTransformsChanged: _updateManualTransforms,
+                        )
+                      : _CollagePagePreview(
+                          photoPaths: selected,
+                          layoutKey: _layoutKey,
+                          layoutSeed: _layoutSeed,
+                          title: _titleController.text,
+                          subtitle: _subtitleController.text,
+                        ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton.icon(
+          onPressed: canSave
+              ? () => Navigator.pop(
+                    context,
+                    _CollagePageResult(
+                      photoPaths: selected,
+                      layoutKey: _layoutKey,
+                      layoutSeed: _layoutSeed,
+                      title: _titleController.text.trim(),
+                      subtitle: _subtitleController.text.trim(),
+                      photoLayoutJson: _layoutKey == 'corkboard'
+                          ? _encodeCurrentTransforms()
+                          : '{}',
+                    ),
+                  )
+              : null,
+          icon: const Icon(Icons.grid_view_outlined),
+          label: Text(widget.isEditing ? 'Save Changes' : 'Add Collage'),
+        ),
+      ],
+    );
+  }
+}
+
+class _SavedCollagePreviewDialog extends StatelessWidget {
+  final List<String> photoPaths;
+  final String layoutKey;
+  final int layoutSeed;
+  final String title;
+  final String subtitle;
+  final String photoLayoutJson;
+
+  const _SavedCollagePreviewDialog({
+    required this.photoPaths,
+    required this.layoutKey,
+    required this.layoutSeed,
+    required this.title,
+    required this.subtitle,
+    required this.photoLayoutJson,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Collage Preview'),
+      content: SizedBox(
+        width: 820,
+        height: 680,
+        child: _CollagePagePreview(
+          photoPaths: photoPaths,
+          layoutKey: layoutKey,
+          layoutSeed: layoutSeed,
+          title: title,
+          subtitle: subtitle,
+          photoLayoutJson: photoLayoutJson,
+        ),
+      ),
+      actions: [
+        FilledButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close'),
+        ),
+      ],
+    );
+  }
+}
+
+
+class _ManualCollageTransform {
+  final double centerX;
+  final double centerY;
+  final double width;
+  final double height;
+  final double rotation;
+  final int zIndex;
+
+  const _ManualCollageTransform({
+    required this.centerX,
+    required this.centerY,
+    required this.width,
+    required this.height,
+    required this.rotation,
+    required this.zIndex,
+  });
+
+  Map<String, Object?> toJson() => {
+        'centerX': centerX,
+        'centerY': centerY,
+        'width': width,
+        'height': height,
+        'rotation': rotation,
+        'zIndex': zIndex,
+      };
+
+  factory _ManualCollageTransform.fromJson(Map<String, Object?> json) {
+    double number(String key, double fallback) {
+      final value = json[key];
+      return value is num ? value.toDouble() : fallback;
+    }
+
+    return _ManualCollageTransform(
+      centerX: number('centerX', 0.5),
+      centerY: number('centerY', 0.5),
+      width: number('width', 0.3),
+      height: number('height', 0.3),
+      rotation: number('rotation', 0),
+      zIndex: (json['zIndex'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  _ManualCollageTransform copyWith({
+    double? centerX,
+    double? centerY,
+    double? width,
+    double? height,
+    double? rotation,
+    int? zIndex,
+  }) {
+    return _ManualCollageTransform(
+      centerX: centerX ?? this.centerX,
+      centerY: centerY ?? this.centerY,
+      width: width ?? this.width,
+      height: height ?? this.height,
+      rotation: rotation ?? this.rotation,
+      zIndex: zIndex ?? this.zIndex,
+    );
+  }
+}
+
+Map<String, _ManualCollageTransform> _decodeManualTransforms(String jsonText) {
+  try {
+    final decoded = jsonDecode(jsonText);
+    if (decoded is! Map) return {};
+
+    final result = <String, _ManualCollageTransform>{};
+    decoded.forEach((key, value) {
+      if (key is String && value is Map) {
+        result[key] = _ManualCollageTransform.fromJson(
+          Map<String, Object?>.from(value),
+        );
+      }
+    });
+    return result;
+  } catch (_) {
+    return {};
+  }
+}
+
+class _EditableCorkboardPagePreview extends StatefulWidget {
+  final List<String> photoPaths;
+  final int layoutSeed;
+  final String title;
+  final String subtitle;
+  final Map<String, _ManualCollageTransform> initialTransforms;
+  final ValueChanged<Map<String, _ManualCollageTransform>>
+      onTransformsChanged;
+
+  const _EditableCorkboardPagePreview({
+    required this.photoPaths,
+    required this.layoutSeed,
+    required this.title,
+    required this.subtitle,
+    required this.initialTransforms,
+    required this.onTransformsChanged,
+  });
+
+  @override
+  State<_EditableCorkboardPagePreview> createState() =>
+      _EditableCorkboardPagePreviewState();
+}
+
+class _EditableCorkboardPagePreviewState
+    extends State<_EditableCorkboardPagePreview> {
+  late Map<String, _ManualCollageTransform> _transforms;
+  String? _selectedPath;
+
+  @override
+  void initState() {
+    super.initState();
+    _transforms = Map<String, _ManualCollageTransform>.from(
+      widget.initialTransforms,
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant _EditableCorkboardPagePreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.layoutSeed != widget.layoutSeed) {
+      _transforms = {};
+      _selectedPath = null;
+    } else {
+      for (final path in _transforms.keys.toList()) {
+        if (!widget.photoPaths.contains(path)) {
+          _transforms.remove(path);
+        }
+      }
+    }
+  }
+
+  void _publish() {
+    widget.onTransformsChanged(
+      Map<String, _ManualCollageTransform>.from(_transforms),
+    );
+  }
+
+
+  void _selectPhoto(String path) {
+    if (_selectedPath == path) return;
+    setState(() => _selectedPath = path);
+  }
+
+  void _bringForward() {
+    final path = _selectedPath;
+    if (path == null || !_transforms.containsKey(path)) return;
+
+    final current = _transforms[path]!;
+    final topZ = _transforms.values.fold<int>(
+      0,
+      (maxZ, item) => math.max(maxZ, item.zIndex),
+    );
+
+    setState(() {
+      _transforms[path] = current.copyWith(zIndex: topZ + 1);
+    });
+    _publish();
+  }
+
+  void _sendBackward() {
+    final path = _selectedPath;
+    if (path == null || !_transforms.containsKey(path)) return;
+
+    final current = _transforms[path]!;
+    final bottomZ = _transforms.values.fold<int>(
+      0,
+      (minZ, item) => math.min(minZ, item.zIndex),
+    );
+
+    setState(() {
+      _transforms[path] = current.copyWith(zIndex: bottomZ - 1);
+    });
+    _publish();
+  }
+
+  void _rotateSelected(double degrees) {
+    final path = _selectedPath;
+    if (path == null || !_transforms.containsKey(path)) return;
+
+    final current = _transforms[path]!;
+    final radians = degrees * math.pi / 180;
+    final nextRotation =
+        (current.rotation + radians).clamp(-0.60, 0.60);
+
+    setState(() {
+      _transforms[path] = current.copyWith(
+        rotation: nextRotation,
+      );
+    });
+    _publish();
+  }
+
+  void _resetSelectedPhoto() {
+    final path = _selectedPath;
+    if (path == null) return;
+
+    setState(() {
+      _transforms.remove(path);
+      _selectedPath = null;
+    });
+    _publish();
+  }
+
+  void _resetAllPhotos() {
+    setState(() {
+      _transforms = {};
+      _selectedPath = null;
+    });
+    _publish();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(28, 26, 28, 28),
+      decoration: AtlasBookTheme.pageDecoration,
+      child: Column(
+        children: [
+          if (widget.title.trim().isNotEmpty)
+            Text(
+              widget.title.trim(),
+              style: AtlasBookTheme.displayTitle(context),
+              textAlign: TextAlign.center,
+            ),
+          if (widget.subtitle.trim().isNotEmpty) ...[
+            const SizedBox(height: 5),
+            Text(
+              widget.subtitle.trim(),
+              style: AtlasBookTheme.subtitle(context).copyWith(
+                fontSize: 13,
+                fontStyle: FontStyle.italic,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+          if (widget.title.trim().isNotEmpty ||
+              widget.subtitle.trim().isNotEmpty) ...[
+            const SizedBox(height: 10),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 80),
+              child: _HeritageDivider(),
+            ),
+            const SizedBox(height: 20),
+          ],
+          Expanded(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final helper = _CollagePagePreview(
+                  photoPaths: widget.photoPaths,
+                  layoutKey: 'corkboard',
+                  layoutSeed: widget.layoutSeed,
+                  title: widget.title,
+                  subtitle: widget.subtitle,
+                );
+                final autoSpecs = helper._corkboardSpecs(
+                  constraints.maxWidth,
+                  constraints.maxHeight,
+                );
+
+                for (var index = 0;
+                    index < widget.photoPaths.length;
+                    index++) {
+                  final path = widget.photoPaths[index];
+                  if (_transforms.containsKey(path)) continue;
+
+                  final spec = autoSpecs[index];
+                  _transforms[path] = _ManualCollageTransform(
+                    centerX: (spec.left + spec.width / 2) /
+                        constraints.maxWidth,
+                    centerY: (spec.top + spec.height / 2) /
+                        constraints.maxHeight,
+                    width: spec.width / constraints.maxWidth,
+                    height: spec.height / constraints.maxHeight,
+                    rotation: spec.rotation,
+                    zIndex: index,
+                  );
+                }
+
+                final ordered = [...widget.photoPaths]
+                  ..sort((a, b) {
+                    final az = _transforms[a]?.zIndex ?? 0;
+                    final bz = _transforms[b]?.zIndex ?? 0;
+                    return az.compareTo(bz);
+                  });
+
+                return Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFB9895A),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(
+                      color: AtlasBookTheme.warmBrown.withValues(alpha: 0.55),
+                    ),
+                  ),
+                  child: Stack(
+                    clipBehavior: Clip.hardEdge,
+                    children: [
+                      Positioned.fill(
+                        child: CustomPaint(
+                          painter:
+                              _CorkTexturePainter(seed: widget.layoutSeed),
+                        ),
+                      ),
+                      for (final path in ordered)
+                        _buildDraggablePhoto(
+                          context,
+                          path,
+                          constraints,
+                        ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              OutlinedButton.icon(
+                onPressed: _selectedPath == null ? null : _bringForward,
+                icon: const Icon(Icons.flip_to_front, size: 18),
+                label: const Text('Bring Forward'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _selectedPath == null ? null : _sendBackward,
+                icon: const Icon(Icons.flip_to_back, size: 18),
+                label: const Text('Send Back'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _selectedPath == null
+                    ? null
+                    : () => _rotateSelected(-5),
+                icon: const Icon(Icons.rotate_left, size: 18),
+                label: const Text('Rotate Left'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _selectedPath == null
+                    ? null
+                    : () => _rotateSelected(5),
+                icon: const Icon(Icons.rotate_right, size: 18),
+                label: const Text('Rotate Right'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _selectedPath == null ? null : _resetSelectedPhoto,
+                icon: const Icon(Icons.restart_alt, size: 18),
+                label: const Text('Reset Photo'),
+              ),
+              TextButton.icon(
+                onPressed: _resetAllPhotos,
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('Reset All'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            _selectedPath == null
+                ? 'Click a photo to select it, then drag to move.'
+                : 'Drag to move • bottom-right resizes • top-right rotates • buttons rotate 5°',
+            style: Theme.of(context).textTheme.bodySmall,
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDraggablePhoto(
+    BuildContext context,
+    String path,
+    BoxConstraints constraints,
+  ) {
+    final transform = _transforms[path]!;
+    final itemWidth = transform.width * constraints.maxWidth;
+    final itemHeight = transform.height * constraints.maxHeight;
+    final left =
+        transform.centerX * constraints.maxWidth - itemWidth / 2;
+    final top =
+        transform.centerY * constraints.maxHeight - itemHeight / 2;
+    final selected = _selectedPath == path;
+
+    return Positioned(
+      left: left,
+      top: top,
+      width: itemWidth,
+      height: itemHeight,
+      child: Transform.rotate(
+        angle: transform.rotation,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {
+                  _selectPhoto(path);
+                  _bringForward();
+                },
+                onPanStart: (_) => _selectPhoto(path),
+                onPanUpdate: (details) {
+                  final current = _transforms[path]!;
+                  final dx = details.delta.dx / constraints.maxWidth;
+                  final dy = details.delta.dy / constraints.maxHeight;
+
+                  final halfW = current.width / 2;
+                  final halfH = current.height / 2;
+
+                  final nextX =
+                      (current.centerX + dx).clamp(halfW, 1.0 - halfW);
+                  final nextY =
+                      (current.centerY + dy).clamp(halfH, 1.0 - halfH);
+
+                  setState(() {
+                    _transforms[path] = current.copyWith(
+                      centerX: nextX,
+                      centerY: nextY,
+                    );
+                  });
+                  _publish();
+                },
+                child: Container(
+                  padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFFBF1),
+                    border: Border.all(
+                      color: selected
+                          ? AtlasBookTheme.antiqueGold
+                          : AtlasBookTheme.antiqueGoldSoft,
+                      width: selected ? 2.4 : 1,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.22),
+                        blurRadius: 7,
+                        offset: const Offset(2, 3),
+                      ),
+                    ],
+                  ),
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Positioned.fill(
+                        child: Container(
+                          color: const Color(0xFFFFFCF5),
+                          padding: const EdgeInsets.all(3),
+                          child: Image.file(
+                            File(path),
+                            fit: BoxFit.contain,
+                            alignment: Alignment.center,
+                            errorBuilder: (_, _, _) => const ColoredBox(
+                              color: Color(0xFFE9E0CB),
+                              child: Center(
+                                child: Icon(
+                                  Icons.broken_image_outlined,
+                                  color: AtlasBookTheme.warmBrown,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        top: -14,
+                        left: 0,
+                        right: 0,
+                        child: Center(
+                          child: Container(
+                            width: 12,
+                            height: 12,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF8B5A3C),
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: const Color(0xFFE2C3A6),
+                                width: 1,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            if (selected) ...[
+              Positioned(
+                right: -12,
+                bottom: -12,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onPanUpdate: (details) {
+                    final current = _transforms[path]!;
+                    final aspect =
+                        current.height <= 0 ? 1.0 : current.width / current.height;
+
+                    final delta =
+                        (details.delta.dx + details.delta.dy) / 2;
+                    final widthDelta = delta / constraints.maxWidth;
+
+                    final newWidth =
+                        (current.width + widthDelta).clamp(0.14, 0.70);
+                    final newHeight =
+                        (newWidth / aspect).clamp(0.12, 0.70);
+
+                    setState(() {
+                      _transforms[path] = current.copyWith(
+                        width: newWidth,
+                        height: newHeight,
+                      );
+                    });
+                    _publish();
+                  },
+                  child: Container(
+                    width: 26,
+                    height: 26,
+                    decoration: BoxDecoration(
+                      color: AtlasBookTheme.antiqueGold,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: const Color(0xFFFFFBF1),
+                        width: 2,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.22),
+                          blurRadius: 3,
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.open_in_full,
+                      size: 14,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                right: -12,
+                top: -12,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onPanUpdate: (details) {
+                    final current = _transforms[path]!;
+                    final rotationDelta =
+                        (details.delta.dx - details.delta.dy) * 0.018;
+                    final newRotation =
+                        (current.rotation + rotationDelta).clamp(-0.60, 0.60);
+
+                    setState(() {
+                      _transforms[path] = current.copyWith(
+                        rotation: newRotation,
+                      );
+                    });
+                    _publish();
+                  },
+                  child: Container(
+                    width: 26,
+                    height: 26,
+                    decoration: BoxDecoration(
+                      color: AtlasBookTheme.warmBrown,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: const Color(0xFFFFFBF1),
+                        width: 2,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.22),
+                          blurRadius: 3,
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.rotate_right,
+                      size: 15,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CorkboardPhotoSpec {
+  final double left;
+  final double top;
+  final double width;
+  final double height;
+  final double rotation;
+
+  const _CorkboardPhotoSpec({
+    required this.left,
+    required this.top,
+    required this.width,
+    required this.height,
+    required this.rotation,
+  });
+}
+
+class _CollagePagePreview extends StatelessWidget {
+  final List<String> photoPaths;
+  final String layoutKey;
+  final int layoutSeed;
+  final String title;
+  final String subtitle;
+  final String photoLayoutJson;
+
+  const _CollagePagePreview({
+    required this.photoPaths,
+    required this.layoutKey,
+    this.layoutSeed = 0,
+    this.title = 'Family Memories',
+    this.subtitle = '',
+    this.photoLayoutJson = '{}',
+  });
+
+  Widget _photo(String path) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFFCF5),
+        border: Border.all(
+          color: AtlasBookTheme.antiqueGoldSoft,
+          width: 1.2,
+        ),
+      ),
+      padding: const EdgeInsets.all(4),
+      child: ClipRect(
+        child: Image.file(
+          File(path),
+          fit: BoxFit.contain,
+          alignment: Alignment.center,
+          errorBuilder: (_, _, _) => const ColoredBox(
+            color: Color(0xFFE9E0CB),
+            child: Center(
+              child: Icon(
+                Icons.broken_image_outlined,
+                color: AtlasBookTheme.warmBrown,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _balancedLayout() {
+    final count = photoPaths.length;
+    final columns = count <= 4 ? 2 : 3;
+
+    return GridView.builder(
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: columns,
+        crossAxisSpacing: 10,
+        mainAxisSpacing: 10,
+        childAspectRatio: count <= 4 ? 1.05 : 0.9,
+      ),
+      itemCount: count,
+      itemBuilder: (_, index) => _photo(photoPaths[index]),
+    );
+  }
+
+  Widget _featuredLayout() {
+    final remaining = photoPaths.skip(1).toList();
+
+    return Column(
+      children: [
+        Expanded(
+          flex: 3,
+          child: SizedBox(
+            width: double.infinity,
+            child: _photo(photoPaths.first),
+          ),
+        ),
+        if (remaining.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Expanded(
+            flex: 2,
+            child: Row(
+              children: List.generate(
+                remaining.length,
+                (index) => Expanded(
+                  child: Padding(
+                    padding: EdgeInsets.only(
+                      left: index == 0 ? 0 : 5,
+                      right: index == remaining.length - 1 ? 0 : 5,
+                    ),
+                    child: _photo(remaining[index]),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _filmstripLayout() {
+    return Column(
+      children: [
+        for (var index = 0; index < photoPaths.length; index++) ...[
+          Expanded(
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 34,
+                  child: Text(
+                    '${index + 1}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: AtlasBookTheme.antiqueGold,
+                      fontFamily: 'Georgia',
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Expanded(child: _photo(photoPaths[index])),
+              ],
+            ),
+          ),
+          if (index != photoPaths.length - 1)
+            const SizedBox(height: 8),
+        ],
+      ],
+    );
+  }
+
+  double _photoAspectRatio(String path) {
+    try {
+      final bytes = File(path).readAsBytesSync();
+      if (bytes.isEmpty) return 1.35;
+    } catch (_) {
+      return 1.35;
+    }
+    return _imageAspectFromBytes(path);
+  }
+
+  double _imageAspectFromBytes(String path) {
+    try {
+      final data = File(path).readAsBytesSync();
+
+      // JPEG
+      if (data.length > 10 && data[0] == 0xFF && data[1] == 0xD8) {
+        var offset = 2;
+        while (offset + 9 < data.length) {
+          if (data[offset] != 0xFF) {
+            offset++;
+            continue;
+          }
+          final marker = data[offset + 1];
+          if (marker == 0xD8 || marker == 0xD9) {
+            offset += 2;
+            continue;
+          }
+          if (offset + 3 >= data.length) break;
+          final length = (data[offset + 2] << 8) + data[offset + 3];
+          if (length < 2 || offset + length + 2 > data.length) break;
+
+          final isSof = marker >= 0xC0 &&
+              marker <= 0xCF &&
+              !{0xC4, 0xC8, 0xCC}.contains(marker);
+          if (isSof && offset + 8 < data.length) {
+            final h = (data[offset + 5] << 8) + data[offset + 6];
+            final w = (data[offset + 7] << 8) + data[offset + 8];
+            if (w > 0 && h > 0) return w / h;
+          }
+          offset += length + 2;
+        }
+      }
+
+      // PNG
+      if (data.length >= 24 &&
+          data[0] == 0x89 &&
+          data[1] == 0x50 &&
+          data[2] == 0x4E &&
+          data[3] == 0x47) {
+        final w = (data[16] << 24) |
+            (data[17] << 16) |
+            (data[18] << 8) |
+            data[19];
+        final h = (data[20] << 24) |
+            (data[21] << 16) |
+            (data[22] << 8) |
+            data[23];
+        if (w > 0 && h > 0) return w / h;
+      }
+    } catch (_) {}
+
+    return 1.35;
+  }
+
+  List<_CorkboardPhotoSpec> _corkboardSpecs(
+    double width,
+    double height,
+  ) {
+    final random = math.Random(layoutSeed);
+    final count = photoPaths.length;
+
+    final anchorsByCount = <int, List<Offset>>{
+      2: const [
+        Offset(0.30, 0.30),
+        Offset(0.70, 0.70),
+      ],
+      3: const [
+        Offset(0.28, 0.27),
+        Offset(0.72, 0.34),
+        Offset(0.48, 0.73),
+      ],
+      4: const [
+        Offset(0.27, 0.27),
+        Offset(0.73, 0.28),
+        Offset(0.30, 0.72),
+        Offset(0.72, 0.72),
+      ],
+      5: const [
+        Offset(0.25, 0.23),
+        Offset(0.73, 0.25),
+        Offset(0.49, 0.49),
+        Offset(0.26, 0.76),
+        Offset(0.73, 0.75),
+      ],
+      6: const [
+        Offset(0.23, 0.22),
+        Offset(0.51, 0.23),
+        Offset(0.78, 0.25),
+        Offset(0.24, 0.73),
+        Offset(0.51, 0.70),
+        Offset(0.78, 0.74),
+      ],
+      7: const [
+        Offset(0.21, 0.21),
+        Offset(0.50, 0.20),
+        Offset(0.79, 0.23),
+        Offset(0.34, 0.49),
+        Offset(0.67, 0.49),
+        Offset(0.24, 0.78),
+        Offset(0.75, 0.77),
+      ],
+      8: const [
+        Offset(0.20, 0.20),
+        Offset(0.50, 0.20),
+        Offset(0.80, 0.21),
+        Offset(0.32, 0.47),
+        Offset(0.68, 0.48),
+        Offset(0.20, 0.78),
+        Offset(0.50, 0.76),
+        Offset(0.80, 0.78),
+      ],
+    };
+
+    final anchors = List<Offset>.from(
+      anchorsByCount[count] ?? anchorsByCount[8]!,
+    )..shuffle(random);
+
+    final specs = <_CorkboardPhotoSpec>[];
+
+    for (var index = 0; index < count; index++) {
+      final anchor = anchors[index];
+      final aspect = _photoAspectRatio(photoPaths[index]).clamp(0.55, 1.9);
+
+      final baseWidth = count <= 2
+          ? 0.43
+          : count <= 4
+              ? 0.35
+              : count <= 6
+                  ? 0.29
+                  : 0.25;
+
+      var itemWidth =
+          width * (baseWidth + (random.nextDouble() - 0.5) * 0.05);
+
+      // Thin mat + modest caption-like lower margin, rather than a large
+      // Polaroid blank area.
+      const horizontalFrame = 18.0;
+      const verticalFrame = 30.0;
+      var photoWidth = math.max(40.0, itemWidth - horizontalFrame);
+      var photoHeight = photoWidth / aspect;
+      var itemHeight = photoHeight + verticalFrame;
+
+      final maxHeight = height * (count <= 2 ? 0.42 : 0.34);
+      if (itemHeight > maxHeight) {
+        final scale = maxHeight / itemHeight;
+        itemWidth *= scale;
+        photoWidth = math.max(40.0, itemWidth - horizontalFrame);
+        photoHeight = photoWidth / aspect;
+        itemHeight = photoHeight + verticalFrame;
+      }
+
+      final jitterX = (random.nextDouble() - 0.5) * width * 0.07;
+      final jitterY = (random.nextDouble() - 0.5) * height * 0.07;
+
+      var centerX = anchor.dx * width + jitterX;
+      var centerY = anchor.dy * height + jitterY;
+
+      centerX = centerX.clamp(
+        itemWidth / 2 + 10,
+        width - itemWidth / 2 - 10,
+      );
+      centerY = centerY.clamp(
+        itemHeight / 2 + 10,
+        height - itemHeight / 2 - 10,
+      );
+
+      final rotation =
+          (random.nextDouble() * 7.0 - 3.5) * math.pi / 180;
+
+      specs.add(
+        _CorkboardPhotoSpec(
+          left: centerX - itemWidth / 2,
+          top: centerY - itemHeight / 2,
+          width: itemWidth,
+          height: itemHeight,
+          rotation: rotation,
+        ),
+      );
+    }
+
+    return specs;
+  }
+
+  Widget _corkboardLayout() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final autoSpecs = _corkboardSpecs(
+          constraints.maxWidth,
+          constraints.maxHeight,
+        );
+        final savedTransforms = _decodeManualTransforms(photoLayoutJson);
+        final specs = List<_CorkboardPhotoSpec>.generate(
+          photoPaths.length,
+          (index) {
+            final saved = savedTransforms[photoPaths[index]];
+            if (saved == null) return autoSpecs[index];
+
+            return _CorkboardPhotoSpec(
+              left: saved.centerX * constraints.maxWidth -
+                  saved.width * constraints.maxWidth / 2,
+              top: saved.centerY * constraints.maxHeight -
+                  saved.height * constraints.maxHeight / 2,
+              width: saved.width * constraints.maxWidth,
+              height: saved.height * constraints.maxHeight,
+              rotation: saved.rotation,
+            );
+          },
+        );
+
+        return Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFFB9895A),
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(
+              color: AtlasBookTheme.warmBrown.withValues(alpha: 0.55),
+            ),
+          ),
+          child: Stack(
+            clipBehavior: Clip.hardEdge,
+            children: [
+              Positioned.fill(
+                child: CustomPaint(
+                  painter: _CorkTexturePainter(seed: layoutSeed),
+                ),
+              ),
+              for (final index in List<int>.generate(
+                photoPaths.length,
+                (index) => index,
+              )..shuffle(math.Random(layoutSeed ^ 0x2F31)))
+                Positioned(
+                  left: specs[index].left,
+                  top: specs[index].top,
+                  width: specs[index].width,
+                  height: specs[index].height,
+                  child: Transform.rotate(
+                    angle: specs[index].rotation,
+                    child: Container(
+                      padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFFBF1),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.20),
+                            blurRadius: 6,
+                            offset: const Offset(2, 3),
+                          ),
+                        ],
+                      ),
+                      child: Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          Positioned.fill(
+                            child: _photo(photoPaths[index]),
+                          ),
+                          Positioned(
+                            top: -14,
+                            left: 0,
+                            right: 0,
+                            child: Center(
+                              child: Container(
+                                width: 12,
+                                height: 12,
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF8B5A3C),
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: const Color(0xFFE2C3A6),
+                                    width: 1,
+                                  ),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withValues(
+                                        alpha: 0.20,
+                                      ),
+                                      blurRadius: 2,
+                                      offset: const Offset(1, 1),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(28, 26, 28, 28),
+      decoration: AtlasBookTheme.pageDecoration,
+      child: Column(
+        children: [
+          if (title.trim().isNotEmpty)
+            Text(
+              title.trim(),
+              style: AtlasBookTheme.displayTitle(context),
+              textAlign: TextAlign.center,
+            ),
+          if (subtitle.trim().isNotEmpty) ...[
+            const SizedBox(height: 5),
+            Text(
+              subtitle.trim(),
+              style: AtlasBookTheme.subtitle(context).copyWith(
+                fontSize: 13,
+                fontStyle: FontStyle.italic,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+          if (title.trim().isNotEmpty || subtitle.trim().isNotEmpty) ...[
+            const SizedBox(height: 10),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 80),
+              child: _HeritageDivider(),
+            ),
+            const SizedBox(height: 20),
+          ],
+          Expanded(
+            child: photoPaths.isEmpty
+                ? Center(
+                    child: Text(
+                      'No photos selected.',
+                      style: AtlasBookTheme.body(context),
+                    ),
+                  )
+                : switch (layoutKey) {
+                    'featured' => _featuredLayout(),
+                    'filmstrip' => _filmstripLayout(),
+                    'corkboard' => _corkboardLayout(),
+                    _ => _balancedLayout(),
+                  },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CorkTexturePainter extends CustomPainter {
+  final int seed;
+
+  const _CorkTexturePainter({
+    required this.seed,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final random = math.Random(seed ^ 0x5A17);
+    final paint = Paint();
+
+    for (var i = 0; i < 320; i++) {
+      final x = random.nextDouble() * size.width;
+      final y = random.nextDouble() * size.height;
+      final radius = 0.35 + random.nextDouble() * 1.2;
+      final dark = random.nextBool();
+
+      paint.color = (dark
+              ? const Color(0xFF6F472C)
+              : const Color(0xFFE0B47D))
+          .withValues(alpha: 0.20 + random.nextDouble() * 0.18);
+
+      canvas.drawCircle(Offset(x, y), radius, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _CorkTexturePainter oldDelegate) {
+    return oldDelegate.seed != seed;
+  }
+}
+
 class _PersonProfilePageResult {
   final int personId;
   final String? heroPhotoPath;
@@ -2634,10 +4535,16 @@ class _PersonProfilePageResult {
 class _PersonProfilePageDialog extends StatefulWidget {
   final List<FamilyPerson> people;
   final List<String> photoPaths;
+  final int? initialPersonId;
+  final String? initialHeroPhotoPath;
+  final bool isEditing;
 
   const _PersonProfilePageDialog({
     required this.people,
     required this.photoPaths,
+    this.initialPersonId,
+    this.initialHeroPhotoPath,
+    this.isEditing = false,
   });
 
   @override
@@ -2652,9 +4559,19 @@ class _PersonProfilePageDialogState extends State<_PersonProfilePageDialog> {
   @override
   void initState() {
     super.initState();
-    _person = widget.people.first;
-    _heroPhotoPath =
-        widget.photoPaths.isEmpty ? null : widget.photoPaths.first;
+    _person = widget.people.firstWhere(
+      (person) => person.id == widget.initialPersonId,
+      orElse: () => widget.people.first,
+    );
+
+    final initialHero = widget.initialHeroPhotoPath;
+    _heroPhotoPath = initialHero != null &&
+            initialHero.isNotEmpty &&
+            widget.photoPaths.contains(initialHero)
+        ? initialHero
+        : widget.photoPaths.isEmpty
+            ? null
+            : widget.photoPaths.first;
   }
 
   @override
@@ -2666,7 +4583,7 @@ class _PersonProfilePageDialogState extends State<_PersonProfilePageDialog> {
     final hasHero = heroPath != null && File(heroPath).existsSync();
 
     return AlertDialog(
-      title: const Text('Add Person Profile Page'),
+      title: Text(widget.isEditing ? 'Edit Person Profile Page' : 'Add Person Profile Page'),
       content: SizedBox(
         width: 850,
         height: 650,
@@ -2775,7 +4692,7 @@ class _PersonProfilePageDialogState extends State<_PersonProfilePageDialog> {
                     ),
                   ),
           icon: const Icon(Icons.add),
-          label: const Text('Add Person Profile'),
+          label: Text(widget.isEditing ? 'Save Changes' : 'Add Person Profile'),
         ),
       ],
     );

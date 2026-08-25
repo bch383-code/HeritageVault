@@ -1,10 +1,16 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import 'core/theme/heritage_theme.dart';
+import 'features/mobile/mobile_capture_home.dart';
 import 'features/shell/museum_shell.dart';
 
-class HeirloomAtlasApp extends StatelessWidget {
-  const HeirloomAtlasApp({super.key});
+class HeritageVaultApp extends StatelessWidget {
+  const HeritageVaultApp({super.key});
+
+  bool get _useMobileCaptureShell =>
+      Platform.isAndroid || Platform.isIOS;
 
   @override
   Widget build(BuildContext context) {
@@ -14,7 +20,9 @@ class HeirloomAtlasApp extends StatelessWidget {
       theme: HeritageTheme.light(),
       darkTheme: HeritageTheme.dark(),
       themeMode: ThemeMode.system,
-      home: const MuseumShell(),
+      home: _useMobileCaptureShell
+          ? const MobileCaptureHome()
+          : const MuseumShell(),
     );
   }
 }

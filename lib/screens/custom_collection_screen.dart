@@ -82,7 +82,7 @@ class _CustomCollectionScreenState extends State<CustomCollectionScreen> {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Remove item?'),
         content: Text(
-          'Remove "${item.title}" from Heritage Vault? '
+          'Remove "${item.title}" from Heirloom Atlas? '
           'Linked photos and documents will not be deleted from your computer.',
         ),
         actions: [

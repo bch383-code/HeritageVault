@@ -37,7 +37,7 @@ class _GedcomImportScreenState extends State<GedcomImportScreen> {
         allowedExtensions: const ['ged'],
       );
 
-      final filePath = result?.single.path;
+      final filePath = result?.files.single.path;
       if (filePath == null) {
         if (mounted) setState(() => _busy = false);
         return;
@@ -252,4 +252,3 @@ class _GedcomImportScreenState extends State<GedcomImportScreen> {
     );
   }
 }
-
