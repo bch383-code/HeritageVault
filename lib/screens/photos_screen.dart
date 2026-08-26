@@ -2722,42 +2722,48 @@ class _PhotosScreenState extends State<PhotosScreen> {
     if (_uncatalogedCount > 0) {
       return _PhotoHealthSuggestion(
         icon: Icons.inventory_2_outlined,
-        title: 'Catalog $_uncatalogedCount uncataloged ${_uncatalogedCount == 1 ? 'photo' : 'photos'}',
+        title:
+            'Catalog $_uncatalogedCount uncataloged ${_uncatalogedCount == 1 ? 'photo' : 'photos'}',
         filter: 'Uncataloged',
       );
     }
     if (_missingPeopleCount > 0) {
       return _PhotoHealthSuggestion(
         icon: Icons.people_outline,
-        title: 'Identify people in $_missingPeopleCount ${_missingPeopleCount == 1 ? 'photo' : 'photos'}',
+        title:
+            'Identify people in $_missingPeopleCount ${_missingPeopleCount == 1 ? 'photo' : 'photos'}',
         filter: 'No People',
       );
     }
     if (_missingDateCount > 0) {
       return _PhotoHealthSuggestion(
         icon: Icons.event_outlined,
-        title: 'Add dates to $_missingDateCount ${_missingDateCount == 1 ? 'photo' : 'photos'}',
-        filter: 'No Date',
+        title:
+            'Add dates to $_missingDateCount ${_missingDateCount == 1 ? 'photo' : 'photos'}',
+        action: _startGuidedDateCleanup,
       );
     }
     if (_missingLocationCount > 0) {
       return _PhotoHealthSuggestion(
         icon: Icons.place_outlined,
-        title: 'Add locations to $_missingLocationCount ${_missingLocationCount == 1 ? 'photo' : 'photos'}',
+        title:
+            'Add locations to $_missingLocationCount ${_missingLocationCount == 1 ? 'photo' : 'photos'}',
         filter: 'No Location',
       );
     }
     if (_missingDescriptionCount > 0) {
       return _PhotoHealthSuggestion(
         icon: Icons.notes_outlined,
-        title: 'Describe $_missingDescriptionCount ${_missingDescriptionCount == 1 ? 'photo' : 'photos'}',
+        title:
+            'Describe $_missingDescriptionCount ${_missingDescriptionCount == 1 ? 'photo' : 'photos'}',
         filter: 'No Description',
       );
     }
     if ((_possibleDuplicateCount ?? 0) > 0) {
       return _PhotoHealthSuggestion(
         icon: Icons.compare_outlined,
-        title: 'Review $_possibleDuplicateCount possible duplicate ${_possibleDuplicateCount == 1 ? 'match' : 'matches'}',
+        title:
+            'Review $_possibleDuplicateCount possible duplicate ${_possibleDuplicateCount == 1 ? 'match' : 'matches'}',
         action: () async {
           await _findPossibleDuplicates();
         },
@@ -2766,7 +2772,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
     if (_unidentifiedFaceCount > 0) {
       return _PhotoHealthSuggestion(
         icon: Icons.person_search_outlined,
-        title: 'Review $_unidentifiedFaceCount unidentified ${_unidentifiedFaceCount == 1 ? 'face' : 'faces'}',
+        title:
+            'Review $_unidentifiedFaceCount unidentified ${_unidentifiedFaceCount == 1 ? 'face' : 'faces'}',
         action: _openUnidentifiedFacesFromHealth,
       );
     }
@@ -2774,6 +2781,289 @@ class _PhotosScreenState extends State<PhotosScreen> {
       icon: Icons.check_circle_outline,
       title: 'Your collection is caught up',
     );
+  }
+
+  Future<void> _startGuidedDateCleanup() async {
+    final queue = _photos.where((photo) {
+      final metadata = _catalogByPath[photo.filePath];
+      return metadata == null || metadata.approximateDate.trim().isEmpty;
+    }).toList();
+
+    if (queue.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Every photo already has a date.')),
+      );
+      return;
+    }
+
+    var index = 0;
+    var savedCount = 0;
+    var skippedCount = 0;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final photo = queue[index];
+          final existing =
+              _catalogByPath[photo.filePath] ??
+              PhotoCatalogMetadata(filePath: photo.filePath);
+          final file = File(photo.filePath);
+          final dateController = TextEditingController();
+
+          Future<void> finish() async {
+            Navigator.pop(dialogContext);
+          }
+
+          Future<void> advance({required bool skipped}) async {
+            if (skipped) skippedCount++;
+            if (index >= queue.length - 1) {
+              await finish();
+              return;
+            }
+            setDialogState(() => index++);
+          }
+
+          Future<void> saveAndNext() async {
+            final value = dateController.text.trim();
+            if (value.isEmpty) {
+              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                const SnackBar(
+                  content: Text('Enter a date, or choose Skip for now.'),
+                ),
+              );
+              return;
+            }
+
+            final updated = PhotoCatalogMetadata(
+              filePath: existing.filePath,
+              people: existing.people,
+              tags: existing.tags,
+              approximateDate: value,
+              location: existing.location,
+              description: existing.description,
+              notes: existing.notes,
+            );
+
+            await _databaseHelper.savePhotoCatalogMetadata(updated);
+            _catalogByPath[photo.filePath] = updated;
+            savedCount++;
+
+            if (!mounted || !dialogContext.mounted) return;
+            if (index >= queue.length - 1) {
+              await finish();
+              return;
+            }
+            setState(() {});
+            setDialogState(() => index++);
+          }
+
+          return Dialog(
+            child: SizedBox(
+              width: 1120,
+              height: 760,
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 8, 12),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.event_outlined),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Guided Cleanup • Add Dates',
+                                style: Theme.of(context).textTheme.titleLarge
+                                    ?.copyWith(fontWeight: FontWeight.w900),
+                              ),
+                              Text(
+                                '${index + 1} of ${queue.length} • '
+                                '$savedCount saved • $skippedCount skipped',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Done for now',
+                          onPressed: finish,
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Expanded(
+                          flex: 3,
+                          child: Container(
+                            padding: const EdgeInsets.all(20),
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.surfaceContainerHighest,
+                            child: file.existsSync()
+                                ? Image.file(
+                                    file,
+                                    fit: BoxFit.contain,
+                                    cacheWidth: 1400,
+                                  )
+                                : const Center(
+                                    child: Icon(
+                                      Icons.image_not_supported_outlined,
+                                      size: 60,
+                                    ),
+                                  ),
+                          ),
+                        ),
+                        const VerticalDivider(width: 1),
+                        SizedBox(
+                          width: 390,
+                          child: Padding(
+                            padding: const EdgeInsets.all(20),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  photo.fileName,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.titleMedium
+                                      ?.copyWith(fontWeight: FontWeight.w900),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  photo.relativeFolder.isEmpty
+                                      ? 'Pictures'
+                                      : photo.relativeFolder,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                                const SizedBox(height: 24),
+                                Text(
+                                  'When was this photo taken?',
+                                  style: Theme.of(context).textTheme.titleMedium
+                                      ?.copyWith(fontWeight: FontWeight.w900),
+                                ),
+                                const SizedBox(height: 8),
+                                const Text(
+                                  'Use the best date you know. An exact day, '
+                                  'month/year, year, or an approximate phrase '
+                                  'such as "about 1955" is okay.',
+                                ),
+                                const SizedBox(height: 16),
+                                TextField(
+                                  controller: dateController,
+                                  autofocus: true,
+                                  textInputAction: TextInputAction.done,
+                                  onSubmitted: (_) => saveAndNext(),
+                                  decoration: const InputDecoration(
+                                    labelText: 'Date',
+                                    hintText: 'Example: 1955 or about 1955',
+                                    prefixIcon: Icon(
+                                      Icons.calendar_today_outlined,
+                                    ),
+                                    border: OutlineInputBorder(),
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: [
+                                    ActionChip(
+                                      label: const Text('About 1950'),
+                                      onPressed: () {
+                                        dateController.text = 'about 1950';
+                                      },
+                                    ),
+                                    ActionChip(
+                                      label: const Text('1950s'),
+                                      onPressed: () {
+                                        dateController.text = '1950s';
+                                      },
+                                    ),
+                                    ActionChip(
+                                      label: const Text('Unknown'),
+                                      onPressed: () {
+                                        dateController.text = 'Unknown';
+                                      },
+                                    ),
+                                  ],
+                                ),
+                                const Spacer(),
+                                const Divider(),
+                                const SizedBox(height: 8),
+                                Row(
+                                  children: [
+                                    TextButton.icon(
+                                      onPressed: () => advance(skipped: true),
+                                      icon: const Icon(Icons.skip_next),
+                                      label: const Text('Skip'),
+                                    ),
+                                    const Spacer(),
+                                    FilledButton.icon(
+                                      onPressed: saveAndNext,
+                                      icon: const Icon(Icons.save_outlined),
+                                      label: Text(
+                                        index == queue.length - 1
+                                            ? 'Save & Finish'
+                                            : 'Save & Next',
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                Center(
+                                  child: TextButton(
+                                    onPressed: finish,
+                                    child: const Text('Done for now'),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+
+    if (!mounted) return;
+
+    final catalogRecords = await _databaseHelper.getAllPhotoCatalogMetadata();
+    if (!mounted) return;
+
+    setState(() {
+      _catalogByPath = {
+        for (final record in catalogRecords) record.filePath: record,
+      };
+      _quickFilters.remove('No Date');
+      _currentFolder = '';
+    });
+
+    if (savedCount > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Guided cleanup saved dates for $savedCount '
+            '${savedCount == 1 ? 'photo' : 'photos'}.',
+          ),
+        ),
+      );
+    }
   }
 
   Future<void> _openUnidentifiedFacesFromHealth() async {
@@ -2802,13 +3092,16 @@ class _PhotosScreenState extends State<PhotosScreen> {
       required int complete,
       required int missing,
       required String filter,
+      VoidCallback? action,
     }) {
       final total = _photos.length;
       final percent = total == 0 ? 0 : ((complete / total) * 100).round();
       return Expanded(
         child: InkWell(
           borderRadius: BorderRadius.circular(12),
-          onTap: missing == 0 ? null : () => _setDashboardFilter(filter),
+          onTap: missing == 0
+              ? null
+              : action ?? () => _setDashboardFilter(filter),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             child: Column(
@@ -2829,12 +3122,14 @@ class _PhotosScreenState extends State<PhotosScreen> {
                 const SizedBox(height: 7),
                 Text(
                   '$complete of $total • $percent%',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w900,
-                  ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900),
                 ),
                 const SizedBox(height: 5),
-                LinearProgressIndicator(value: total == 0 ? 0 : complete / total),
+                LinearProgressIndicator(
+                  value: total == 0 ? 0 : complete / total,
+                ),
                 const SizedBox(height: 5),
                 Text(
                   missing == 0 ? 'Complete' : '$missing need attention',
@@ -2905,6 +3200,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                   complete: _datedPhotoCount,
                   missing: _missingDateCount,
                   filter: 'No Date',
+                  action: _startGuidedDateCleanup,
                 ),
                 metric(
                   icon: Icons.place_outlined,
@@ -2934,7 +3230,10 @@ class _PhotosScreenState extends State<PhotosScreen> {
                     ? null
                     : () => suggestion.action!(),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 13,
+                    vertical: 11,
+                  ),
                   child: Row(
                     children: [
                       Icon(suggestion.icon, color: scheme.primary),
@@ -2945,19 +3244,21 @@ class _PhotosScreenState extends State<PhotosScreen> {
                           children: [
                             Text(
                               'Suggested next step',
-                              style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                                fontWeight: FontWeight.w800,
-                              ),
+                              style: Theme.of(context).textTheme.labelMedium
+                                  ?.copyWith(fontWeight: FontWeight.w800),
                             ),
                             const SizedBox(height: 2),
                             Text(
                               suggestion.title,
-                              style: const TextStyle(fontWeight: FontWeight.w900),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                              ),
                             ),
                           ],
                         ),
                       ),
-                      if (suggestion.filter != null || suggestion.action != null)
+                      if (suggestion.filter != null ||
+                          suggestion.action != null)
                         const Icon(Icons.chevron_right),
                     ],
                   ),
