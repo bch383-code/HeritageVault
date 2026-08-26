@@ -28,8 +28,9 @@ class _FamilyPersonScreenState extends State<FamilyPersonScreen> {
   bool _loadingRelationships = true;
 
   String? _linkedPhotoPersonName;
+  String? _linkedFaceThumbnailPath;
   List<String> _linkedPhotoPaths = const [];
-  List<String> _linkedGroups = const [];
+  Map<String, int> _linkedGroups = const {};
   bool _loadingConnections = true;
 
   @override
@@ -59,29 +60,42 @@ class _FamilyPersonScreenState extends State<FamilyPersonScreen> {
     }
 
     final linkedPhotoPaths = <String>{};
-    final linkedGroups = <String>[];
+    final linkedGroups = <String, int>{};
+    String? linkedFaceThumbnailPath;
 
     if (linkedPhotoPersonName != null) {
+      final targetName = linkedPhotoPersonName.toLowerCase();
+
       final confirmedFaces = await _databaseHelper.getConfirmedFaces();
       for (final face in confirmedFaces) {
-        if (face.personName.trim().toLowerCase() ==
-            linkedPhotoPersonName.toLowerCase()) {
+        if (face.personName.trim().toLowerCase() == targetName) {
           linkedPhotoPaths.add(face.photoFilePath);
+          if (linkedFaceThumbnailPath == null &&
+              face.thumbnailPath.trim().isNotEmpty &&
+              File(face.thumbnailPath).existsSync()) {
+            linkedFaceThumbnailPath = face.thumbnailPath;
+          }
+        }
+      }
+
+      final catalogRecords = await _databaseHelper.getAllPhotoCatalogMetadata();
+      for (final record in catalogRecords) {
+        if (record.people.any(
+          (name) => name.trim().toLowerCase() == targetName,
+        )) {
+          linkedPhotoPaths.add(record.filePath);
         }
       }
 
       final groups = await _databaseHelper.getPersonGroups();
       for (final group in groups) {
-        final groupId = group['id'] as int?;
+        final groupId = (group['id'] as num?)?.toInt();
         final groupName = group['name'] as String? ?? '';
         if (groupId == null || groupName.isEmpty) continue;
 
         final names = await _databaseHelper.getPersonNamesForGroup(groupId);
-        if (names.any(
-          (name) =>
-              name.trim().toLowerCase() == linkedPhotoPersonName!.toLowerCase(),
-        )) {
-          linkedGroups.add(groupName);
+        if (names.any((name) => name.trim().toLowerCase() == targetName)) {
+          linkedGroups[groupName] = groupId;
         }
       }
     }
@@ -106,9 +120,13 @@ class _FamilyPersonScreenState extends State<FamilyPersonScreen> {
       _parentRoles = roles;
       _loadingRelationships = false;
       _linkedPhotoPersonName = linkedPhotoPersonName;
+      _linkedFaceThumbnailPath = linkedFaceThumbnailPath;
       _linkedPhotoPaths = linkedPhotoPaths.toList()..sort();
-      _linkedGroups = linkedGroups
-        ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      final sortedGroupEntries = linkedGroups.entries.toList()
+        ..sort((a, b) => a.key.toLowerCase().compareTo(b.key.toLowerCase()));
+      _linkedGroups = {
+        for (final entry in sortedGroupEntries) entry.key: entry.value,
+      };
       _loadingConnections = false;
     });
   }
@@ -221,7 +239,14 @@ class _FamilyPersonScreenState extends State<FamilyPersonScreen> {
   @override
   Widget build(BuildContext context) {
     final path = _person.profilePhotoPath;
-    final hasPhoto = path.isNotEmpty && File(path).existsSync();
+    final hasProfilePhoto = path.isNotEmpty && File(path).existsSync();
+    final fallbackPath = _linkedFaceThumbnailPath ?? '';
+    final hasFallbackPhoto =
+        fallbackPath.isNotEmpty && File(fallbackPath).existsSync();
+    final displayPhotoPath = hasProfilePhoto
+        ? path
+        : (hasFallbackPhoto ? fallbackPath : '');
+    final hasPhoto = displayPhotoPath.isNotEmpty;
 
     return Scaffold(
       appBar: AppBar(
@@ -267,7 +292,9 @@ class _FamilyPersonScreenState extends State<FamilyPersonScreen> {
             children: [
               CircleAvatar(
                 radius: 72,
-                backgroundImage: hasPhoto ? FileImage(File(path)) : null,
+                backgroundImage: hasPhoto
+                    ? FileImage(File(displayPhotoPath))
+                    : null,
                 child: hasPhoto
                     ? null
                     : const Icon(Icons.person_outline, size: 70),
@@ -334,6 +361,439 @@ class _FamilyPersonScreenState extends State<FamilyPersonScreen> {
     );
   }
 
+  Future<void> _linkKnownPerson() async {
+    final familyPersonId = _person.id;
+    if (familyPersonId == null) return;
+
+    final faces = await _databaseHelper.getConfirmedFaces();
+    final links = await _databaseHelper.getPhotoPersonFamilyTreeLinks();
+    if (!mounted) return;
+
+    final names =
+        faces
+            .map((face) => face.personName.trim())
+            .where((name) => name.isNotEmpty)
+            .toSet()
+            .toList()
+          ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+    if (names.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No Known People from Photos are available yet.'),
+        ),
+      );
+      return;
+    }
+
+    var search = '';
+    final selected = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final query = search.trim().toLowerCase();
+          final visible = names.where((name) {
+            return query.isEmpty || name.toLowerCase().contains(query);
+          }).toList();
+
+          return Dialog(
+            child: SizedBox(
+              width: 700,
+              height: 680,
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 14, 8, 10),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.link),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Link Known Person',
+                            style: Theme.of(context).textTheme.titleLarge
+                                ?.copyWith(fontWeight: FontWeight.w900),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Close',
+                          onPressed: () => Navigator.pop(dialogContext),
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: TextField(
+                      autofocus: true,
+                      onChanged: (value) =>
+                          setDialogState(() => search = value),
+                      decoration: const InputDecoration(
+                        hintText: 'Search Known People...',
+                        prefixIcon: Icon(Icons.search),
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: visible.isEmpty
+                        ? const Center(child: Text('No matching people.'))
+                        : ListView.separated(
+                            itemCount: visible.length,
+                            separatorBuilder: (_, _) =>
+                                const Divider(height: 1),
+                            itemBuilder: (context, index) {
+                              final name = visible[index];
+                              final linkedFamilyId = links[name];
+                              final linkedElsewhere =
+                                  linkedFamilyId != null &&
+                                  linkedFamilyId != familyPersonId;
+                              final isCurrent =
+                                  linkedFamilyId == familyPersonId;
+
+                              return ListTile(
+                                leading: CircleAvatar(
+                                  child: Icon(
+                                    isCurrent
+                                        ? Icons.link
+                                        : Icons.person_outline,
+                                  ),
+                                ),
+                                title: Text(name),
+                                subtitle: Text(
+                                  isCurrent
+                                      ? 'Currently linked to this person'
+                                      : linkedElsewhere
+                                      ? 'Already linked to another Family Tree person'
+                                      : 'Available to link',
+                                ),
+                                enabled: !linkedElsewhere,
+                                trailing: isCurrent
+                                    ? const Icon(Icons.check_circle)
+                                    : linkedElsewhere
+                                    ? const Icon(Icons.lock_outline)
+                                    : const Icon(Icons.chevron_right),
+                                onTap: linkedElsewhere
+                                    ? null
+                                    : () => Navigator.pop(dialogContext, name),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+
+    if (selected == null) return;
+
+    if (_linkedPhotoPersonName != null && _linkedPhotoPersonName != selected) {
+      await _databaseHelper.removeFamilyTreeLinkForPhotoPerson(
+        _linkedPhotoPersonName!,
+      );
+    }
+
+    await _databaseHelper.setFamilyTreeLinkForPhotoPerson(
+      personName: selected,
+      familyPersonId: familyPersonId,
+    );
+
+    await _loadAll();
+  }
+
+  Future<void> _showAllPhotos() async {
+    if (_linkedPhotoPaths.isEmpty) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        child: SizedBox(
+          width: 1100,
+          height: 760,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 14, 8, 10),
+                child: Row(
+                  children: [
+                    const Icon(Icons.photo_library_outlined),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        '${_person.displayName} — Photos',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                    Text('${_linkedPhotoPaths.length} photos'),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: 'Close',
+                      onPressed: () => Navigator.pop(dialogContext),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: GridView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: _linkedPhotoPaths.length,
+                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                    maxCrossAxisExtent: 240,
+                    mainAxisSpacing: 12,
+                    crossAxisSpacing: 12,
+                    childAspectRatio: 1,
+                  ),
+                  itemBuilder: (context, index) {
+                    final photoPath = _linkedPhotoPaths[index];
+                    final file = File(photoPath);
+                    return Card(
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onTap: () => _openPhotoViewer(index),
+                        child: file.existsSync()
+                            ? Image.file(
+                                file,
+                                fit: BoxFit.cover,
+                                cacheWidth: 600,
+                              )
+                            : const Center(
+                                child: Icon(
+                                  Icons.broken_image_outlined,
+                                  size: 48,
+                                ),
+                              ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openPhotoViewer(int initialIndex) async {
+    if (_linkedPhotoPaths.isEmpty) return;
+
+    var currentIndex = initialIndex.clamp(0, _linkedPhotoPaths.length - 1);
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final photoPath = _linkedPhotoPaths[currentIndex];
+          final file = File(photoPath);
+
+          return Dialog(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1200, maxHeight: 850),
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 14, 8, 10),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            file.uri.pathSegments.isEmpty
+                                ? photoPath
+                                : file.uri.pathSegments.last,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleLarge
+                                ?.copyWith(fontWeight: FontWeight.w800),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Previous photo',
+                          onPressed: currentIndex > 0
+                              ? () => setDialogState(() => currentIndex--)
+                              : null,
+                          icon: const Icon(Icons.chevron_left),
+                        ),
+                        Text(
+                          '${currentIndex + 1} of ${_linkedPhotoPaths.length}',
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                        IconButton(
+                          tooltip: 'Next photo',
+                          onPressed: currentIndex < _linkedPhotoPaths.length - 1
+                              ? () => setDialogState(() => currentIndex++)
+                              : null,
+                          icon: const Icon(Icons.chevron_right),
+                        ),
+                        IconButton(
+                          tooltip: 'Close',
+                          onPressed: () => Navigator.pop(dialogContext),
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(18),
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.surfaceContainerHighest,
+                      child: file.existsSync()
+                          ? Image.file(file, fit: BoxFit.contain)
+                          : const Center(
+                              child: Text('Original photo not found.'),
+                            ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _openPersonGroup({
+    required int groupId,
+    required String groupName,
+  }) async {
+    final results = await Future.wait([
+      _databaseHelper.getPersonNamesForGroup(groupId),
+      _databaseHelper.getPhotoPathsForPersonGroup(groupId),
+    ]);
+    if (!mounted) return;
+
+    final names = results[0].toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    final photoPaths = results[1].toList();
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        child: SizedBox(
+          width: 1000,
+          height: 720,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 14, 8, 10),
+                child: Row(
+                  children: [
+                    const Icon(Icons.groups_outlined),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        groupName,
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '${names.length} people • ${photoPaths.length} photos',
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: 'Close',
+                      onPressed: () => Navigator.pop(dialogContext),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.all(18),
+                  children: [
+                    Text(
+                      'People',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    if (names.isEmpty)
+                      const Text('No people have been added to this group.')
+                    else
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: names
+                            .map(
+                              (name) => Chip(
+                                avatar: const Icon(
+                                  Icons.person_outline,
+                                  size: 18,
+                                ),
+                                label: Text(name),
+                              ),
+                            )
+                            .toList(),
+                      ),
+                    const SizedBox(height: 24),
+                    Text(
+                      'Group Photos',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    if (photoPaths.isEmpty)
+                      const Text('No photos are attached to this group.')
+                    else
+                      GridView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: photoPaths.length,
+                        gridDelegate:
+                            const SliverGridDelegateWithMaxCrossAxisExtent(
+                              maxCrossAxisExtent: 220,
+                              mainAxisSpacing: 10,
+                              crossAxisSpacing: 10,
+                              childAspectRatio: 1,
+                            ),
+                        itemBuilder: (context, index) {
+                          final file = File(photoPaths[index]);
+                          return ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: file.existsSync()
+                                ? Image.file(
+                                    file,
+                                    fit: BoxFit.cover,
+                                    cacheWidth: 500,
+                                  )
+                                : const ColoredBox(
+                                    color: Colors.black12,
+                                    child: Center(
+                                      child: Icon(Icons.broken_image_outlined),
+                                    ),
+                                  ),
+                          );
+                        },
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _connectionsCard() {
     return Card(
       child: Padding(
@@ -373,17 +833,22 @@ class _FamilyPersonScreenState extends State<FamilyPersonScreen> {
                   color: Theme.of(context).colorScheme.surfaceContainerLow,
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    Icon(Icons.person_search_outlined),
-                    SizedBox(width: 12),
-                    Expanded(
+                    const Icon(Icons.person_search_outlined),
+                    const SizedBox(width: 12),
+                    const Expanded(
                       child: Text(
                         'This Family Tree person is not linked to a Known '
-                        'Person from Photos yet. Open Known People and link '
-                        'the matching person to this Family Tree record.',
+                        'Person from Photos yet.',
                       ),
+                    ),
+                    const SizedBox(width: 12),
+                    FilledButton.icon(
+                      onPressed: _linkKnownPerson,
+                      icon: const Icon(Icons.link),
+                      label: const Text('Link Known Person'),
                     ),
                   ],
                 ),
@@ -406,6 +871,11 @@ class _FamilyPersonScreenState extends State<FamilyPersonScreen> {
                       ],
                     ),
                   ),
+                  TextButton.icon(
+                    onPressed: _linkKnownPerson,
+                    icon: const Icon(Icons.swap_horiz),
+                    label: const Text('Change Link'),
+                  ),
                 ],
               ),
               const SizedBox(height: 18),
@@ -417,6 +887,7 @@ class _FamilyPersonScreenState extends State<FamilyPersonScreen> {
                     icon: Icons.photo_library_outlined,
                     value: _linkedPhotoPaths.length.toString(),
                     label: _linkedPhotoPaths.length == 1 ? 'Photo' : 'Photos',
+                    onTap: _linkedPhotoPaths.isEmpty ? null : _showAllPhotos,
                   ),
                   _connectionStat(
                     icon: Icons.groups_outlined,
@@ -453,11 +924,15 @@ class _FamilyPersonScreenState extends State<FamilyPersonScreen> {
                 Wrap(
                   spacing: 8,
                   runSpacing: 8,
-                  children: _linkedGroups
+                  children: _linkedGroups.entries
                       .map(
-                        (group) => Chip(
+                        (entry) => ActionChip(
                           avatar: const Icon(Icons.groups_outlined, size: 18),
-                          label: Text(group),
+                          label: Text(entry.key),
+                          onPressed: () => _openPersonGroup(
+                            groupId: entry.value,
+                            groupName: entry.key,
+                          ),
                         ),
                       )
                       .toList(),
@@ -483,23 +958,28 @@ class _FamilyPersonScreenState extends State<FamilyPersonScreen> {
                       final file = File(photoPath);
                       return ClipRRect(
                         borderRadius: BorderRadius.circular(10),
-                        child: Container(
-                          width: 132,
+                        child: Material(
                           color: Theme.of(
                             context,
                           ).colorScheme.surfaceContainerHighest,
-                          child: file.existsSync()
-                              ? Image.file(
-                                  file,
-                                  fit: BoxFit.cover,
-                                  cacheWidth: 360,
-                                )
-                              : const Center(
-                                  child: Icon(
-                                    Icons.broken_image_outlined,
-                                    size: 36,
-                                  ),
-                                ),
+                          child: InkWell(
+                            onTap: () => _openPhotoViewer(index),
+                            child: SizedBox(
+                              width: 132,
+                              child: file.existsSync()
+                                  ? Image.file(
+                                      file,
+                                      fit: BoxFit.cover,
+                                      cacheWidth: 360,
+                                    )
+                                  : const Center(
+                                      child: Icon(
+                                        Icons.broken_image_outlined,
+                                        size: 36,
+                                      ),
+                                    ),
+                            ),
+                          ),
                         ),
                       );
                     },
@@ -525,31 +1005,44 @@ class _FamilyPersonScreenState extends State<FamilyPersonScreen> {
     required String value,
     required String label,
     bool muted = false,
+    VoidCallback? onTap,
   }) {
     final scheme = Theme.of(context).colorScheme;
 
-    return Container(
-      width: 132,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: muted
-            ? scheme.surfaceContainerLow
-            : scheme.secondaryContainer.withValues(alpha: 0.55),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
         borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, size: 22),
-          const SizedBox(height: 10),
-          Text(
-            value,
-            style: Theme.of(
-              context,
-            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+        child: Container(
+          width: 132,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: muted
+                ? scheme.surfaceContainerLow
+                : scheme.secondaryContainer.withValues(alpha: 0.55),
+            borderRadius: BorderRadius.circular(12),
           ),
-          Text(label),
-        ],
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, size: 22),
+              const SizedBox(height: 10),
+              Text(
+                value,
+                style: Theme.of(
+                  context,
+                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+              ),
+              Row(
+                children: [
+                  Expanded(child: Text(label)),
+                  if (onTap != null) const Icon(Icons.chevron_right, size: 18),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
