@@ -38,7 +38,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
   final PhotoMetadataImportService _metadataImportService =
       PhotoMetadataImportService();
   final PhotoMetadataWriteService _metadataWriteService =
-    const PhotoMetadataWriteService();
+      const PhotoMetadataWriteService();
   final FaceRecognitionService _faceRecognitionService =
       FaceRecognitionService();
 
@@ -89,8 +89,9 @@ class _PhotosScreenState extends State<PhotosScreen> {
   }
 
   Future<void> _loadOrganizerCounts() async {
-    final duplicateValue =
-        await _databaseHelper.getSetting('photo_possible_duplicate_count');
+    final duplicateValue = await _databaseHelper.getSetting(
+      'photo_possible_duplicate_count',
+    );
     final faceCount = await _databaseHelper.getUnconfirmedFaceCount();
     final trashEntries = await _getDuplicateTrashEntries();
 
@@ -107,22 +108,21 @@ class _PhotosScreenState extends State<PhotosScreen> {
 
   Future<void> _load() async {
     try {
-      final libraryPath =
-          await _databaseHelper.getSetting('photo_library_path');
+      final libraryPath = await _databaseHelper.getSetting(
+        'photo_library_path',
+      );
       final photos = await _databaseHelper.getIndexedPhotos();
-      final catalogRecords =
-          await _databaseHelper.getAllPhotoCatalogMetadata();
-      final recentSetting =
-          await _databaseHelper.getSetting('photo_recently_added_paths');
+      final catalogRecords = await _databaseHelper.getAllPhotoCatalogMetadata();
+      final recentSetting = await _databaseHelper.getSetting(
+        'photo_recently_added_paths',
+      );
 
       Set<String> recentlyAddedPaths = <String>{};
       if (recentSetting != null && recentSetting.isNotEmpty) {
         try {
           final decoded = jsonDecode(recentSetting);
           if (decoded is List) {
-            recentlyAddedPaths = decoded
-                .whereType<String>()
-                .toSet();
+            recentlyAddedPaths = decoded.whereType<String>().toSet();
           }
         } catch (_) {
           recentlyAddedPaths = <String>{};
@@ -190,7 +190,10 @@ class _PhotosScreenState extends State<PhotosScreen> {
       final previousPhotos = List<VaultPhoto>.from(_photos);
       final indexed = <VaultPhoto>[];
 
-      await for (final entity in root.list(recursive: true, followLinks: false)) {
+      await for (final entity in root.list(
+        recursive: true,
+        followLinks: false,
+      )) {
         if (entity is! File) continue;
 
         final extension = path.extension(entity.path).toLowerCase();
@@ -219,9 +222,9 @@ class _PhotosScreenState extends State<PhotosScreen> {
       }
 
       indexed.sort((a, b) {
-        final folderCompare = a.relativeFolder
-            .toLowerCase()
-            .compareTo(b.relativeFolder.toLowerCase());
+        final folderCompare = a.relativeFolder.toLowerCase().compareTo(
+          b.relativeFolder.toLowerCase(),
+        );
         if (folderCompare != 0) return folderCompare;
         return a.fileName.toLowerCase().compareTo(b.fileName.toLowerCase());
       });
@@ -229,14 +232,15 @@ class _PhotosScreenState extends State<PhotosScreen> {
       await _databaseHelper.replaceIndexedPhotos(indexed);
       final photos = await _databaseHelper.getIndexedPhotos();
 
-      final previousPaths =
-          previousPhotos.map((photo) => photo.filePath).toSet();
+      final previousPaths = previousPhotos
+          .map((photo) => photo.filePath)
+          .toSet();
       final newlyAddedPaths = previousPhotos.isEmpty
           ? <String>{}
           : photos
-              .where((photo) => !previousPaths.contains(photo.filePath))
-              .map((photo) => photo.filePath)
-              .toSet();
+                .where((photo) => !previousPaths.contains(photo.filePath))
+                .map((photo) => photo.filePath)
+                .toSet();
 
       if (newlyAddedPaths.isNotEmpty) {
         await _databaseHelper.setSetting(
@@ -380,7 +384,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
             photosWithMetadata++;
           }
 
-          final changedCatalog = progress.peopleImported > 0 ||
+          final changedCatalog =
+              progress.peopleImported > 0 ||
               progress.tagsImported > 0 ||
               progress.dateImported ||
               progress.locationImported ||
@@ -392,8 +397,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
         },
       );
 
-      final catalogRecords =
-          await _databaseHelper.getAllPhotoCatalogMetadata();
+      final catalogRecords = await _databaseHelper.getAllPhotoCatalogMetadata();
 
       if (!mounted) return;
 
@@ -421,8 +425,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
       var photosWithFaces = 0;
       var photosScanned = 0;
 
-      final scanVersions =
-          await _databaseHelper.getPhotoFaceScanVersions();
+      final scanVersions = await _databaseHelper.getPhotoFaceScanVersions();
 
       final faceCandidates = changed.where((photo) {
         final scannedVersion = scanVersions[photo.filePath];
@@ -434,10 +437,9 @@ class _PhotosScreenState extends State<PhotosScreen> {
         await _faceRecognitionService.scanPhotosIncrementally(
           faceCandidates,
           onPhotoComplete: (photo, faces, progress) async {
-            await _databaseHelper.replaceFacesForPhotos(
-              [photo.filePath],
-              faces,
-            );
+            await _databaseHelper.replaceFacesForPhotos([
+              photo.filePath,
+            ], faces);
 
             await _databaseHelper.markPhotoFaceScanned(
               photo: photo,
@@ -455,8 +457,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
 
       if (!mounted) return;
 
-      _unidentifiedFaceCount =
-          await _databaseHelper.getUnconfirmedFaceCount();
+      _unidentifiedFaceCount = await _databaseHelper.getUnconfirmedFaceCount();
       if (!mounted) return;
       setState(() {});
 
@@ -477,8 +478,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (context) =>
-                            const UnidentifiedFacesScreen(),
+                        builder: (context) => const UnidentifiedFacesScreen(),
                       ),
                     );
                   },
@@ -538,16 +538,19 @@ class _PhotosScreenState extends State<PhotosScreen> {
       counts[childPath] = (counts[childPath] ?? 0) + 1;
     }
 
-    final folders = counts.entries
-        .map(
-          (entry) => _PhotoFolder(
-            path: entry.key,
-            name: path.basename(entry.key),
-            photoCount: entry.value,
-          ),
-        )
-        .toList()
-      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    final folders =
+        counts.entries
+            .map(
+              (entry) => _PhotoFolder(
+                path: entry.key,
+                name: path.basename(entry.key),
+                photoCount: entry.value,
+              ),
+            )
+            .toList()
+          ..sort(
+            (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+          );
 
     return folders;
   }
@@ -584,8 +587,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
               _databaseHelper.getConfirmedFaces(),
             ]),
             builder: (context, snapshot) {
-              final loading =
-                  snapshot.connectionState != ConnectionState.done;
+              final loading = snapshot.connectionState != ConnectionState.done;
 
               final metadata = snapshot.hasData
                   ? snapshot.data![0] as PhotoCatalogMetadata
@@ -598,8 +600,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
               final confirmedFaces = allFaces
                   .where(
                     (face) =>
-                        face.confirmed &&
-                        face.personName.trim().isNotEmpty,
+                        face.confirmed && face.personName.trim().isNotEmpty,
                   )
                   .toList();
 
@@ -607,18 +608,17 @@ class _PhotosScreenState extends State<PhotosScreen> {
                   ? snapshot.data![2] as List<DetectedFaceRecord>
                   : <DetectedFaceRecord>[];
 
-              final knownNames = knownFaces
-                  .map((face) => face.personName.trim())
-                  .where((name) => name.isNotEmpty)
-                  .toSet()
-                  .toList()
-                ..sort(
-                  (a, b) => a.toLowerCase().compareTo(b.toLowerCase()),
-                );
+              final knownNames =
+                  knownFaces
+                      .map((face) => face.personName.trim())
+                      .where((name) => name.isNotEmpty)
+                      .toSet()
+                      .toList()
+                    ..sort(
+                      (a, b) => a.toLowerCase().compareTo(b.toLowerCase()),
+                    );
 
-              Future<void> changeFaceName(
-                DetectedFaceRecord face,
-              ) async {
+              Future<void> changeFaceName(DetectedFaceRecord face) async {
                 final faceId = face.id;
                 if (faceId == null) return;
 
@@ -697,8 +697,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                         ),
                         actions: [
                           TextButton(
-                            onPressed: () =>
-                                Navigator.pop(nameDialogContext),
+                            onPressed: () => Navigator.pop(nameDialogContext),
                             child: const Text('Cancel'),
                           ),
                           FilledButton(
@@ -721,13 +720,12 @@ class _PhotosScreenState extends State<PhotosScreen> {
                 setDialogState(() {});
               }
 
-              Future<void> markFaceUnidentified(
-                DetectedFaceRecord face,
-              ) async {
+              Future<void> markFaceUnidentified(DetectedFaceRecord face) async {
                 final faceId = face.id;
                 if (faceId == null) return;
 
-                final confirmed = await showDialog<bool>(
+                final confirmed =
+                    await showDialog<bool>(
                       context: dialogContext,
                       builder: (confirmContext) => AlertDialog(
                         title: const Text('Mark face unidentified?'),
@@ -792,19 +790,14 @@ class _PhotosScreenState extends State<PhotosScreen> {
                   child: Column(
                     children: [
                       Padding(
-                        padding:
-                            const EdgeInsets.fromLTRB(20, 14, 8, 12),
+                        padding: const EdgeInsets.fromLTRB(20, 14, 8, 12),
                         child: Row(
                           children: [
                             Expanded(
                               child: Text(
                                 currentPhoto.fileName,
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .titleLarge
-                                    ?.copyWith(
-                                      fontWeight: FontWeight.w900,
-                                    ),
+                                style: Theme.of(context).textTheme.titleLarge
+                                    ?.copyWith(fontWeight: FontWeight.w900),
                               ),
                             ),
                             IconButton(
@@ -823,8 +816,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
                             ),
                             IconButton(
                               tooltip: 'Next photo',
-                              onPressed: previewIndex <
-                                      navigationPhotos.length - 1
+                              onPressed:
+                                  previewIndex < navigationPhotos.length - 1
                                   ? () {
                                       previewIndex++;
                                       setDialogState(() {});
@@ -835,8 +828,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                             const SizedBox(width: 8),
                             IconButton(
                               tooltip: 'Close',
-                              onPressed: () =>
-                                  Navigator.pop(dialogContext),
+                              onPressed: () => Navigator.pop(dialogContext),
                               icon: const Icon(Icons.close),
                             ),
                           ],
@@ -849,9 +841,9 @@ class _PhotosScreenState extends State<PhotosScreen> {
                             Expanded(
                               flex: 3,
                               child: Container(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .surfaceContainerHighest,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.surfaceContainerHighest,
                                 padding: const EdgeInsets.all(20),
                                 child: file.existsSync()
                                     ? Image.file(
@@ -860,9 +852,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                                         cacheWidth: 1600,
                                       )
                                     : const Center(
-                                        child: Text(
-                                          'Original file not found.',
-                                        ),
+                                        child: Text('Original file not found.'),
                                       ),
                               ),
                             ),
@@ -883,8 +873,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                                                 .textTheme
                                                 .titleMedium
                                                 ?.copyWith(
-                                                  fontWeight:
-                                                      FontWeight.w900,
+                                                  fontWeight: FontWeight.w900,
                                                 ),
                                           ),
                                           const SizedBox(height: 8),
@@ -893,9 +882,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
                                             runSpacing: 6,
                                             children: metadata.people
                                                 .map(
-                                                  (name) => Chip(
-                                                    label: Text(name),
-                                                  ),
+                                                  (name) =>
+                                                      Chip(label: Text(name)),
                                                 )
                                                 .toList(),
                                           ),
@@ -907,8 +895,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                                               .textTheme
                                               .titleMedium
                                               ?.copyWith(
-                                                fontWeight:
-                                                    FontWeight.w900,
+                                                fontWeight: FontWeight.w900,
                                               ),
                                         ),
                                         const SizedBox(height: 8),
@@ -917,93 +904,78 @@ class _PhotosScreenState extends State<PhotosScreen> {
                                             'No confirmed faces in this photo.',
                                           )
                                         else
-                                          ...confirmedFaces.map(
-                                            (face) {
-                                              final thumb =
-                                                  File(face.thumbnailPath);
-                                              return Card(
-                                                margin:
-                                                    const EdgeInsets.only(
-                                                  bottom: 8,
+                                          ...confirmedFaces.map((face) {
+                                            final thumb = File(
+                                              face.thumbnailPath,
+                                            );
+                                            return Card(
+                                              margin: const EdgeInsets.only(
+                                                bottom: 8,
+                                              ),
+                                              child: Padding(
+                                                padding: const EdgeInsets.all(
+                                                  10,
                                                 ),
-                                                child: Padding(
-                                                  padding:
-                                                      const EdgeInsets.all(
-                                                    10,
-                                                  ),
-                                                  child: Row(
-                                                    children: [
-                                                      CircleAvatar(
-                                                        radius: 24,
-                                                        backgroundImage: thumb
-                                                                .existsSync()
-                                                            ? FileImage(
-                                                                thumb,
-                                                              )
-                                                            : null,
-                                                        child:
-                                                            thumb.existsSync()
-                                                                ? null
-                                                                : const Icon(
-                                                                    Icons
-                                                                        .person_outline,
-                                                                  ),
-                                                      ),
-                                                      const SizedBox(
-                                                        width: 10,
-                                                      ),
-                                                      Expanded(
-                                                        child: Text(
-                                                          face.personName,
-                                                          style:
-                                                              const TextStyle(
-                                                            fontWeight:
-                                                                FontWeight
-                                                                    .w800,
-                                                          ),
+                                                child: Row(
+                                                  children: [
+                                                    CircleAvatar(
+                                                      radius: 24,
+                                                      backgroundImage:
+                                                          thumb.existsSync()
+                                                          ? FileImage(thumb)
+                                                          : null,
+                                                      child: thumb.existsSync()
+                                                          ? null
+                                                          : const Icon(
+                                                              Icons
+                                                                  .person_outline,
+                                                            ),
+                                                    ),
+                                                    const SizedBox(width: 10),
+                                                    Expanded(
+                                                      child: Text(
+                                                        face.personName,
+                                                        style: const TextStyle(
+                                                          fontWeight:
+                                                              FontWeight.w800,
                                                         ),
                                                       ),
-                                                      PopupMenuButton<
-                                                          String>(
-                                                        tooltip:
-                                                            'Face actions',
-                                                        onSelected:
-                                                            (action) async {
-                                                          if (action ==
-                                                              'change') {
-                                                            await changeFaceName(
-                                                              face,
-                                                            );
-                                                          } else if (action ==
-                                                              'unidentify') {
-                                                            await markFaceUnidentified(
-                                                              face,
-                                                            );
-                                                          }
-                                                        },
-                                                        itemBuilder:
-                                                            (_) => const [
-                                                          PopupMenuItem(
-                                                            value: 'change',
-                                                            child: Text(
-                                                              'Change Name',
-                                                            ),
+                                                    ),
+                                                    PopupMenuButton<String>(
+                                                      tooltip: 'Face actions',
+                                                      onSelected: (action) async {
+                                                        if (action ==
+                                                            'change') {
+                                                          await changeFaceName(
+                                                            face,
+                                                          );
+                                                        } else if (action ==
+                                                            'unidentify') {
+                                                          await markFaceUnidentified(
+                                                            face,
+                                                          );
+                                                        }
+                                                      },
+                                                      itemBuilder: (_) => const [
+                                                        PopupMenuItem(
+                                                          value: 'change',
+                                                          child: Text(
+                                                            'Change Name',
                                                           ),
-                                                          PopupMenuItem(
-                                                            value:
-                                                                'unidentify',
-                                                            child: Text(
-                                                              'Mark Unidentified',
-                                                            ),
+                                                        ),
+                                                        PopupMenuItem(
+                                                          value: 'unidentify',
+                                                          child: Text(
+                                                            'Mark Unidentified',
                                                           ),
-                                                        ],
-                                                      ),
-                                                    ],
-                                                  ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ],
                                                 ),
-                                              );
-                                            },
-                                          ),
+                                              ),
+                                            );
+                                          }),
                                         if (allFaces.any(
                                           (face) => !face.confirmed,
                                         )) ...[
@@ -1013,9 +985,9 @@ class _PhotosScreenState extends State<PhotosScreen> {
                                             'unidentified '
                                             '${allFaces.where((face) => !face.confirmed).length == 1 ? 'face' : 'faces'} '
                                             'detected in this photo.',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodySmall,
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.bodySmall,
                                           ),
                                         ],
                                         const SizedBox(height: 22),
@@ -1025,16 +997,15 @@ class _PhotosScreenState extends State<PhotosScreen> {
                                               .textTheme
                                               .titleSmall
                                               ?.copyWith(
-                                                fontWeight:
-                                                    FontWeight.w800,
+                                                fontWeight: FontWeight.w800,
                                               ),
                                         ),
                                         const SizedBox(height: 5),
                                         SelectableText(
                                           currentPhoto.filePath,
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall,
+                                          style: Theme.of(
+                                            context,
+                                          ).textTheme.bodySmall,
                                         ),
                                         const SizedBox(height: 22),
                                         FilledButton.tonalIcon(
@@ -1045,9 +1016,10 @@ class _PhotosScreenState extends State<PhotosScreen> {
                                               MaterialPageRoute(
                                                 builder: (context) =>
                                                     PhotoDetailScreen(
-                                                  photos: navigationPhotos,
-                                                  initialIndex: previewIndex,
-                                                ),
+                                                      photos: navigationPhotos,
+                                                      initialIndex:
+                                                          previewIndex,
+                                                    ),
                                               ),
                                             );
                                           },
@@ -1074,10 +1046,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
       ),
     );
 
-    final catalogRecords =
-        await _databaseHelper.getAllPhotoCatalogMetadata();
-    final faceCount =
-        await _databaseHelper.getUnconfirmedFaceCount();
+    final catalogRecords = await _databaseHelper.getAllPhotoCatalogMetadata();
+    final faceCount = await _databaseHelper.getUnconfirmedFaceCount();
 
     if (!mounted) return;
 
@@ -1132,17 +1102,14 @@ class _PhotosScreenState extends State<PhotosScreen> {
     final changed = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
-        builder: (context) => PhotoBatchEditScreen(
-          photos: selected,
-        ),
+        builder: (context) => PhotoBatchEditScreen(photos: selected),
       ),
     );
 
     if (!mounted) return;
 
     if (changed == true) {
-      final catalogRecords =
-          await _databaseHelper.getAllPhotoCatalogMetadata();
+      final catalogRecords = await _databaseHelper.getAllPhotoCatalogMetadata();
 
       if (!mounted) return;
 
@@ -1192,15 +1159,12 @@ class _PhotosScreenState extends State<PhotosScreen> {
 
     await Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (context) => FaceScanScreen(photos: selected),
-      ),
+      MaterialPageRoute(builder: (context) => FaceScanScreen(photos: selected)),
     );
 
     if (!mounted) return;
 
-    final catalogRecords =
-        await _databaseHelper.getAllPhotoCatalogMetadata();
+    final catalogRecords = await _databaseHelper.getAllPhotoCatalogMetadata();
 
     setState(() {
       _catalogByPath = <String, PhotoCatalogMetadata>{
@@ -1253,16 +1217,13 @@ class _PhotosScreenState extends State<PhotosScreen> {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => FaceScanScreen(
-          photos: folderPhotos,
-        ),
+        builder: (context) => FaceScanScreen(photos: folderPhotos),
       ),
     );
 
     if (!mounted) return;
 
-    final catalogRecords =
-        await _databaseHelper.getAllPhotoCatalogMetadata();
+    final catalogRecords = await _databaseHelper.getAllPhotoCatalogMetadata();
 
     setState(() {
       _catalogByPath = <String, PhotoCatalogMetadata>{
@@ -1275,16 +1236,13 @@ class _PhotosScreenState extends State<PhotosScreen> {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => WholeLibraryFaceScanScreen(
-          photos: _photos,
-        ),
+        builder: (context) => WholeLibraryFaceScanScreen(photos: _photos),
       ),
     );
 
     if (!mounted) return;
 
-    final catalogRecords =
-        await _databaseHelper.getAllPhotoCatalogMetadata();
+    final catalogRecords = await _databaseHelper.getAllPhotoCatalogMetadata();
 
     setState(() {
       _catalogByPath = <String, PhotoCatalogMetadata>{
@@ -1297,16 +1255,13 @@ class _PhotosScreenState extends State<PhotosScreen> {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => PhotoMetadataImportScreen(
-          photos: _photos,
-        ),
+        builder: (context) => PhotoMetadataImportScreen(photos: _photos),
       ),
     );
 
     if (!mounted) return;
 
-    final catalogRecords =
-        await _databaseHelper.getAllPhotoCatalogMetadata();
+    final catalogRecords = await _databaseHelper.getAllPhotoCatalogMetadata();
 
     setState(() {
       _catalogByPath = <String, PhotoCatalogMetadata>{
@@ -1327,26 +1282,27 @@ class _PhotosScreenState extends State<PhotosScreen> {
         .toList();
 
     final plans = _metadataWriteService
-        .createPlans(
-          photos: writable,
-          catalogByPath: _catalogByPath,
+        .createPlans(photos: writable, catalogByPath: _catalogByPath)
+        .where(
+          (plan) =>
+              plan.people.isNotEmpty ||
+              plan.tags.isNotEmpty ||
+              plan.location.trim().isNotEmpty ||
+              plan.description.trim().isNotEmpty,
         )
-        .where((plan) =>
-            plan.people.isNotEmpty ||
-            plan.tags.isNotEmpty ||
-            plan.location.trim().isNotEmpty ||
-            plan.description.trim().isNotEmpty)
         .toList();
 
     int countWhere(bool Function(PhotoCatalogMetadata metadata) test) =>
         writable.where((photo) => test(_catalogByPath[photo.filePath]!)).length;
 
-    final withDescription =
-        countWhere((metadata) => metadata.description.trim().isNotEmpty);
+    final withDescription = countWhere(
+      (metadata) => metadata.description.trim().isNotEmpty,
+    );
     final withTags = countWhere((metadata) => metadata.tags.isNotEmpty);
     final withPeople = countWhere((metadata) => metadata.people.isNotEmpty);
-    final withLocation =
-        countWhere((metadata) => metadata.location.trim().isNotEmpty);
+    final withLocation = countWhere(
+      (metadata) => metadata.location.trim().isNotEmpty,
+    );
 
     if (!mounted) return;
 
@@ -1368,8 +1324,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
                       child: Text(
                         'Metadata Write Preview',
                         style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.w800,
-                            ),
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
                     ),
                     IconButton(
@@ -1388,8 +1344,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
                     Text(
                       'Review before writing',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w800,
-                          ),
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
                     const SizedBox(height: 8),
                     const Text(
@@ -1399,12 +1355,18 @@ class _PhotosScreenState extends State<PhotosScreen> {
                       'metadata after the write.',
                     ),
                     const SizedBox(height: 20),
-                    _metadataPreviewRow('Photos in library', '${_photos.length}'),
+                    _metadataPreviewRow(
+                      'Photos in library',
+                      '${_photos.length}',
+                    ),
                     _metadataPreviewRow(
                       'Photos with Heirloom Atlas metadata',
                       '${cataloged.length}',
                     ),
-                    _metadataPreviewRow('Supported files', '${writable.length}'),
+                    _metadataPreviewRow(
+                      'Supported files',
+                      '${writable.length}',
+                    ),
                     _metadataPreviewRow(
                       'Photos eligible for this batch',
                       '${plans.length}',
@@ -1413,11 +1375,14 @@ class _PhotosScreenState extends State<PhotosScreen> {
                     Text(
                       'Fields that would be written',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w800,
-                          ),
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
                     const SizedBox(height: 10),
-                    _metadataPreviewRow('Description', '$withDescription photos'),
+                    _metadataPreviewRow(
+                      'Description',
+                      '$withDescription photos',
+                    ),
                     _metadataPreviewRow('Tags / keywords', '$withTags photos'),
                     _metadataPreviewRow(
                       'People as keywords',
@@ -1530,8 +1495,9 @@ class _PhotosScreenState extends State<PhotosScreen> {
             child: ValueListenableBuilder<_MetadataBatchProgress>(
               valueListenable: progress,
               builder: (context, value, _) {
-                final fraction =
-                    value.total == 0 ? 0.0 : value.processed / value.total;
+                final fraction = value.total == 0
+                    ? 0.0
+                    : value.processed / value.total;
                 return Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1615,11 +1581,16 @@ class _PhotosScreenState extends State<PhotosScreen> {
               ),
             );
           } else {
-            final refreshed = await PhotoMetadataReader.read(plan.photo.filePath);
-            final verificationFailures =
-                _metadataVerificationFailures(expected, refreshed);
+            final refreshed = await PhotoMetadataReader.read(
+              plan.photo.filePath,
+            );
+            final verificationFailures = _metadataVerificationFailures(
+              expected,
+              refreshed,
+            );
 
-            if (result.backupPath == null || result.backupPath!.trim().isEmpty) {
+            if (result.backupPath == null ||
+                result.backupPath!.trim().isEmpty) {
               verificationFailures.insert(0, 'Backup was not confirmed');
             }
 
@@ -1689,7 +1660,9 @@ class _PhotosScreenState extends State<PhotosScreen> {
                     style: TextStyle(fontWeight: FontWeight.w800),
                   ),
                   const SizedBox(height: 8),
-                  ...failures.take(20).map(
+                  ...failures
+                      .take(20)
+                      .map(
                         (item) => Padding(
                           padding: const EdgeInsets.only(bottom: 10),
                           child: SelectableText(
@@ -1816,8 +1789,10 @@ class _PhotosScreenState extends State<PhotosScreen> {
       filePath: keep.filePath,
       people: union(keepMeta?.people, removeMeta?.people),
       tags: union(keepMeta?.tags, removeMeta?.tags),
-      approximateDate:
-          prefer(keepMeta?.approximateDate, removeMeta?.approximateDate),
+      approximateDate: prefer(
+        keepMeta?.approximateDate,
+        removeMeta?.approximateDate,
+      ),
       location: prefer(keepMeta?.location, removeMeta?.location),
       description: prefer(keepMeta?.description, removeMeta?.description),
       notes: combineNotes(keepMeta?.notes, removeMeta?.notes),
@@ -1864,20 +1839,26 @@ class _PhotosScreenState extends State<PhotosScreen> {
       }
     }
 
-    final files = directory
-        .listSync()
-        .whereType<File>()
-        .where((file) =>
-            path.basename(file.path) != 'duplicate_trash_manifest.json')
-        .toList()
-      ..sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+    final files =
+        directory
+            .listSync()
+            .whereType<File>()
+            .where(
+              (file) =>
+                  path.basename(file.path) != 'duplicate_trash_manifest.json',
+            )
+            .toList()
+          ..sort(
+            (a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()),
+          );
 
     return files.map((file) {
       final existing = manifestByTrashPath[file.path];
       return <String, Object?>{
         'trash_path': file.path,
         'original_path': existing?['original_path'] ?? '',
-        'trashed_at_milliseconds': existing?['trashed_at_milliseconds'] ??
+        'trashed_at_milliseconds':
+            existing?['trashed_at_milliseconds'] ??
             file.lastModifiedSync().millisecondsSinceEpoch,
       };
     }).toList();
@@ -1957,20 +1938,16 @@ class _PhotosScreenState extends State<PhotosScreen> {
     final extension = path.extension(desiredPath);
     final base = path.basenameWithoutExtension(desiredPath);
     var number = 2;
-    var candidate =
-        path.join(directory, '$base restored ($number)$extension');
+    var candidate = path.join(directory, '$base restored ($number)$extension');
 
     while (File(candidate).existsSync()) {
       number++;
-      candidate =
-          path.join(directory, '$base restored ($number)$extension');
+      candidate = path.join(directory, '$base restored ($number)$extension');
     }
     return candidate;
   }
 
-  Future<bool> _restoreDuplicateTrashEntry(
-    Map<String, Object?> entry,
-  ) async {
+  Future<bool> _restoreDuplicateTrashEntry(Map<String, Object?> entry) async {
     final trashPath = entry['trash_path'] as String? ?? '';
     if (trashPath.isEmpty) return false;
 
@@ -2004,13 +1981,12 @@ class _PhotosScreenState extends State<PhotosScreen> {
     return true;
   }
 
-  Future<bool> _permanentlyDeleteTrashEntry(
-    Map<String, Object?> entry,
-  ) async {
+  Future<bool> _permanentlyDeleteTrashEntry(Map<String, Object?> entry) async {
     final trashPath = entry['trash_path'] as String? ?? '';
     if (trashPath.isEmpty) return false;
 
-    final confirmed = await showDialog<bool>(
+    final confirmed =
+        await showDialog<bool>(
           context: context,
           builder: (dialogContext) => AlertDialog(
             title: const Text('Permanently delete photo?'),
@@ -2078,9 +2054,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                             children: [
                               Text(
                                 'Duplicate Trash',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .titleLarge
+                                style: Theme.of(context).textTheme.titleLarge
                                     ?.copyWith(fontWeight: FontWeight.w800),
                               ),
                               Text(
@@ -2101,9 +2075,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                   const Divider(height: 1),
                   Expanded(
                     child: entries.isEmpty
-                        ? const Center(
-                            child: Text('Duplicate Trash is empty.'),
-                          )
+                        ? const Center(child: Text('Duplicate Trash is empty.'))
                         : ListView.separated(
                             padding: const EdgeInsets.all(16),
                             itemCount: entries.length,
@@ -2146,8 +2118,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
                                         onPressed: () async {
                                           final restored =
                                               await _restoreDuplicateTrashEntry(
-                                            entry,
-                                          );
+                                                entry,
+                                              );
                                           if (restored) {
                                             await _scanLibrary(
                                               runAutomaticIntake: false,
@@ -2166,8 +2138,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
                                         onPressed: () async {
                                           final deleted =
                                               await _permanentlyDeleteTrashEntry(
-                                            entry,
-                                          );
+                                                entry,
+                                              );
                                           if (deleted) await refresh();
                                         },
                                         icon: const Icon(
@@ -2218,7 +2190,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
     final file = File(photo.filePath);
     if (!file.existsSync()) return true;
 
-    final confirmed = await showDialog<bool>(
+    final confirmed =
+        await showDialog<bool>(
           context: context,
           builder: (dialogContext) => AlertDialog(
             title: Text(actionLabel),
@@ -2252,7 +2225,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
     VaultPhoto keep,
     VaultPhoto remove,
   ) async {
-    final confirmed = await showDialog<bool>(
+    final confirmed =
+        await showDialog<bool>(
           context: context,
           builder: (dialogContext) => AlertDialog(
             title: const Text('Merge duplicate records?'),
@@ -2298,7 +2272,9 @@ class _PhotosScreenState extends State<PhotosScreen> {
     bool showResults = true,
     Set<String>? countOnlyPaths,
   }) async {
-    if (_possibleDuplicateScanning || _duplicateScanning || _photos.length < 2) {
+    if (_possibleDuplicateScanning ||
+        _duplicateScanning ||
+        _photos.length < 2) {
       return null;
     }
 
@@ -2322,7 +2298,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
         final row = stored[photo.filePath];
         if (row != null &&
             _dbInt(row['file_size']) == photo.fileSize &&
-            _dbInt(row['modified_milliseconds']) == photo.modifiedMilliseconds &&
+            _dbInt(row['modified_milliseconds']) ==
+                photo.modifiedMilliseconds &&
             (row['hash_hex'] as String? ?? '').isNotEmpty) {
           records.add({
             'file_path': photo.filePath,
@@ -2348,11 +2325,15 @@ class _PhotosScreenState extends State<PhotosScreen> {
             ? start + batchSize
             : pending.length;
         final batch = pending.sublist(start, end);
-        final input = batch.map((photo) => <String, Object?>{
-          'file_path': photo.filePath,
-          'file_size': photo.fileSize,
-          'modified_milliseconds': photo.modifiedMilliseconds,
-        }).toList();
+        final input = batch
+            .map(
+              (photo) => <String, Object?>{
+                'file_path': photo.filePath,
+                'file_size': photo.fileSize,
+                'modified_milliseconds': photo.modifiedMilliseconds,
+              },
+            )
+            .toList();
 
         final results = await compute(_fingerprintPhotoBatch, input);
 
@@ -2386,7 +2367,9 @@ class _PhotosScreenState extends State<PhotosScreen> {
         }
 
         completed += batch.length;
-        if (!mounted || generation != _possibleDuplicateScanGeneration) return null;
+        if (!mounted || generation != _possibleDuplicateScanGeneration) {
+          return null;
+        }
         setState(() => _duplicateScanCurrent = completed);
         await Future<void>.delayed(Duration.zero);
       }
@@ -2395,22 +2378,28 @@ class _PhotosScreenState extends State<PhotosScreen> {
         _photos.map((photo) => photo.filePath),
       );
 
-      if (!mounted || generation != _possibleDuplicateScanGeneration) return null;
+      if (!mounted || generation != _possibleDuplicateScanGeneration) {
+        return null;
+      }
 
       final matches = await compute(_compareFingerprintRecords, records);
 
-      if (!mounted || generation != _possibleDuplicateScanGeneration) return null;
+      if (!mounted || generation != _possibleDuplicateScanGeneration) {
+        return null;
+      }
 
       final pairs = <_PossibleDuplicatePair>[];
       for (final match in matches) {
         final first = photoByPath[match['first_path'] as String? ?? ''];
         final second = photoByPath[match['second_path'] as String? ?? ''];
         if (first == null || second == null) continue;
-        pairs.add(_PossibleDuplicatePair(
-          first: first,
-          second: second,
-          similarity: _dbInt(match['similarity']),
-        ));
+        pairs.add(
+          _PossibleDuplicatePair(
+            first: first,
+            second: second,
+            similarity: _dbInt(match['similarity']),
+          ),
+        );
       }
 
       setState(() {
@@ -2454,10 +2443,14 @@ class _PhotosScreenState extends State<PhotosScreen> {
 
       return pairs.length;
     } catch (error) {
-      if (!mounted || generation != _possibleDuplicateScanGeneration) return null;
+      if (!mounted || generation != _possibleDuplicateScanGeneration) {
+        return null;
+      }
       setState(() => _possibleDuplicateScanning = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not scan for possible duplicates: $error')),
+        SnackBar(
+          content: Text('Could not scan for possible duplicates: $error'),
+        ),
       );
       return null;
     }
@@ -2479,11 +2472,12 @@ class _PhotosScreenState extends State<PhotosScreen> {
     });
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('Photo analysis canceled. Completed fingerprints were saved.'),
+        content: Text(
+          'Photo analysis canceled. Completed fingerprints were saved.',
+        ),
       ),
     );
   }
-
 
   Future<void> _findExactDuplicates() async {
     if (_duplicateScanning || _photos.length < 2) return;
@@ -2533,8 +2527,9 @@ class _PhotosScreenState extends State<PhotosScreen> {
           for (var i = remaining.length - 1; i >= 0; i--) {
             final candidate = remaining[i];
             try {
-              final candidateBytes =
-                  await File(candidate.filePath).readAsBytes();
+              final candidateBytes = await File(
+                candidate.filePath,
+              ).readAsBytes();
 
               if (_sameBytes(seedBytes, candidateBytes)) {
                 exact.add(candidate);
@@ -2570,6 +2565,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
         context: context,
         builder: (dialogContext) => _ExactDuplicatesDialog(
           groups: duplicates,
+          catalogByPath: _catalogByPath,
           onMoveToTrash: (photo) => _moveDuplicateToTrash(
             photo,
             actionLabel: 'Remove exact duplicate?',
@@ -2584,9 +2580,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
       if (!mounted) return;
       setState(() => _duplicateScanning = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Could not scan for duplicates: $error'),
-        ),
+        SnackBar(content: Text('Could not scan for duplicates: $error')),
       );
     }
   }
@@ -2620,8 +2614,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
       if (!haystack.contains(query)) return false;
     }
 
-    if (_quickFilters.contains('Uncataloged') &&
-        _hasAnyCatalogData(metadata)) {
+    if (_quickFilters.contains('Uncataloged') && _hasAnyCatalogData(metadata)) {
       return false;
     }
 
@@ -2682,24 +2675,24 @@ class _PhotosScreenState extends State<PhotosScreen> {
       .length;
 
   int get _missingPeopleCount => _photos.where((photo) {
-        final metadata = _catalogByPath[photo.filePath];
-        return metadata == null || metadata.people.isEmpty;
-      }).length;
+    final metadata = _catalogByPath[photo.filePath];
+    return metadata == null || metadata.people.isEmpty;
+  }).length;
 
   int get _missingDateCount => _photos.where((photo) {
-        final metadata = _catalogByPath[photo.filePath];
-        return metadata == null || metadata.approximateDate.trim().isEmpty;
-      }).length;
+    final metadata = _catalogByPath[photo.filePath];
+    return metadata == null || metadata.approximateDate.trim().isEmpty;
+  }).length;
 
   int get _missingLocationCount => _photos.where((photo) {
-        final metadata = _catalogByPath[photo.filePath];
-        return metadata == null || metadata.location.trim().isEmpty;
-      }).length;
+    final metadata = _catalogByPath[photo.filePath];
+    return metadata == null || metadata.location.trim().isEmpty;
+  }).length;
 
   int get _missingDescriptionCount => _photos.where((photo) {
-        final metadata = _catalogByPath[photo.filePath];
-        return metadata == null || metadata.description.trim().isEmpty;
-      }).length;
+    final metadata = _catalogByPath[photo.filePath];
+    return metadata == null || metadata.description.trim().isEmpty;
+  }).length;
 
   int get _recentlyAddedCount => _photos
       .where((photo) => _recentlyAddedPaths.contains(photo.filePath))
@@ -2750,19 +2743,15 @@ class _PhotosScreenState extends State<PhotosScreen> {
                     color: scheme.primaryContainer,
                     borderRadius: BorderRadius.circular(9),
                   ),
-                  child: Icon(
-                    icon,
-                    size: 17,
-                    color: scheme.onPrimaryContainer,
-                  ),
+                  child: Icon(icon, size: 17, color: scheme.onPrimaryContainer),
                 ),
                 const SizedBox(width: 9),
                 Text(
                   title,
                   style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: 0.5,
-                      ),
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.5,
+                  ),
                 ),
               ],
             ),
@@ -2872,15 +2861,14 @@ class _PhotosScreenState extends State<PhotosScreen> {
                     await Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (context) =>
-                            const UnidentifiedFacesScreen(),
+                        builder: (context) => const UnidentifiedFacesScreen(),
                       ),
                     );
                     if (!mounted) return;
-                    final catalogRecords =
-                        await _databaseHelper.getAllPhotoCatalogMetadata();
-                    final faceCount =
-                        await _databaseHelper.getUnconfirmedFaceCount();
+                    final catalogRecords = await _databaseHelper
+                        .getAllPhotoCatalogMetadata();
+                    final faceCount = await _databaseHelper
+                        .getUnconfirmedFaceCount();
                     setState(() {
                       _catalogByPath = {
                         for (final record in catalogRecords)
@@ -2956,10 +2944,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
     );
   }
 
-  Widget _reviewCountBadge(
-    int? count, {
-    String unknownLabel = '—',
-  }) {
+  Widget _reviewCountBadge(int? count, {String unknownLabel = '—'}) {
     final scheme = Theme.of(context).colorScheme;
     final text = count == null ? unknownLabel : '$count';
 
@@ -2973,9 +2958,9 @@ class _PhotosScreenState extends State<PhotosScreen> {
       child: Text(
         text,
         textAlign: TextAlign.center,
-        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              fontWeight: FontWeight.w800,
-            ),
+        style: Theme.of(
+          context,
+        ).textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w800),
       ),
     );
   }
@@ -3043,8 +3028,10 @@ class _PhotosScreenState extends State<PhotosScreen> {
                 ),
                 Container(
                   constraints: const BoxConstraints(minWidth: 32),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
                     color: selected
                         ? scheme.primary
@@ -3055,11 +3042,11 @@ class _PhotosScreenState extends State<PhotosScreen> {
                     '$count',
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          fontWeight: FontWeight.w900,
-                          color: selected
-                              ? scheme.onPrimary
-                              : scheme.onSurfaceVariant,
-                        ),
+                      fontWeight: FontWeight.w900,
+                      color: selected
+                          ? scheme.onPrimary
+                          : scheme.onSurfaceVariant,
+                    ),
                   ),
                 ),
               ],
@@ -3099,13 +3086,11 @@ class _PhotosScreenState extends State<PhotosScreen> {
               const SizedBox(width: 8),
             if (_selectionMode)
               TextButton.icon(
-                onPressed: () =>
-                    _toggleSelectAll(_visiblePhotosForSelection),
+                onPressed: () => _toggleSelectAll(_visiblePhotosForSelection),
                 icon: Icon(
                   _visiblePhotosForSelection.isNotEmpty &&
                           _visiblePhotosForSelection.every(
-                            (photo) =>
-                                _selectedPaths.contains(photo.filePath),
+                            (photo) => _selectedPaths.contains(photo.filePath),
                           )
                       ? Icons.deselect
                       : Icons.select_all,
@@ -3113,15 +3098,13 @@ class _PhotosScreenState extends State<PhotosScreen> {
                 label: Text(
                   _visiblePhotosForSelection.isNotEmpty &&
                           _visiblePhotosForSelection.every(
-                            (photo) =>
-                                _selectedPaths.contains(photo.filePath),
+                            (photo) => _selectedPaths.contains(photo.filePath),
                           )
                       ? 'Clear All'
                       : 'Select All',
                 ),
               ),
-            if (_selectionMode)
-              const SizedBox(width: 4),
+            if (_selectionMode) const SizedBox(width: 4),
             TextButton.icon(
               onPressed: _toggleSelectionMode,
               icon: Icon(
@@ -3131,7 +3114,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
             ),
             IconButton(
               tooltip: 'Find Possible Duplicates',
-              onPressed: _selectionMode ||
+              onPressed:
+                  _selectionMode ||
                       _possibleDuplicateScanning ||
                       _duplicateScanning
                   ? null
@@ -3146,7 +3130,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
             ),
             IconButton(
               tooltip: 'Find Exact Duplicates',
-              onPressed: _selectionMode ||
+              onPressed:
+                  _selectionMode ||
                       _duplicateScanning ||
                       _possibleDuplicateScanning
                   ? null
@@ -3161,16 +3146,12 @@ class _PhotosScreenState extends State<PhotosScreen> {
             ),
             IconButton(
               tooltip: 'Import Embedded Photo Metadata',
-              onPressed: _selectionMode
-                  ? null
-                  : _openMetadataImport,
+              onPressed: _selectionMode ? null : _openMetadataImport,
               icon: const Icon(Icons.file_download_outlined),
             ),
             IconButton(
               tooltip: 'Scan Entire Photo Library for Faces',
-              onPressed: _selectionMode
-                  ? null
-                  : _openWholeLibraryFaceScan,
+              onPressed: _selectionMode ? null : _openWholeLibraryFaceScan,
               icon: const Icon(Icons.manage_search),
             ),
             IconButton(
@@ -3181,15 +3162,14 @@ class _PhotosScreenState extends State<PhotosScreen> {
                       await Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (context) =>
-                              const UnidentifiedFacesScreen(),
+                          builder: (context) => const UnidentifiedFacesScreen(),
                         ),
                       );
 
                       if (!mounted) return;
 
-                      final catalogRecords =
-                          await _databaseHelper.getAllPhotoCatalogMetadata();
+                      final catalogRecords = await _databaseHelper
+                          .getAllPhotoCatalogMetadata();
                       setState(() {
                         _catalogByPath = <String, PhotoCatalogMetadata>{
                           for (final record in catalogRecords)
@@ -3213,8 +3193,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
 
                       if (!mounted) return;
 
-                      final catalogRecords =
-                          await _databaseHelper.getAllPhotoCatalogMetadata();
+                      final catalogRecords = await _databaseHelper
+                          .getAllPhotoCatalogMetadata();
                       setState(() {
                         _catalogByPath = <String, PhotoCatalogMetadata>{
                           for (final record in catalogRecords)
@@ -3267,16 +3247,11 @@ class _PhotosScreenState extends State<PhotosScreen> {
                             children: [
                               Text(
                                 'Photo Library',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .labelLarge
+                                style: Theme.of(context).textTheme.labelLarge
                                     ?.copyWith(fontWeight: FontWeight.w800),
                               ),
                               const SizedBox(height: 2),
-                              SelectableText(
-                                _libraryPath!,
-                                maxLines: 2,
-                              ),
+                              SelectableText(_libraryPath!, maxLines: 2),
                             ],
                           ),
                   ),
@@ -3304,8 +3279,10 @@ class _PhotosScreenState extends State<PhotosScreen> {
                     LinearProgressIndicator(
                       value: _duplicateScanTotal == 0
                           ? null
-                          : (_duplicateScanCurrent / _duplicateScanTotal)
-                              .clamp(0.0, 1.0),
+                          : (_duplicateScanCurrent / _duplicateScanTotal).clamp(
+                              0.0,
+                              1.0,
+                            ),
                     ),
                     const SizedBox(height: 6),
                     Row(
@@ -3314,9 +3291,9 @@ class _PhotosScreenState extends State<PhotosScreen> {
                           child: Text(
                             _possibleDuplicateScanning
                                 ? 'Indexing new/changed photos... '
-                                    '$_duplicateScanCurrent / $_duplicateScanTotal'
+                                      '$_duplicateScanCurrent / $_duplicateScanTotal'
                                 : 'Checking for exact duplicate photos... '
-                                    '$_duplicateScanCurrent / $_duplicateScanTotal',
+                                      '$_duplicateScanCurrent / $_duplicateScanTotal',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ),
@@ -3404,8 +3381,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
                 Text(
                   'Connect your photo library',
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
                 const SizedBox(height: 10),
                 const Text(
@@ -3431,10 +3408,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (!_selectionMode) ...[
-          SizedBox(
-            width: 380,
-            child: _buildPhotoOrganizerSidebar(),
-          ),
+          SizedBox(width: 380, child: _buildPhotoOrganizerSidebar()),
           const VerticalDivider(width: 1),
         ],
         Expanded(
@@ -3456,17 +3430,15 @@ class _PhotosScreenState extends State<PhotosScreen> {
                               _currentFolder.isEmpty
                                   ? 'Photos in Pictures'
                                   : 'Photos in ${path.basename(_currentFolder)}',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .titleLarge
+                              style: Theme.of(context).textTheme.titleLarge
                                   ?.copyWith(fontWeight: FontWeight.w800),
                             ),
                           ),
                           FilledButton.tonalIcon(
-                            onPressed:
-                                _selectionMode ? null : _scanCurrentFolderFaces,
-                            icon:
-                                const Icon(Icons.face_retouching_natural),
+                            onPressed: _selectionMode
+                                ? null
+                                : _scanCurrentFolderFaces,
+                            icon: const Icon(Icons.face_retouching_natural),
                             label: Text(
                               'Scan Faces in This Folder '
                               '(${_filteredPhotosInCurrentFolder.length})',
@@ -3496,8 +3468,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
         children: [
           TextButton.icon(
             onPressed: _selectionMode
-    ? null
-    : () => setState(() => _currentFolder = ''),
+                ? null
+                : () => setState(() => _currentFolder = ''),
             icon: const Icon(Icons.home_outlined),
             label: const Text('Pictures'),
           ),
@@ -3507,8 +3479,9 @@ class _PhotosScreenState extends State<PhotosScreen> {
               onPressed: _selectionMode
                   ? null
                   : () {
-                      final target =
-                          path.joinAll(segments.take(i + 1).toList());
+                      final target = path.joinAll(
+                        segments.take(i + 1).toList(),
+                      );
                       setState(() => _currentFolder = target);
                     },
               child: Text(segments[i]),
@@ -3527,70 +3500,79 @@ class _PhotosScreenState extends State<PhotosScreen> {
           'All Photos',
           style: TextStyle(fontWeight: FontWeight.w800),
         ),
-        subtitle: Text('${_filteredPhotos.length} matching photos across all folders'),
+        subtitle: Text(
+          '${_filteredPhotos.length} matching photos across all folders',
+        ),
         trailing: const Icon(Icons.chevron_right),
         onTap: _selectionMode
             ? null
             : () {
-          showDialog<void>(
-            context: context,
-            builder: (dialogContext) => Dialog(
-              child: SizedBox(
-                width: 1100,
-                height: 780,
-                child: Column(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 14, 8, 10),
-                      child: Row(
+                showDialog<void>(
+                  context: context,
+                  builder: (dialogContext) => Dialog(
+                    child: SizedBox(
+                      width: 1100,
+                      height: 780,
+                      child: Column(
                         children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(20, 14, 8, 10),
+                            child: Row(
                               children: [
-                                Text(
-                                  'All Photos',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .titleLarge
-                                      ?.copyWith(fontWeight: FontWeight.w800),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'All Photos',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleLarge
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                      ),
+                                      Text(
+                                        '${_filteredPhotos.length} matching photos',
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.bodySmall,
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                                Text(
-                                  '${_filteredPhotos.length} matching photos',
-                                  style: Theme.of(context).textTheme.bodySmall,
+                                IconButton(
+                                  onPressed: () => Navigator.pop(dialogContext),
+                                  icon: const Icon(Icons.close),
                                 ),
                               ],
                             ),
                           ),
-                          IconButton(
-                            onPressed: () => Navigator.pop(dialogContext),
-                            icon: const Icon(Icons.close),
+                          const Divider(height: 1),
+                          Expanded(
+                            child: GridView.builder(
+                              padding: const EdgeInsets.all(16),
+                              itemCount: _filteredPhotos.length,
+                              gridDelegate:
+                                  const SliverGridDelegateWithMaxCrossAxisExtent(
+                                    maxCrossAxisExtent: 285,
+                                    mainAxisSpacing: 10,
+                                    crossAxisSpacing: 10,
+                                    childAspectRatio: 0.78,
+                                  ),
+                              itemBuilder: (context, index) => _photoTile(
+                                _filteredPhotos[index],
+                                _filteredPhotos,
+                              ),
+                            ),
                           ),
                         ],
                       ),
                     ),
-                    const Divider(height: 1),
-                    Expanded(
-                      child: GridView.builder(
-                        padding: const EdgeInsets.all(16),
-                        itemCount: _filteredPhotos.length,
-                        gridDelegate:
-                            const SliverGridDelegateWithMaxCrossAxisExtent(
-                          maxCrossAxisExtent: 285,
-                          mainAxisSpacing: 10,
-                          crossAxisSpacing: 10,
-                          childAspectRatio: 0.78,
-                        ),
-                        itemBuilder: (context, index) =>
-                            _photoTile(_filteredPhotos[index], _filteredPhotos),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          );
-        },
+                  ),
+                );
+              },
       ),
     );
   }
@@ -3658,9 +3640,9 @@ class _PhotosScreenState extends State<PhotosScreen> {
                     children: [
                       Container(
                         width: double.infinity,
-                        color: Theme.of(context)
-                            .colorScheme
-                            .surfaceContainerHighest,
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.surfaceContainerHighest,
                         child: file.existsSync()
                             ? Image.file(
                                 file,
@@ -3674,9 +3656,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                                 ),
                               )
                             : const Center(
-                                child: Icon(
-                                  Icons.image_not_supported_outlined,
-                                ),
+                                child: Icon(Icons.image_not_supported_outlined),
                               ),
                       ),
                       if (isUncataloged)
@@ -3697,9 +3677,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                         photo.fileName,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w700,
-                        ),
+                        style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
                       if (description.isNotEmpty) ...[
                         const SizedBox(height: 3),
@@ -3777,9 +3755,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
       ),
     );
   }
-
 }
-
 
 List<Map<String, Object?>> _fingerprintPhotoBatch(
   List<Map<String, Object?>> inputs,
@@ -3871,8 +3847,7 @@ List<Map<String, Object?>> _compareFingerprintRecords(
   final buckets = <String, List<int>>{};
   for (var i = 0; i < hashes.length; i++) {
     for (var chunk = 0; chunk < 16; chunk++) {
-      final value =
-          ((hashes[i] >> (chunk * 16)) & BigInt.from(0xFFFF)).toInt();
+      final value = ((hashes[i] >> (chunk * 16)) & BigInt.from(0xFFFF)).toInt();
       buckets.putIfAbsent('$chunk:$value', () => <int>[]).add(i);
     }
   }
@@ -3925,8 +3900,10 @@ List<Map<String, Object?>> _compareFingerprintRecords(
       continue;
     }
 
-    final similarity =
-        (100 - (distance * 8) - (colorDistance ~/ 12)).clamp(0, 99);
+    final similarity = (100 - (distance * 8) - (colorDistance ~/ 12)).clamp(
+      0,
+      99,
+    );
     if (similarity < 60) continue;
 
     matches.add({
@@ -3941,8 +3918,6 @@ List<Map<String, Object?>> _compareFingerprintRecords(
   );
   return matches.length > 200 ? matches.sublist(0, 200) : matches;
 }
-
-
 
 class _MetadataBatchProgress {
   final int total;
@@ -3966,12 +3941,8 @@ class _MetadataBatchFailure {
   final String fileName;
   final String message;
 
-  const _MetadataBatchFailure({
-    required this.fileName,
-    required this.message,
-  });
+  const _MetadataBatchFailure({required this.fileName, required this.message});
 }
-
 
 class _PossibleDuplicatePair {
   final VaultPhoto first;
@@ -3990,7 +3961,7 @@ class _PossibleDuplicatesDialog extends StatefulWidget {
   final bool resultsLimited;
   final Future<bool> Function(VaultPhoto photo) onMoveToTrash;
   final Future<bool> Function(VaultPhoto keep, VaultPhoto remove)
-      onMergeAndKeep;
+  onMergeAndKeep;
 
   const _PossibleDuplicatesDialog({
     required this.pairs,
@@ -4004,8 +3975,7 @@ class _PossibleDuplicatesDialog extends StatefulWidget {
       _PossibleDuplicatesDialogState();
 }
 
-class _PossibleDuplicatesDialogState
-    extends State<_PossibleDuplicatesDialog> {
+class _PossibleDuplicatesDialogState extends State<_PossibleDuplicatesDialog> {
   final Set<String> _dismissed = <String>{};
   bool _changed = false;
 
@@ -4068,9 +4038,7 @@ class _PossibleDuplicatesDialogState
                         children: [
                           Text(
                             'Possible Duplicate Photos',
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleLarge
+                            style: Theme.of(context).textTheme.titleLarge
                                 ?.copyWith(fontWeight: FontWeight.w800),
                           ),
                           const SizedBox(height: 2),
@@ -4078,10 +4046,10 @@ class _PossibleDuplicatesDialogState
                             widget.pairs.isEmpty
                                 ? 'No visually similar photo pairs were found.'
                                 : widget.resultsLimited
-                                    ? 'Showing the 200 strongest possible matches.'
-                                    : '${visible.length} possible '
-                                        '${visible.length == 1 ? 'match' : 'matches'} '
-                                        'to review',
+                                ? 'Showing the 200 strongest possible matches.'
+                                : '${visible.length} possible '
+                                      '${visible.length == 1 ? 'match' : 'matches'} '
+                                      'to review',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ],
@@ -4102,8 +4070,7 @@ class _PossibleDuplicatesDialogState
                     : ListView.separated(
                         padding: const EdgeInsets.all(18),
                         itemCount: visible.length,
-                        separatorBuilder: (_, _) =>
-                            const SizedBox(height: 14),
+                        separatorBuilder: (_, _) => const SizedBox(height: 14),
                         itemBuilder: (context, index) {
                           final pair = visible[index];
                           return _PossibleDuplicatePairCard(
@@ -4138,10 +4105,7 @@ class _PossibleDuplicatesDialogState
                         'information before moving the extra copy.',
                       ),
                     ),
-                    FilledButton(
-                      onPressed: _finish,
-                      child: const Text('Done'),
-                    ),
+                    FilledButton(onPressed: _finish, child: const Text('Done')),
                   ],
                 ),
               ),
@@ -4183,10 +4147,9 @@ class _PossibleDuplicatePairCard extends StatelessWidget {
               children: [
                 Text(
                   '${pair.similarity}% visual similarity',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleMedium
-                      ?.copyWith(fontWeight: FontWeight.w800),
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
                 const Spacer(),
                 OutlinedButton.icon(
@@ -4294,12 +4257,14 @@ class _PossibleDuplicatePhoto extends StatelessWidget {
 
 class _ExactDuplicatesDialog extends StatefulWidget {
   final List<List<VaultPhoto>> groups;
+  final Map<String, PhotoCatalogMetadata> catalogByPath;
   final Future<bool> Function(VaultPhoto photo) onMoveToTrash;
   final Future<bool> Function(VaultPhoto keep, VaultPhoto remove)
-      onMergeAndKeep;
+  onMergeAndKeep;
 
   const _ExactDuplicatesDialog({
     required this.groups,
+    required this.catalogByPath,
     required this.onMoveToTrash,
     required this.onMergeAndKeep,
   });
@@ -4309,8 +4274,9 @@ class _ExactDuplicatesDialog extends StatefulWidget {
 }
 
 class _ExactDuplicatesDialogState extends State<_ExactDuplicatesDialog> {
-  late final List<List<VaultPhoto>> _groups =
-      widget.groups.map((group) => List<VaultPhoto>.from(group)).toList();
+  late final List<List<VaultPhoto>> _groups = widget.groups
+      .map((group) => List<VaultPhoto>.from(group))
+      .toList();
   bool _changed = false;
 
   int get _duplicateCopies =>
@@ -4323,7 +4289,9 @@ class _ExactDuplicatesDialogState extends State<_ExactDuplicatesDialog> {
     if (!changed || !mounted) return;
     setState(() {
       _changed = true;
-      _groups[groupIndex].removeWhere((item) => item.filePath == photo.filePath);
+      _groups[groupIndex].removeWhere(
+        (item) => item.filePath == photo.filePath,
+      );
       if (_groups[groupIndex].length < 2) {
         _groups.removeAt(groupIndex);
       }
@@ -4339,8 +4307,9 @@ class _ExactDuplicatesDialogState extends State<_ExactDuplicatesDialog> {
     if (!changed || !mounted) return;
     setState(() {
       _changed = true;
-      _groups[groupIndex]
-          .removeWhere((item) => item.filePath == remove.filePath);
+      _groups[groupIndex].removeWhere(
+        (item) => item.filePath == remove.filePath,
+      );
       if (_groups[groupIndex].length < 2) {
         _groups.removeAt(groupIndex);
       }
@@ -4371,10 +4340,9 @@ class _ExactDuplicatesDialogState extends State<_ExactDuplicatesDialog> {
                         _groups.isEmpty
                             ? 'Exact Duplicate Photos'
                             : 'Exact Duplicate Photos • $_duplicateCopies extra copies',
-                        style: Theme.of(context)
-                            .textTheme
-                            .titleLarge
-                            ?.copyWith(fontWeight: FontWeight.w800),
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
                     ),
                     IconButton(
@@ -4392,12 +4360,12 @@ class _ExactDuplicatesDialogState extends State<_ExactDuplicatesDialog> {
                     : ListView.separated(
                         padding: const EdgeInsets.all(18),
                         itemCount: _groups.length,
-                        separatorBuilder: (_, _) =>
-                            const SizedBox(height: 14),
+                        separatorBuilder: (_, _) => const SizedBox(height: 14),
                         itemBuilder: (context, index) {
                           return _ExactDuplicateGroupCard(
                             number: index + 1,
                             photos: _groups[index],
+                            catalogByPath: widget.catalogByPath,
                             onRemove: (photo) => _remove(index, photo),
                             onMergeKeep: (keep, remove) =>
                                 _mergeKeep(index, keep, remove),
@@ -4432,12 +4400,14 @@ class _ExactDuplicatesDialogState extends State<_ExactDuplicatesDialog> {
 class _ExactDuplicateGroupCard extends StatelessWidget {
   final int number;
   final List<VaultPhoto> photos;
+  final Map<String, PhotoCatalogMetadata> catalogByPath;
   final Future<void> Function(VaultPhoto photo) onRemove;
   final Future<void> Function(VaultPhoto keep, VaultPhoto remove) onMergeKeep;
 
   const _ExactDuplicateGroupCard({
     required this.number,
     required this.photos,
+    required this.catalogByPath,
     required this.onRemove,
     required this.onMergeKeep,
   });
@@ -4450,9 +4420,110 @@ class _ExactDuplicateGroupCard extends StatelessWidget {
     return '$bytes bytes';
   }
 
+  int _keeperScore(VaultPhoto photo) {
+    final metadata = catalogByPath[photo.filePath];
+    var score = 0;
+
+    if (metadata != null) {
+      score += metadata.people.length * 4;
+      score += metadata.tags.length * 2;
+      if (metadata.approximateDate.trim().isNotEmpty) score += 3;
+      if (metadata.location.trim().isNotEmpty) score += 3;
+      if (metadata.description.trim().isNotEmpty) score += 4;
+      if (metadata.notes.trim().isNotEmpty) score += 2;
+    }
+
+    final base = path.basenameWithoutExtension(photo.fileName).toLowerCase();
+    final looksGeneric = RegExp(
+      r'^(img|dsc|dcim|pxl|photo|image|screenshot|scan)[-_ ]?\d+$',
+      caseSensitive: false,
+    ).hasMatch(base);
+    if (!looksGeneric && base.length >= 5) score += 2;
+
+    final folder = photo.relativeFolder.trim().toLowerCase();
+    if (folder.isNotEmpty) score += 1;
+    if (folder.contains('downloads') ||
+        folder.contains('temp') ||
+        folder.contains('camera roll')) {
+      score -= 1;
+    }
+
+    return score;
+  }
+
+  VaultPhoto _recommendedKeeper() {
+    final ranked = List<VaultPhoto>.from(photos)
+      ..sort((a, b) {
+        final scoreCompare = _keeperScore(b).compareTo(_keeperScore(a));
+        if (scoreCompare != 0) return scoreCompare;
+
+        final folderCompare = b.relativeFolder.length.compareTo(
+          a.relativeFolder.length,
+        );
+        if (folderCompare != 0) return folderCompare;
+
+        final nameCompare = b.fileName.length.compareTo(a.fileName.length);
+        if (nameCompare != 0) return nameCompare;
+
+        return a.filePath.toLowerCase().compareTo(b.filePath.toLowerCase());
+      });
+    return ranked.first;
+  }
+
+  List<String> _keeperReasons(VaultPhoto photo) {
+    final metadata = catalogByPath[photo.filePath];
+    final reasons = <String>[];
+
+    if (metadata != null) {
+      if (metadata.people.isNotEmpty) {
+        reasons.add(
+          '${metadata.people.length} identified '
+          '${metadata.people.length == 1 ? 'person' : 'people'}',
+        );
+      }
+      if (metadata.tags.isNotEmpty) {
+        reasons.add(
+          '${metadata.tags.length} ${metadata.tags.length == 1 ? 'tag' : 'tags'}',
+        );
+      }
+      if (metadata.approximateDate.trim().isNotEmpty) {
+        reasons.add('has a date');
+      }
+      if (metadata.location.trim().isNotEmpty) {
+        reasons.add('has a location');
+      }
+      if (metadata.description.trim().isNotEmpty) {
+        reasons.add('has a description');
+      }
+      if (metadata.notes.trim().isNotEmpty) {
+        reasons.add('has notes');
+      }
+    }
+
+    final base = path.basenameWithoutExtension(photo.fileName);
+    final generic = RegExp(
+      r'^(img|dsc|dcim|pxl|photo|image|screenshot|scan)[-_ ]?\d+$',
+      caseSensitive: false,
+    ).hasMatch(base);
+    if (!generic && base.trim().length >= 5) {
+      reasons.add('more descriptive filename');
+    }
+
+    if (photo.relativeFolder.trim().isNotEmpty) {
+      reasons.add('stored in ${photo.relativeFolder}');
+    }
+
+    if (reasons.isEmpty) {
+      reasons.add('no stronger cataloged copy was found');
+    }
+
+    return reasons.take(4).toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     final first = photos.first;
+    final recommended = _recommendedKeeper();
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -4463,14 +4534,40 @@ class _ExactDuplicateGroupCard extends StatelessWidget {
             Text(
               'Duplicate Group $number • ${photos.length} identical files • '
               '${_formatBytes(first.fileSize)} each',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w800),
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              color: Theme.of(context).colorScheme.primaryContainer,
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.recommend_outlined),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Heirloom Atlas recommends keeping '
+                        '"${recommended.fileName}" because '
+                        '${_keeperReasons(recommended).join(', ')}.',
+                        style: TextStyle(
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onPrimaryContainer,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
             const SizedBox(height: 12),
             SizedBox(
-              height: 310,
+              height: 360,
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
                 itemCount: photos.length,
@@ -4478,6 +4575,7 @@ class _ExactDuplicateGroupCard extends StatelessWidget {
                 itemBuilder: (context, index) {
                   final photo = photos[index];
                   final file = File(photo.filePath);
+                  final isRecommended = photo.filePath == recommended.filePath;
                   return SizedBox(
                     width: 245,
                     child: Card(
@@ -4490,9 +4588,9 @@ class _ExactDuplicateGroupCard extends StatelessWidget {
                             Expanded(
                               child: Container(
                                 width: double.infinity,
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .surfaceContainerHighest,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.surfaceContainerHighest,
                                 child: file.existsSync()
                                     ? Image.file(
                                         file,
@@ -4507,12 +4605,47 @@ class _ExactDuplicateGroupCard extends StatelessWidget {
                               ),
                             ),
                             const SizedBox(height: 7),
+                            if (isRecommended) ...[
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.primaryContainer,
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text(
+                                  'Recommended to keep',
+                                  style: TextStyle(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onPrimaryContainer,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                            ],
                             Text(
                               photo.fileName,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.w800),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              photo.relativeFolder.isEmpty
+                                  ? 'Pictures'
+                                  : photo.relativeFolder,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.bodySmall,
                             ),
                             const SizedBox(height: 7),
                             Row(
@@ -4523,8 +4656,11 @@ class _ExactDuplicateGroupCard extends StatelessWidget {
                                         ? null
                                         : () async {
                                             final others = photos
-                                                .where((p) =>
-                                                    p.filePath != photo.filePath)
+                                                .where(
+                                                  (p) =>
+                                                      p.filePath !=
+                                                      photo.filePath,
+                                                )
                                                 .toList();
                                             for (final other in others) {
                                               await onMergeKeep(photo, other);
@@ -4572,10 +4708,7 @@ class _PhotoStatusBadge extends StatelessWidget {
         ),
       ),
       child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: 8,
-          vertical: 4,
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         child: Text(
           'Uncataloged',
           style: TextStyle(
@@ -4606,10 +4739,7 @@ class _PhotoMetaPill extends StatelessWidget {
 
     return Container(
       constraints: const BoxConstraints(maxWidth: 210),
-      padding: const EdgeInsets.symmetric(
-        horizontal: 7,
-        vertical: 4,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
       decoration: BoxDecoration(
         color: missing
             ? scheme.surfaceContainerHighest
@@ -4622,9 +4752,7 @@ class _PhotoMetaPill extends StatelessWidget {
           Icon(
             icon,
             size: 13,
-            color: missing
-                ? scheme.onSurfaceVariant
-                : scheme.primary,
+            color: missing ? scheme.onSurfaceVariant : scheme.primary,
           ),
           const SizedBox(width: 4),
           Flexible(
@@ -4634,12 +4762,8 @@ class _PhotoMetaPill extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 11,
-                fontWeight: missing
-                    ? FontWeight.w500
-                    : FontWeight.w700,
-                color: missing
-                    ? scheme.onSurfaceVariant
-                    : scheme.onSurface,
+                fontWeight: missing ? FontWeight.w500 : FontWeight.w700,
+                color: missing ? scheme.onSurfaceVariant : scheme.onSurface,
               ),
             ),
           ),
