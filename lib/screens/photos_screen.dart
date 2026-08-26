@@ -2698,6 +2698,278 @@ class _PhotosScreenState extends State<PhotosScreen> {
       .where((photo) => _recentlyAddedPaths.contains(photo.filePath))
       .length;
 
+  int get _identifiedPeoplePhotoCount => _photos.length - _missingPeopleCount;
+  int get _datedPhotoCount => _photos.length - _missingDateCount;
+  int get _locatedPhotoCount => _photos.length - _missingLocationCount;
+  int get _describedPhotoCount => _photos.length - _missingDescriptionCount;
+
+  void _setDashboardFilter(String filter) {
+    setState(() {
+      _quickFilters
+        ..clear()
+        ..add(filter);
+      _currentFolder = '';
+    });
+  }
+
+  _PhotoHealthSuggestion get _photoHealthSuggestion {
+    if (_photos.isEmpty) {
+      return const _PhotoHealthSuggestion(
+        icon: Icons.add_photo_alternate_outlined,
+        title: 'Add photos to begin organizing',
+      );
+    }
+    if (_uncatalogedCount > 0) {
+      return _PhotoHealthSuggestion(
+        icon: Icons.inventory_2_outlined,
+        title: 'Catalog $_uncatalogedCount uncataloged ${_uncatalogedCount == 1 ? 'photo' : 'photos'}',
+        filter: 'Uncataloged',
+      );
+    }
+    if (_missingPeopleCount > 0) {
+      return _PhotoHealthSuggestion(
+        icon: Icons.people_outline,
+        title: 'Identify people in $_missingPeopleCount ${_missingPeopleCount == 1 ? 'photo' : 'photos'}',
+        filter: 'No People',
+      );
+    }
+    if (_missingDateCount > 0) {
+      return _PhotoHealthSuggestion(
+        icon: Icons.event_outlined,
+        title: 'Add dates to $_missingDateCount ${_missingDateCount == 1 ? 'photo' : 'photos'}',
+        filter: 'No Date',
+      );
+    }
+    if (_missingLocationCount > 0) {
+      return _PhotoHealthSuggestion(
+        icon: Icons.place_outlined,
+        title: 'Add locations to $_missingLocationCount ${_missingLocationCount == 1 ? 'photo' : 'photos'}',
+        filter: 'No Location',
+      );
+    }
+    if (_missingDescriptionCount > 0) {
+      return _PhotoHealthSuggestion(
+        icon: Icons.notes_outlined,
+        title: 'Describe $_missingDescriptionCount ${_missingDescriptionCount == 1 ? 'photo' : 'photos'}',
+        filter: 'No Description',
+      );
+    }
+    if ((_possibleDuplicateCount ?? 0) > 0) {
+      return _PhotoHealthSuggestion(
+        icon: Icons.compare_outlined,
+        title: 'Review $_possibleDuplicateCount possible duplicate ${_possibleDuplicateCount == 1 ? 'match' : 'matches'}',
+        action: () async {
+          await _findPossibleDuplicates();
+        },
+      );
+    }
+    if (_unidentifiedFaceCount > 0) {
+      return _PhotoHealthSuggestion(
+        icon: Icons.person_search_outlined,
+        title: 'Review $_unidentifiedFaceCount unidentified ${_unidentifiedFaceCount == 1 ? 'face' : 'faces'}',
+        action: _openUnidentifiedFacesFromHealth,
+      );
+    }
+    return const _PhotoHealthSuggestion(
+      icon: Icons.check_circle_outline,
+      title: 'Your collection is caught up',
+    );
+  }
+
+  Future<void> _openUnidentifiedFacesFromHealth() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const UnidentifiedFacesScreen()),
+    );
+    if (!mounted) return;
+    final catalogRecords = await _databaseHelper.getAllPhotoCatalogMetadata();
+    final faceCount = await _databaseHelper.getUnconfirmedFaceCount();
+    setState(() {
+      _catalogByPath = {
+        for (final record in catalogRecords) record.filePath: record,
+      };
+      _unidentifiedFaceCount = faceCount;
+    });
+  }
+
+  Widget _buildCollectionHealthCard() {
+    final scheme = Theme.of(context).colorScheme;
+    final suggestion = _photoHealthSuggestion;
+
+    Widget metric({
+      required IconData icon,
+      required String label,
+      required int complete,
+      required int missing,
+      required String filter,
+    }) {
+      final total = _photos.length;
+      final percent = total == 0 ? 0 : ((complete / total) * 100).round();
+      return Expanded(
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: missing == 0 ? null : () => _setDashboardFilter(filter),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(icon, size: 18, color: scheme.primary),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: Text(
+                        label,
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 7),
+                Text(
+                  '$complete of $total • $percent%',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                LinearProgressIndicator(value: total == 0 ? 0 : complete / total),
+                const SizedBox(height: 5),
+                Text(
+                  missing == 0 ? 'Complete' : '$missing need attention',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 14),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: scheme.primaryContainer,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(
+                    Icons.health_and_safety_outlined,
+                    color: scheme.onPrimaryContainer,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Collection Health',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      Text(
+                        '${_photos.length} ${_photos.length == 1 ? 'photo' : 'photos'} • see what is organized and what still needs attention',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                metric(
+                  icon: Icons.people_outline,
+                  label: 'People',
+                  complete: _identifiedPeoplePhotoCount,
+                  missing: _missingPeopleCount,
+                  filter: 'No People',
+                ),
+                metric(
+                  icon: Icons.event_outlined,
+                  label: 'Dates',
+                  complete: _datedPhotoCount,
+                  missing: _missingDateCount,
+                  filter: 'No Date',
+                ),
+                metric(
+                  icon: Icons.place_outlined,
+                  label: 'Places',
+                  complete: _locatedPhotoCount,
+                  missing: _missingLocationCount,
+                  filter: 'No Location',
+                ),
+                metric(
+                  icon: Icons.notes_outlined,
+                  label: 'Stories',
+                  complete: _describedPhotoCount,
+                  missing: _missingDescriptionCount,
+                  filter: 'No Description',
+                ),
+              ],
+            ),
+            const Divider(height: 26),
+            Material(
+              color: scheme.secondaryContainer.withValues(alpha: 0.55),
+              borderRadius: BorderRadius.circular(12),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: suggestion.filter != null
+                    ? () => _setDashboardFilter(suggestion.filter!)
+                    : suggestion.action == null
+                    ? null
+                    : () => suggestion.action!(),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+                  child: Row(
+                    children: [
+                      Icon(suggestion.icon, color: scheme.primary),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Suggested next step',
+                              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              suggestion.title,
+                              style: const TextStyle(fontWeight: FontWeight.w900),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (suggestion.filter != null || suggestion.action != null)
+                        const Icon(Icons.chevron_right),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _toggleDashboardFilter(String filter) {
     setState(() {
       if (_quickFilters.contains(filter)) {
@@ -3419,6 +3691,8 @@ class _PhotosScreenState extends State<PhotosScreen> {
                 child: ListView(
                   padding: const EdgeInsets.fromLTRB(20, 10, 20, 24),
                   children: [
+                    if (_currentFolder.isEmpty && !_selectionMode)
+                      _buildCollectionHealthCard(),
                     if (_currentFolder.isEmpty) _buildAllPhotosCard(),
                     ..._childFolders.map(_buildFolderCard),
                     if (_filteredPhotosInCurrentFolder.isNotEmpty) ...[
@@ -4771,6 +5045,20 @@ class _PhotoMetaPill extends StatelessWidget {
       ),
     );
   }
+}
+
+class _PhotoHealthSuggestion {
+  final IconData icon;
+  final String title;
+  final String? filter;
+  final Future<void> Function()? action;
+
+  const _PhotoHealthSuggestion({
+    required this.icon,
+    required this.title,
+    this.filter,
+    this.action,
+  });
 }
 
 class _PhotoFolder {
