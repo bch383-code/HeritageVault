@@ -15,18 +15,14 @@ import '../widgets/family_people_picker_dialog.dart';
 class AtlasBookWorkspaceScreen extends StatefulWidget {
   final AtlasBookProject book;
 
-  const AtlasBookWorkspaceScreen({
-    super.key,
-    required this.book,
-  });
+  const AtlasBookWorkspaceScreen({super.key, required this.book});
 
   @override
   State<AtlasBookWorkspaceScreen> createState() =>
       _AtlasBookWorkspaceScreenState();
 }
 
-class _AtlasBookWorkspaceScreenState
-    extends State<AtlasBookWorkspaceScreen> {
+class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
   final AtlasBookRepository _repository = AtlasBookRepository();
   final DatabaseHelper _databaseHelper = DatabaseHelper.instance;
 
@@ -54,8 +50,7 @@ class _AtlasBookWorkspaceScreenState
       return;
     }
 
-    final selectedIds =
-        (await _repository.getBookPersonIds(bookId)).toSet();
+    final selectedIds = (await _repository.getBookPersonIds(bookId)).toSet();
 
     if (selectedIds.isEmpty) {
       if (!mounted) return;
@@ -73,8 +68,9 @@ class _AtlasBookWorkspaceScreenState
 
     setState(() {
       _selectedPeople = allPeople
-          .where((person) =>
-              person.id != null && selectedIds.contains(person.id))
+          .where(
+            (person) => person.id != null && selectedIds.contains(person.id),
+          )
           .toList();
       _loadingPeople = false;
     });
@@ -87,28 +83,121 @@ class _AtlasBookWorkspaceScreenState
       return;
     }
 
-    final currentIds =
-        (await _repository.getBookPersonIds(bookId)).toSet();
+    final currentIds = (await _repository.getBookPersonIds(bookId)).toSet();
 
     if (!mounted) return;
 
     final selectedIds = await showDialog<Set<int>>(
       context: context,
-      builder: (_) => FamilyPeoplePickerDialog(
-        initiallySelectedIds: currentIds,
-      ),
+      builder: (_) =>
+          FamilyPeoplePickerDialog(initiallySelectedIds: currentIds),
     );
 
     if (selectedIds == null) {
       return;
     }
 
-    await _repository.replaceBookPeople(
-      bookId,
-      selectedIds,
-    );
+    await _repository.replaceBookPeople(bookId, selectedIds);
 
     await _loadSelectedPeople();
+  }
+
+  Future<void> _chooseFamilyBranch() async {
+    final bookId = widget.book.id;
+    if (bookId == null) return;
+
+    final allPeople = await _databaseHelper.getFamilyPeople();
+    if (!mounted) return;
+
+    if (allPeople.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Add people to the Family Tree before choosing a branch.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final result = await showDialog<_FamilyBranchSelectionResult>(
+      context: context,
+      builder: (_) => _FamilyBranchPickerDialog(people: allPeople),
+    );
+
+    if (result == null) return;
+
+    setState(() => _loadingPeople = true);
+
+    final selectedIds = await _buildFamilyBranchPersonIds(
+      rootPersonId: result.rootPersonId,
+      direction: result.direction,
+      generationDepth: result.generationDepth,
+    );
+
+    await _repository.replaceBookPeople(bookId, selectedIds);
+    await _loadSelectedPeople();
+
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '${selectedIds.length} '
+          '${selectedIds.length == 1 ? 'person' : 'people'} added from this family branch.',
+        ),
+      ),
+    );
+  }
+
+  Future<Set<int>> _buildFamilyBranchPersonIds({
+    required int rootPersonId,
+    required _FamilyBranchDirection direction,
+    required int generationDepth,
+  }) async {
+    final selectedIds = <int>{rootPersonId};
+
+    Future<void> walkAncestors(int personId, int depth) async {
+      if (depth >= generationDepth) return;
+
+      final parents = await _databaseHelper.getFamilyParents(personId);
+      for (final parent in parents) {
+        final parentId = parent.id;
+        if (parentId == null) continue;
+
+        final isNew = selectedIds.add(parentId);
+        if (isNew) {
+          await walkAncestors(parentId, depth + 1);
+        }
+      }
+    }
+
+    Future<void> walkDescendants(int personId, int depth) async {
+      if (depth >= generationDepth) return;
+
+      final children = await _databaseHelper.getFamilyChildren(personId);
+      for (final child in children) {
+        final childId = child.id;
+        if (childId == null) continue;
+
+        final isNew = selectedIds.add(childId);
+        if (isNew) {
+          await walkDescendants(childId, depth + 1);
+        }
+      }
+    }
+
+    if (direction == _FamilyBranchDirection.ancestors ||
+        direction == _FamilyBranchDirection.both) {
+      await walkAncestors(rootPersonId, 0);
+    }
+
+    if (direction == _FamilyBranchDirection.descendants ||
+        direction == _FamilyBranchDirection.both) {
+      await walkDescendants(rootPersonId, 0);
+    }
+
+    return selectedIds;
   }
 
   Future<void> _loadSavedBookPhotos() async {
@@ -128,10 +217,7 @@ class _AtlasBookWorkspaceScreenState
     final bookId = widget.book.id;
     if (bookId == null) return;
 
-    await _repository.replaceBookPhotos(
-      bookId,
-      _selectedPhotoPaths,
-    );
+    await _repository.replaceBookPhotos(bookId, _selectedPhotoPaths);
 
     if (!mounted) return;
 
@@ -163,8 +249,7 @@ class _AtlasBookWorkspaceScreenState
 
     setState(() => _loadingConnectedPhotos = true);
 
-    final paths =
-        await _databaseHelper.getPhotoPathsForFamilyPeople(personIds);
+    final paths = await _databaseHelper.getPhotoPathsForFamilyPeople(personIds);
 
     if (!mounted) return;
 
@@ -230,9 +315,7 @@ class _AtlasBookWorkspaceScreenState
 
     final result = await showDialog<_CollagePageResult>(
       context: context,
-      builder: (_) => _CollagePageDialog(
-        photoPaths: availablePhotos,
-      ),
+      builder: (_) => _CollagePageDialog(photoPaths: availablePhotos),
     );
 
     if (result == null) return;
@@ -260,9 +343,7 @@ class _AtlasBookWorkspaceScreenState
     if (!mounted) return;
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Collage page saved to this book.'),
-      ),
+      const SnackBar(content: Text('Collage page saved to this book.')),
     );
   }
 
@@ -367,11 +448,7 @@ class _AtlasBookWorkspaceScreenState
     final nodes = <_FanAncestorNode>[];
     final visited = <int>{};
 
-    Future<void> walk(
-      int personId,
-      int generation,
-      int slot,
-    ) async {
+    Future<void> walk(int personId, int generation, int slot) async {
       if (generation >= generationCount) return;
       if (!visited.add(personId)) return;
 
@@ -379,11 +456,7 @@ class _AtlasBookWorkspaceScreenState
       if (person == null) return;
 
       nodes.add(
-        _FanAncestorNode(
-          person: person,
-          generation: generation,
-          slot: slot,
-        ),
+        _FanAncestorNode(person: person, generation: generation, slot: slot),
       );
 
       if (generation + 1 >= generationCount) return;
@@ -404,11 +477,7 @@ class _AtlasBookWorkspaceScreenState
             ? (slot * 2) + 1
             : slot * 2;
 
-        await walk(
-          parentId,
-          generation + 1,
-          parentSlot,
-        );
+        await walk(parentId, generation + 1, parentSlot);
       }
     }
 
@@ -458,9 +527,7 @@ class _AtlasBookWorkspaceScreenState
     if (!mounted) return;
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Family Group Sheet saved to this book.'),
-      ),
+      const SnackBar(content: Text('Family Group Sheet saved to this book.')),
     );
   }
 
@@ -468,8 +535,7 @@ class _AtlasBookWorkspaceScreenState
     required int primaryPersonId,
     int? spousePersonId,
   }) async {
-    final primary =
-        await _databaseHelper.getFamilyPerson(primaryPersonId);
+    final primary = await _databaseHelper.getFamilyPerson(primaryPersonId);
 
     if (primary == null) return null;
 
@@ -478,15 +544,17 @@ class _AtlasBookWorkspaceScreenState
       spouse = await _databaseHelper.getFamilyPerson(spousePersonId);
     }
 
-    final primaryParents =
-        await _databaseHelper.getFamilyParents(primaryPersonId);
+    final primaryParents = await _databaseHelper.getFamilyParents(
+      primaryPersonId,
+    );
 
     final spouseParents = spousePersonId == null
         ? <FamilyPerson>[]
         : await _databaseHelper.getFamilyParents(spousePersonId);
 
-    final primaryChildren =
-        await _databaseHelper.getFamilyChildren(primaryPersonId);
+    final primaryChildren = await _databaseHelper.getFamilyChildren(
+      primaryPersonId,
+    );
 
     final children = <FamilyPerson>[];
 
@@ -707,9 +775,9 @@ class _AtlasBookWorkspaceScreenState
 
     if (!mounted) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Page changes saved.')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Page changes saved.')));
   }
 
   Future<void> _deletePage(AtlasBookPage page) async {
@@ -786,9 +854,7 @@ class _AtlasBookWorkspaceScreenState
 
       await showDialog<void>(
         context: context,
-        builder: (_) => _SavedFamilyGroupSheetPreviewDialog(
-          data: data,
-        ),
+        builder: (_) => _SavedFamilyGroupSheetPreviewDialog(data: data),
       );
       return;
     }
@@ -852,10 +918,7 @@ class _AtlasBookWorkspaceScreenState
         }
 
         previewPages.add(
-          _BookPreviewPageData(
-            page: page,
-            collagePhotoPaths: photoPaths,
-          ),
+          _BookPreviewPageData(page: page, collagePhotoPaths: photoPaths),
         );
         continue;
       }
@@ -868,12 +931,7 @@ class _AtlasBookWorkspaceScreenState
           generationCount: page.generationCount,
         );
 
-        previewPages.add(
-          _BookPreviewPageData(
-            page: page,
-            fanNodes: nodes,
-          ),
-        );
+        previewPages.add(_BookPreviewPageData(page: page, fanNodes: nodes));
         continue;
       }
 
@@ -885,25 +943,16 @@ class _AtlasBookWorkspaceScreenState
 
         if (data != null) {
           previewPages.add(
-            _BookPreviewPageData(
-              page: page,
-              familyGroupData: data,
-            ),
+            _BookPreviewPageData(page: page, familyGroupData: data),
           );
         }
         continue;
       }
 
-      final person =
-          await _databaseHelper.getFamilyPerson(page.personId!);
+      final person = await _databaseHelper.getFamilyPerson(page.personId!);
 
       if (person != null) {
-        previewPages.add(
-          _BookPreviewPageData(
-            page: page,
-            person: person,
-          ),
-        );
+        previewPages.add(_BookPreviewPageData(page: page, person: person));
       }
     }
 
@@ -923,9 +972,7 @@ class _AtlasBookWorkspaceScreenState
     final book = widget.book;
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(book.title),
-      ),
+      appBar: AppBar(title: Text(book.title)),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(32),
         child: Center(
@@ -937,15 +984,12 @@ class _AtlasBookWorkspaceScreenState
                 Text(
                   book.title,
                   style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
                 if (book.subtitle.isNotEmpty) ...[
                   const SizedBox(height: 8),
-                  Text(
-                    book.subtitle,
-                    style: AtlasBookTheme.subtitle(context),
-                  ),
+                  Text(book.subtitle, style: AtlasBookTheme.subtitle(context)),
                 ],
                 const SizedBox(height: 12),
                 Chip(
@@ -956,8 +1000,8 @@ class _AtlasBookWorkspaceScreenState
                 Text(
                   'Build Your Book',
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
                 const SizedBox(height: 18),
                 _WorkspaceStep(
@@ -965,19 +1009,34 @@ class _AtlasBookWorkspaceScreenState
                   title: _selectionTitle(book.scope),
                   description: _selectionDescription(book.scope),
                   icon: book.scope.icon,
-                  onTap: book.scope == AtlasBookScope.people
-                      ? _choosePeople
-                      : null,
-                  actionLabel: book.scope == AtlasBookScope.people
-                      ? 'Choose People'
-                      : null,
+                  onTap: switch (book.scope) {
+                    AtlasBookScope.people => _choosePeople,
+                    AtlasBookScope.branch => _chooseFamilyBranch,
+                    AtlasBookScope.generations => null,
+                  },
+                  actionLabel: switch (book.scope) {
+                    AtlasBookScope.people => 'Choose People',
+                    AtlasBookScope.branch => 'Choose Branch',
+                    AtlasBookScope.generations => null,
+                  },
                 ),
-                if (book.scope == AtlasBookScope.people) ...[
+                if (book.scope != AtlasBookScope.generations) ...[
                   const SizedBox(height: 12),
                   _SelectedPeoplePanel(
                     loading: _loadingPeople,
                     people: _selectedPeople,
-                    onChoosePeople: _choosePeople,
+                    onChoosePeople: book.scope == AtlasBookScope.branch
+                        ? _chooseFamilyBranch
+                        : _choosePeople,
+                    emptyMessage: book.scope == AtlasBookScope.branch
+                        ? 'No family branch has been selected yet.'
+                        : 'No people have been added to this book yet.',
+                    actionLabel: book.scope == AtlasBookScope.branch
+                        ? 'Choose Branch'
+                        : 'Choose People',
+                    editLabel: book.scope == AtlasBookScope.branch
+                        ? 'Change Branch'
+                        : 'Edit',
                   ),
                 ],
                 const SizedBox(height: 12),
@@ -1037,15 +1096,13 @@ class _AtlasBookWorkspaceScreenState
                 _WorkspaceStep(
                   number: '4',
                   title: 'Preview your Atlas Book',
-                  description:
-                      _bookPages.isEmpty
-                          ? 'Add at least one saved page, then preview the whole book.'
-                          : 'Flip through all ${_bookPages.length} saved '
-                              '${_bookPages.length == 1 ? 'page' : 'pages'} in book order.',
+                  description: _bookPages.isEmpty
+                      ? 'Add at least one saved page, then preview the whole book.'
+                      : 'Flip through all ${_bookPages.length} saved '
+                            '${_bookPages.length == 1 ? 'page' : 'pages'} in book order.',
                   icon: Icons.preview_outlined,
                   onTap: _bookPages.isEmpty ? null : _previewBook,
-                  actionLabel:
-                      _bookPages.isEmpty ? null : 'Preview Book',
+                  actionLabel: _bookPages.isEmpty ? null : 'Preview Book',
                 ),
               ],
             ),
@@ -1078,15 +1135,350 @@ class _AtlasBookWorkspaceScreenState
   }
 }
 
+enum _FamilyBranchDirection { ancestors, descendants, both }
+
+extension on _FamilyBranchDirection {
+  String get label {
+    switch (this) {
+      case _FamilyBranchDirection.ancestors:
+        return 'Ancestors';
+      case _FamilyBranchDirection.descendants:
+        return 'Descendants';
+      case _FamilyBranchDirection.both:
+        return 'Both directions';
+    }
+  }
+
+  String get description {
+    switch (this) {
+      case _FamilyBranchDirection.ancestors:
+        return 'Parents, grandparents, and earlier generations.';
+      case _FamilyBranchDirection.descendants:
+        return 'Children, grandchildren, and later generations.';
+      case _FamilyBranchDirection.both:
+        return 'Follow this person both backward and forward in the tree.';
+    }
+  }
+
+  IconData get icon {
+    switch (this) {
+      case _FamilyBranchDirection.ancestors:
+        return Icons.account_tree_outlined;
+      case _FamilyBranchDirection.descendants:
+        return Icons.family_restroom_outlined;
+      case _FamilyBranchDirection.both:
+        return Icons.hub_outlined;
+    }
+  }
+}
+
+class _FamilyBranchSelectionResult {
+  final int rootPersonId;
+  final _FamilyBranchDirection direction;
+  final int generationDepth;
+
+  const _FamilyBranchSelectionResult({
+    required this.rootPersonId,
+    required this.direction,
+    required this.generationDepth,
+  });
+}
+
+class _FamilyBranchPickerDialog extends StatefulWidget {
+  final List<FamilyPerson> people;
+
+  const _FamilyBranchPickerDialog({required this.people});
+
+  @override
+  State<_FamilyBranchPickerDialog> createState() =>
+      _FamilyBranchPickerDialogState();
+}
+
+class _FamilyBranchPickerDialogState extends State<_FamilyBranchPickerDialog> {
+  int? _rootPersonId;
+  _FamilyBranchDirection _direction = _FamilyBranchDirection.ancestors;
+  int _generationDepth = 3;
+  String _search = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final query = _search.trim().toLowerCase();
+    final visiblePeople =
+        widget.people.where((person) {
+          if (query.isEmpty) return true;
+          return [
+            person.displayName,
+            person.lifeSpan,
+            person.birthPlace,
+          ].join(' ').toLowerCase().contains(query);
+        }).toList()..sort(
+          (a, b) => a.displayName.toLowerCase().compareTo(
+            b.displayName.toLowerCase(),
+          ),
+        );
+
+    FamilyPerson? selectedRoot;
+    for (final person in widget.people) {
+      if (person.id == _rootPersonId) {
+        selectedRoot = person;
+        break;
+      }
+    }
+
+    return Dialog(
+      child: SizedBox(
+        width: 900,
+        height: 760,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(22, 18, 12, 12),
+              child: Row(
+                children: [
+                  const Icon(Icons.account_tree_outlined, size: 30),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Choose a Family Branch',
+                          style: Theme.of(context).textTheme.titleLarge
+                              ?.copyWith(fontWeight: FontWeight.w900),
+                        ),
+                        const SizedBox(height: 3),
+                        const Text(
+                          'Choose one person, then decide which direction and how many generations Atlas Book should follow.',
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Close',
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    flex: 5,
+                    child: Column(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: TextField(
+                            onChanged: (value) =>
+                                setState(() => _search = value),
+                            decoration: const InputDecoration(
+                              labelText: 'Find the starting person',
+                              hintText: 'Search your Family Tree...',
+                              prefixIcon: Icon(Icons.search),
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: visiblePeople.isEmpty
+                              ? const Center(
+                                  child: Text('No matching people found.'),
+                                )
+                              : ListView.separated(
+                                  itemCount: visiblePeople.length,
+                                  separatorBuilder: (_, _) =>
+                                      const Divider(height: 1),
+                                  itemBuilder: (context, index) {
+                                    final person = visiblePeople[index];
+                                    final personId = person.id;
+                                    if (personId == null) {
+                                      return const SizedBox.shrink();
+                                    }
+
+                                    final selected = personId == _rootPersonId;
+                                    final path = person.profilePhotoPath;
+                                    final hasPhoto =
+                                        path.isNotEmpty &&
+                                        File(path).existsSync();
+
+                                    return ListTile(
+                                      selected: selected,
+                                      leading: CircleAvatar(
+                                        backgroundImage: hasPhoto
+                                            ? FileImage(File(path))
+                                            : null,
+                                        child: hasPhoto
+                                            ? null
+                                            : const Icon(Icons.person_outline),
+                                      ),
+                                      title: Text(
+                                        person.displayName,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      subtitle: Text(
+                                        [
+                                          if (person.lifeSpan.isNotEmpty)
+                                            person.lifeSpan,
+                                          if (person.birthPlace.isNotEmpty)
+                                            person.birthPlace,
+                                        ].join(' • '),
+                                      ),
+                                      trailing: selected
+                                          ? const Icon(Icons.check_circle)
+                                          : null,
+                                      onTap: () => setState(
+                                        () => _rootPersonId = personId,
+                                      ),
+                                    );
+                                  },
+                                ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const VerticalDivider(width: 1),
+                  Expanded(
+                    flex: 4,
+                    child: ListView(
+                      padding: const EdgeInsets.all(20),
+                      children: [
+                        Text(
+                          'Branch Settings',
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w900),
+                        ),
+                        const SizedBox(height: 14),
+                        if (selectedRoot == null)
+                          const Text(
+                            'Select a starting person from the Family Tree.',
+                          )
+                        else
+                          Card(
+                            child: ListTile(
+                              leading: const Icon(
+                                Icons.person_pin_circle_outlined,
+                              ),
+                              title: Text(selectedRoot.displayName),
+                              subtitle: const Text('Starting person'),
+                            ),
+                          ),
+                        const SizedBox(height: 20),
+                        const Text(
+                          'Direction',
+                          style: TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                        const SizedBox(height: 8),
+                        ..._FamilyBranchDirection.values.map(
+                          (direction) => ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(direction.icon),
+                            title: Text(direction.label),
+                            subtitle: Text(direction.description),
+                            trailing: Icon(
+                              _direction == direction
+                                  ? Icons.radio_button_checked
+                                  : Icons.radio_button_unchecked,
+                            ),
+                            onTap: () => setState(() => _direction = direction),
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                        Row(
+                          children: [
+                            const Expanded(
+                              child: Text(
+                                'Generation depth',
+                                style: TextStyle(fontWeight: FontWeight.w800),
+                              ),
+                            ),
+                            Text(
+                              '$_generationDepth',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ],
+                        ),
+                        Slider(
+                          value: _generationDepth.toDouble(),
+                          min: 1,
+                          max: 5,
+                          divisions: 4,
+                          label: '$_generationDepth',
+                          onChanged: (value) =>
+                              setState(() => _generationDepth = value.round()),
+                        ),
+                        Text(
+                          _generationDepth == 1
+                              ? 'Follow 1 generation from the starting person.'
+                              : 'Follow $_generationDepth generations from the starting person.',
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'The starting person is always included in the book.',
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancel'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.icon(
+                    onPressed: _rootPersonId == null
+                        ? null
+                        : () => Navigator.pop(
+                            context,
+                            _FamilyBranchSelectionResult(
+                              rootPersonId: _rootPersonId!,
+                              direction: _direction,
+                              generationDepth: _generationDepth,
+                            ),
+                          ),
+                    icon: const Icon(Icons.account_tree_outlined),
+                    label: const Text('Use This Branch'),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _SelectedPeoplePanel extends StatelessWidget {
   final bool loading;
   final List<FamilyPerson> people;
   final VoidCallback onChoosePeople;
+  final String emptyMessage;
+  final String actionLabel;
+  final String editLabel;
 
   const _SelectedPeoplePanel({
     required this.loading,
     required this.people,
     required this.onChoosePeople,
+    this.emptyMessage = 'No people have been added to this book yet.',
+    this.actionLabel = 'Choose People',
+    this.editLabel = 'Edit',
   });
 
   @override
@@ -1108,15 +1500,8 @@ class _SelectedPeoplePanel extends StatelessWidget {
             children: [
               const Icon(Icons.people_outline, size: 34),
               const SizedBox(width: 16),
-              const Expanded(
-                child: Text(
-                  'No people have been added to this book yet.',
-                ),
-              ),
-              FilledButton(
-                onPressed: onChoosePeople,
-                child: const Text('Choose People'),
-              ),
+              Expanded(child: Text(emptyMessage)),
+              FilledButton(onPressed: onChoosePeople, child: Text(actionLabel)),
             ],
           ),
         ),
@@ -1136,49 +1521,40 @@ class _SelectedPeoplePanel extends StatelessWidget {
                     '${people.length} '
                     '${people.length == 1 ? 'Person' : 'People'} in This Book',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                 ),
                 OutlinedButton.icon(
                   onPressed: onChoosePeople,
                   icon: const Icon(Icons.edit_outlined),
-                  label: const Text('Edit'),
+                  label: Text(editLabel),
                 ),
               ],
             ),
             const SizedBox(height: 14),
-            ...people.map(
-              (person) {
-                final path = person.profilePhotoPath;
-                final hasPhoto =
-                    path.isNotEmpty && File(path).existsSync();
+            ...people.map((person) {
+              final path = person.profilePhotoPath;
+              final hasPhoto = path.isNotEmpty && File(path).existsSync();
 
-                return ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: CircleAvatar(
-                    backgroundImage:
-                        hasPhoto ? FileImage(File(path)) : null,
-                    child: hasPhoto
-                        ? null
-                        : const Icon(Icons.person_outline),
-                  ),
-                  title: Text(
-                    person.displayName,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  subtitle: Text(
-                    [
-                      if (person.lifeSpan.isNotEmpty) person.lifeSpan,
-                      if (person.birthPlace.isNotEmpty)
-                        person.birthPlace,
-                    ].join(' • '),
-                  ),
-                );
-              },
-            ),
+              return ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: CircleAvatar(
+                  backgroundImage: hasPhoto ? FileImage(File(path)) : null,
+                  child: hasPhoto ? null : const Icon(Icons.person_outline),
+                ),
+                title: Text(
+                  person.displayName,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                subtitle: Text(
+                  [
+                    if (person.lifeSpan.isNotEmpty) person.lifeSpan,
+                    if (person.birthPlace.isNotEmpty) person.birthPlace,
+                  ].join(' • '),
+                ),
+              );
+            }),
           ],
         ),
       ),
@@ -1212,8 +1588,7 @@ class _ConnectedPhotosPanel extends StatelessWidget {
       );
     }
 
-    final selectedCount =
-        photoPaths.where(selectedPhotoPaths.contains).length;
+    final selectedCount = photoPaths.where(selectedPhotoPaths.contains).length;
 
     return Card(
       child: Padding(
@@ -1230,10 +1605,8 @@ class _ConnectedPhotosPanel extends StatelessWidget {
                       Text(
                         '${photoPaths.length} Connected '
                         '${photoPaths.length == 1 ? 'Photo' : 'Photos'} Found',
-                        style:
-                            Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  fontWeight: FontWeight.w800,
-                                ),
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w800),
                       ),
                       const SizedBox(height: 4),
                       Text(
@@ -1266,8 +1639,7 @@ class _ConnectedPhotosPanel extends StatelessWidget {
               GridView.builder(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
-                gridDelegate:
-                    const SliverGridDelegateWithFixedCrossAxisCount(
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: 4,
                   crossAxisSpacing: 12,
                   mainAxisSpacing: 12,
@@ -1304,10 +1676,8 @@ class _ConnectedPhotosPanel extends StatelessWidget {
                               elevation: 2,
                               child: Checkbox(
                                 value: selected,
-                                onChanged: (value) => onSelectionChanged(
-                                  path,
-                                  value ?? false,
-                                ),
+                                onChanged: (value) =>
+                                    onSelectionChanged(path, value ?? false),
                               ),
                             ),
                           ),
@@ -1317,9 +1687,9 @@ class _ConnectedPhotosPanel extends StatelessWidget {
                                 child: DecoratedBox(
                                   decoration: BoxDecoration(
                                     border: Border.all(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .primary,
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.primary,
                                       width: 4,
                                     ),
                                   ),
@@ -1427,7 +1797,9 @@ class _AddPageTypeDialog extends StatelessWidget {
                 'Photo Story',
                 style: TextStyle(fontWeight: FontWeight.w800),
               ),
-              subtitle: Text('Photos with captions and narrative — coming later.'),
+              subtitle: Text(
+                'Photos with captions and narrative — coming later.',
+              ),
             ),
             const ListTile(
               enabled: false,
@@ -1445,7 +1817,9 @@ class _AddPageTypeDialog extends StatelessWidget {
                 'Heirloom Spotlight',
                 style: TextStyle(fontWeight: FontWeight.w800),
               ),
-              subtitle: Text('Feature a keepsake and its story — coming later.'),
+              subtitle: Text(
+                'Feature a keepsake and its story — coming later.',
+              ),
             ),
           ],
         ),
@@ -1545,8 +1919,8 @@ class _BookPagesPanel extends StatelessWidget {
                   child: Text(
                     '${pages.length} ${pages.length == 1 ? 'Page' : 'Pages'} in This Book',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                 ),
                 FilledButton.icon(
@@ -1560,12 +1934,9 @@ class _BookPagesPanel extends StatelessWidget {
             ...List.generate(pages.length, (index) {
               final page = pages[index];
               final person = _personFor(page.personId);
-              final isFanChart =
-                  page.pageType == 'ancestry_fan_chart';
-              final isFamilyGroup =
-                  page.pageType == 'family_group_sheet';
-              final isCollage =
-                  page.pageType == 'collage';
+              final isFanChart = page.pageType == 'ancestry_fan_chart';
+              final isFamilyGroup = page.pageType == 'family_group_sheet';
+              final isCollage = page.pageType == 'collage';
 
               return Card(
                 child: ListTile(
@@ -1574,30 +1945,30 @@ class _BookPagesPanel extends StatelessWidget {
                     isFanChart
                         ? Icons.hub_outlined
                         : isFamilyGroup
-                            ? Icons.family_restroom_outlined
-                            : isCollage
-                                ? Icons.grid_view_outlined
-                                : Icons.description_outlined,
+                        ? Icons.family_restroom_outlined
+                        : isCollage
+                        ? Icons.grid_view_outlined
+                        : Icons.description_outlined,
                   ),
                   title: Text(
                     isCollage
                         ? 'Photo Collage'
                         : person?.displayName ??
-                            (isFanChart
-                                ? 'Ancestry Fan Chart'
-                                : isFamilyGroup
-                                    ? 'Family Group Sheet'
-                                    : 'Person Profile'),
+                              (isFanChart
+                                  ? 'Ancestry Fan Chart'
+                                  : isFamilyGroup
+                                  ? 'Family Group Sheet'
+                                  : 'Person Profile'),
                     style: const TextStyle(fontWeight: FontWeight.w800),
                   ),
                   subtitle: Text(
                     isCollage
                         ? 'Collage • ${_collagePhotoCount(page)} photos'
                         : isFanChart
-                            ? 'Ancestry Fan Chart • ${page.generationCount} generations'
-                            : isFamilyGroup
-                                ? 'Family Group Sheet'
-                                : 'Person Profile',
+                        ? 'Ancestry Fan Chart • ${page.generationCount} generations'
+                        : isFamilyGroup
+                        ? 'Family Group Sheet'
+                        : 'Person Profile',
                   ),
                   trailing: Wrap(
                     spacing: 2,
@@ -1636,7 +2007,6 @@ class _BookPagesPanel extends StatelessWidget {
   }
 }
 
-
 class _HeritageDivider extends StatelessWidget {
   const _HeritageDivider();
 
@@ -1645,10 +2015,7 @@ class _HeritageDivider extends StatelessWidget {
     return Row(
       children: [
         const Expanded(
-          child: Divider(
-            color: AtlasBookTheme.antiqueGoldSoft,
-            thickness: 1,
-          ),
+          child: Divider(color: AtlasBookTheme.antiqueGoldSoft, thickness: 1),
         ),
         const SizedBox(width: 12),
         Icon(
@@ -1658,10 +2025,7 @@ class _HeritageDivider extends StatelessWidget {
         ),
         const SizedBox(width: 12),
         const Expanded(
-          child: Divider(
-            color: AtlasBookTheme.antiqueGoldSoft,
-            thickness: 1,
-          ),
+          child: Divider(color: AtlasBookTheme.antiqueGoldSoft, thickness: 1),
         ),
       ],
     );
@@ -1706,8 +2070,7 @@ class _FanChartSetupDialog extends StatefulWidget {
   });
 
   @override
-  State<_FanChartSetupDialog> createState() =>
-      _FanChartSetupDialogState();
+  State<_FanChartSetupDialog> createState() => _FanChartSetupDialogState();
 }
 
 class _FanChartSetupDialogState extends State<_FanChartSetupDialog> {
@@ -1736,30 +2099,20 @@ class _FanChartSetupDialogState extends State<_FanChartSetupDialog> {
     final nodes = <_FanAncestorNode>[];
     final visited = <int>{};
 
-    Future<void> walk(
-      int personId,
-      int generation,
-      int slot,
-    ) async {
+    Future<void> walk(int personId, int generation, int slot) async {
       if (generation >= _generationCount) return;
       if (!visited.add(personId)) return;
 
-      final person =
-          await widget.databaseHelper.getFamilyPerson(personId);
+      final person = await widget.databaseHelper.getFamilyPerson(personId);
       if (person == null) return;
 
       nodes.add(
-        _FanAncestorNode(
-          person: person,
-          generation: generation,
-          slot: slot,
-        ),
+        _FanAncestorNode(person: person, generation: generation, slot: slot),
       );
 
       if (generation + 1 >= _generationCount) return;
 
-      final parents =
-          await widget.databaseHelper.getFamilyParents(personId);
+      final parents = await widget.databaseHelper.getFamilyParents(personId);
 
       for (final parent in parents) {
         final parentId = parent.id;
@@ -1775,11 +2128,7 @@ class _FanChartSetupDialogState extends State<_FanChartSetupDialog> {
             ? (slot * 2) + 1
             : slot * 2;
 
-        await walk(
-          parentId,
-          generation + 1,
-          parentSlot,
-        );
+        await walk(parentId, generation + 1, parentSlot);
       }
     }
 
@@ -1796,7 +2145,9 @@ class _FanChartSetupDialogState extends State<_FanChartSetupDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(widget.isEditing ? 'Edit Ancestry Fan Chart' : 'Add Ancestry Fan Chart'),
+      title: Text(
+        widget.isEditing ? 'Edit Ancestry Fan Chart' : 'Add Ancestry Fan Chart',
+      ),
       content: SizedBox(
         width: 980,
         height: 720,
@@ -1901,12 +2252,12 @@ class _FanChartSetupDialogState extends State<_FanChartSetupDialog> {
           onPressed: _rootPerson.id == null
               ? null
               : () => Navigator.pop(
-                    context,
-                    _FanChartPageResult(
-                      personId: _rootPerson.id!,
-                      generationCount: _generationCount,
-                    ),
+                  context,
+                  _FanChartPageResult(
+                    personId: _rootPerson.id!,
+                    generationCount: _generationCount,
                   ),
+                ),
           icon: const Icon(Icons.add),
           label: Text(widget.isEditing ? 'Save Changes' : 'Add Fan Chart'),
         ),
@@ -1978,7 +2329,6 @@ class _FanChartPagePreview extends StatelessWidget {
                 : '${root.displayName} — Ancestry',
             textAlign: TextAlign.center,
             style: AtlasBookTheme.displayTitle(context),
-
           ),
           const SizedBox(height: 4),
           Text(
@@ -1995,10 +2345,7 @@ class _FanChartPagePreview extends StatelessWidget {
             child: LayoutBuilder(
               builder: (context, constraints) {
                 return CustomPaint(
-                  size: Size(
-                    constraints.maxWidth,
-                    constraints.maxHeight,
-                  ),
+                  size: Size(constraints.maxWidth, constraints.maxHeight),
                   painter: _FanChartPainter(
                     nodes: nodes,
                     generationCount: generationCount,
@@ -2036,10 +2383,7 @@ class _FanChartPainter extends CustomPainter {
     if (size.width <= 0 || size.height <= 0) return;
 
     final center = Offset(size.width / 2, size.height - 24);
-    final maxRadius = math.min(
-      size.width * 0.47,
-      size.height - 34,
-    );
+    final maxRadius = math.min(size.width * 0.47, size.height - 34);
     final ringWidth = maxRadius / generationCount;
 
     final linePaint = Paint()
@@ -2047,9 +2391,7 @@ class _FanChartPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.2;
 
-    for (var generation = 1;
-        generation <= generationCount;
-        generation++) {
+    for (var generation = 1; generation <= generationCount; generation++) {
       final radius = ringWidth * generation;
       canvas.drawArc(
         Rect.fromCircle(center: center, radius: radius),
@@ -2060,9 +2402,7 @@ class _FanChartPainter extends CustomPainter {
       );
     }
 
-    for (var generation = 1;
-        generation < generationCount;
-        generation++) {
+    for (var generation = 1; generation < generationCount; generation++) {
       final slots = 1 << generation;
 
       for (var i = 0; i <= slots; i++) {
@@ -2086,20 +2426,13 @@ class _FanChartPainter extends CustomPainter {
 
     for (final node in nodes) {
       if (node.generation == 0) {
-        _drawRoot(
-          canvas,
-          center,
-          ringWidth,
-          node.person,
-        );
+        _drawRoot(canvas, center, ringWidth, node.person);
         continue;
       }
 
       final slotCount = 1 << node.generation;
-      final startAngle =
-          math.pi + math.pi * node.slot / slotCount;
-      final endAngle =
-          math.pi + math.pi * (node.slot + 1) / slotCount;
+      final startAngle = math.pi + math.pi * node.slot / slotCount;
+      final endAngle = math.pi + math.pi * (node.slot + 1) / slotCount;
       final midAngle = (startAngle + endAngle) / 2;
       final innerRadius = ringWidth * node.generation;
       final outerRadius = ringWidth * (node.generation + 1);
@@ -2119,8 +2452,7 @@ class _FanChartPainter extends CustomPainter {
         fontWeight: FontWeight.w700,
       );
 
-      if (node.person.lifeSpan.isNotEmpty &&
-          node.generation <= 3) {
+      if (node.person.lifeSpan.isNotEmpty && node.generation <= 3) {
         _paintText(
           canvas,
           node.person.lifeSpan,
@@ -2140,10 +2472,7 @@ class _FanChartPainter extends CustomPainter {
     FamilyPerson person,
   ) {
     final rect = Rect.fromCenter(
-      center: Offset(
-        center.dx,
-        center.dy - ringWidth * 0.48,
-      ),
+      center: Offset(center.dx, center.dy - ringWidth * 0.48),
       width: ringWidth * 1.6,
       height: ringWidth * 0.76,
     );
@@ -2157,10 +2486,7 @@ class _FanChartPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5;
 
-    final rrect = RRect.fromRectAndRadius(
-      rect,
-      const Radius.circular(12),
-    );
+    final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(12));
 
     canvas.drawRRect(rrect, fillPaint);
     canvas.drawRRect(rrect, borderPaint);
@@ -2212,10 +2538,7 @@ class _FanChartPainter extends CustomPainter {
 
     painter.paint(
       canvas,
-      Offset(
-        center.dx - painter.width / 2,
-        center.dy - painter.height / 2,
-      ),
+      Offset(center.dx - painter.width / 2, center.dy - painter.height / 2),
     );
   }
 
@@ -2249,18 +2572,14 @@ class _WholeBookPreviewDialog extends StatefulWidget {
   final String bookTitle;
   final List<_BookPreviewPageData> pages;
 
-  const _WholeBookPreviewDialog({
-    required this.bookTitle,
-    required this.pages,
-  });
+  const _WholeBookPreviewDialog({required this.bookTitle, required this.pages});
 
   @override
   State<_WholeBookPreviewDialog> createState() =>
       _WholeBookPreviewDialogState();
 }
 
-class _WholeBookPreviewDialogState
-    extends State<_WholeBookPreviewDialog> {
+class _WholeBookPreviewDialogState extends State<_WholeBookPreviewDialog> {
   int _pageIndex = 0;
 
   void _previousPage() {
@@ -2294,9 +2613,7 @@ class _WholeBookPreviewDialogState
 
     if (data.page.pageType == 'family_group_sheet' &&
         data.familyGroupData != null) {
-      return _FamilyGroupSheetPreview(
-        data: data.familyGroupData!,
-      );
+      return _FamilyGroupSheetPreview(data: data.familyGroupData!);
     }
 
     if (data.person != null) {
@@ -2305,8 +2622,8 @@ class _WholeBookPreviewDialogState
       final imagePath = heroPath.isNotEmpty && File(heroPath).existsSync()
           ? heroPath
           : profilePath.isNotEmpty && File(profilePath).existsSync()
-              ? profilePath
-              : null;
+          ? profilePath
+          : null;
 
       return _PersonProfilePagePreview(
         person: data.person!,
@@ -2316,9 +2633,7 @@ class _WholeBookPreviewDialogState
 
     return Container(
       decoration: AtlasBookTheme.pageDecoration,
-      child: const Center(
-        child: Text('This page could not be previewed.'),
-      ),
+      child: const Center(child: Text('This page could not be previewed.')),
     );
   }
 
@@ -2337,9 +2652,7 @@ class _WholeBookPreviewDialogState
               padding: const EdgeInsets.fromLTRB(22, 14, 14, 14),
               decoration: BoxDecoration(
                 border: Border(
-                  bottom: BorderSide(
-                    color: Theme.of(context).dividerColor,
-                  ),
+                  bottom: BorderSide(color: Theme.of(context).dividerColor),
                 ),
               ),
               child: Row(
@@ -2349,10 +2662,9 @@ class _WholeBookPreviewDialogState
                   Expanded(
                     child: Text(
                       widget.bookTitle,
-                      style: Theme.of(context)
-                          .textTheme
-                          .titleLarge
-                          ?.copyWith(fontWeight: FontWeight.w800),
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
                   ),
                   Text(
@@ -2370,9 +2682,7 @@ class _WholeBookPreviewDialogState
             ),
             Expanded(
               child: Container(
-                color: Theme.of(context)
-                    .colorScheme
-                    .surfaceContainerLowest,
+                color: Theme.of(context).colorScheme.surfaceContainerLowest,
                 padding: const EdgeInsets.all(26),
                 child: Center(
                   child: ConstrainedBox(
@@ -2393,8 +2703,7 @@ class _WholeBookPreviewDialogState
               child: Row(
                 children: [
                   OutlinedButton.icon(
-                    onPressed:
-                        _pageIndex == 0 ? null : _previousPage,
+                    onPressed: _pageIndex == 0 ? null : _previousPage,
                     icon: const Icon(Icons.arrow_back),
                     label: const Text('Previous'),
                   ),
@@ -2405,10 +2714,9 @@ class _WholeBookPreviewDialogState
                   ),
                   const Spacer(),
                   FilledButton.icon(
-                    onPressed:
-                        _pageIndex == widget.pages.length - 1
-                            ? null
-                            : _nextPage,
+                    onPressed: _pageIndex == widget.pages.length - 1
+                        ? null
+                        : _nextPage,
                     icon: const Icon(Icons.arrow_forward),
                     label: const Text('Next'),
                   ),
@@ -2492,8 +2800,7 @@ class _FamilyGroupSheetSetupDialogState
 
     setState(() => _loading = true);
 
-    final spouses =
-        await widget.databaseHelper.getFamilySpouses(primaryId);
+    final spouses = await widget.databaseHelper.getFamilySpouses(primaryId);
 
     FamilyPerson? selectedSpouse = _spouse;
 
@@ -2511,8 +2818,9 @@ class _FamilyGroupSheetSetupDialogState
       selectedSpouse = spouses.isEmpty ? null : spouses.first;
     }
 
-    final primaryParents =
-        await widget.databaseHelper.getFamilyParents(primaryId);
+    final primaryParents = await widget.databaseHelper.getFamilyParents(
+      primaryId,
+    );
 
     final spouseId = selectedSpouse?.id;
 
@@ -2520,8 +2828,9 @@ class _FamilyGroupSheetSetupDialogState
         ? <FamilyPerson>[]
         : await widget.databaseHelper.getFamilyParents(spouseId);
 
-    final primaryChildren =
-        await widget.databaseHelper.getFamilyChildren(primaryId);
+    final primaryChildren = await widget.databaseHelper.getFamilyChildren(
+      primaryId,
+    );
 
     final children = <FamilyPerson>[];
 
@@ -2532,8 +2841,7 @@ class _FamilyGroupSheetSetupDialogState
         final childId = child.id;
         if (childId == null) continue;
 
-        final parents =
-            await widget.databaseHelper.getFamilyParents(childId);
+        final parents = await widget.databaseHelper.getFamilyParents(childId);
 
         if (parents.any((parent) => parent.id == spouseId)) {
           children.add(child);
@@ -2561,9 +2869,7 @@ class _FamilyGroupSheetSetupDialogState
     setState(() {
       _spouse = spouseId == null
           ? null
-          : _spouses.firstWhere(
-              (person) => person.id == spouseId,
-            );
+          : _spouses.firstWhere((person) => person.id == spouseId);
     });
 
     await _refresh();
@@ -2572,7 +2878,9 @@ class _FamilyGroupSheetSetupDialogState
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(widget.isEditing ? 'Edit Family Group Sheet' : 'Add Family Group Sheet'),
+      title: Text(
+        widget.isEditing ? 'Edit Family Group Sheet' : 'Add Family Group Sheet',
+      ),
       content: SizedBox(
         width: 1040,
         height: 720,
@@ -2683,14 +2991,16 @@ class _FamilyGroupSheetSetupDialogState
           onPressed: _primary.id == null
               ? null
               : () => Navigator.pop(
-                    context,
-                    _FamilyGroupSheetResult(
-                      primaryPersonId: _primary.id!,
-                      spousePersonId: _spouse?.id,
-                    ),
+                  context,
+                  _FamilyGroupSheetResult(
+                    primaryPersonId: _primary.id!,
+                    spousePersonId: _spouse?.id,
                   ),
+                ),
           icon: const Icon(Icons.add),
-          label: Text(widget.isEditing ? 'Save Changes' : 'Add Family Group Sheet'),
+          label: Text(
+            widget.isEditing ? 'Save Changes' : 'Add Family Group Sheet',
+          ),
         ),
       ],
     );
@@ -2700,9 +3010,7 @@ class _FamilyGroupSheetSetupDialogState
 class _SavedFamilyGroupSheetPreviewDialog extends StatelessWidget {
   final _FamilyGroupSheetData data;
 
-  const _SavedFamilyGroupSheetPreviewDialog({
-    required this.data,
-  });
+  const _SavedFamilyGroupSheetPreviewDialog({required this.data});
 
   @override
   Widget build(BuildContext context) {
@@ -2726,25 +3034,17 @@ class _SavedFamilyGroupSheetPreviewDialog extends StatelessWidget {
 class _FamilyGroupSheetPreview extends StatelessWidget {
   final _FamilyGroupSheetData data;
 
-  const _FamilyGroupSheetPreview({
-    required this.data,
-  });
+  const _FamilyGroupSheetPreview({required this.data});
 
   String _parentsText(List<FamilyPerson> parents) {
     if (parents.isEmpty) return 'Parents not recorded';
 
-    return parents
-        .map((person) => person.displayName)
-        .join('  •  ');
+    return parents.map((person) => person.displayName).join('  •  ');
   }
 
-  Widget _portrait(
-    BuildContext context,
-    FamilyPerson person,
-  ) {
+  Widget _portrait(BuildContext context, FamilyPerson person) {
     final path = person.profilePhotoPath;
-    final hasPhoto =
-        path.isNotEmpty && File(path).existsSync();
+    final hasPhoto = path.isNotEmpty && File(path).existsSync();
 
     return Column(
       children: [
@@ -2754,17 +3054,11 @@ class _FamilyGroupSheetPreview extends StatelessWidget {
           padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            border: Border.all(
-              color: AtlasBookTheme.antiqueGold,
-              width: 1.4,
-            ),
+            border: Border.all(color: AtlasBookTheme.antiqueGold, width: 1.4),
           ),
           child: ClipOval(
             child: hasPhoto
-                ? Image.file(
-                    File(path),
-                    fit: BoxFit.cover,
-                  )
+                ? Image.file(File(path), fit: BoxFit.cover)
                 : Container(
                     color: AtlasBookTheme.ivoryLight,
                     child: const Icon(
@@ -2786,9 +3080,7 @@ class _FamilyGroupSheetPreview extends StatelessWidget {
           Text(
             person.lifeSpan,
             textAlign: TextAlign.center,
-            style: AtlasBookTheme.subtitle(context).copyWith(
-              fontSize: 12,
-            ),
+            style: AtlasBookTheme.subtitle(context).copyWith(fontSize: 12),
           ),
         ],
       ],
@@ -2818,9 +3110,7 @@ class _FamilyGroupSheetPreview extends StatelessWidget {
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: _portrait(context, data.primary),
-                ),
+                Expanded(child: _portrait(context, data.primary)),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 36, 16, 0),
                   child: Column(
@@ -2860,8 +3150,7 @@ class _FamilyGroupSheetPreview extends StatelessWidget {
               },
               border: TableBorder(
                 horizontalInside: BorderSide(
-                  color: AtlasBookTheme.antiqueGoldSoft
-                      .withValues(alpha: 0.55),
+                  color: AtlasBookTheme.antiqueGoldSoft.withValues(alpha: 0.55),
                 ),
               ),
               children: [
@@ -2900,15 +3189,13 @@ class _FamilyGroupSheetPreview extends StatelessWidget {
               alignment: Alignment.centerLeft,
               child: Text(
                 'Children',
-                style: AtlasBookTheme.sectionTitle(context).copyWith(
-                  fontSize: 20,
-                ),
+                style: AtlasBookTheme.sectionTitle(
+                  context,
+                ).copyWith(fontSize: 20),
               ),
             ),
             const SizedBox(height: 8),
-            const Divider(
-              color: AtlasBookTheme.antiqueGoldSoft,
-            ),
+            const Divider(color: AtlasBookTheme.antiqueGoldSoft),
             if (data.children.isEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 18),
@@ -2918,91 +3205,68 @@ class _FamilyGroupSheetPreview extends StatelessWidget {
                 ),
               )
             else
-              ...List.generate(
-                data.children.length,
-                (index) {
-                  final child = data.children[index];
+              ...List.generate(data.children.length, (index) {
+                final child = data.children[index];
 
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 9),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        SizedBox(
-                          width: 34,
-                          child: Text(
-                            '${index + 1}.',
-                            style: AtlasBookTheme.body(context).copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 9),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: 34,
+                        child: Text(
+                          '${index + 1}.',
+                          style: AtlasBookTheme.body(
+                            context,
+                          ).copyWith(fontWeight: FontWeight.w700),
                         ),
-                        Expanded(
-                          flex: 2,
-                          child: Text(
-                            child.displayName,
-                            style: AtlasBookTheme.body(context).copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
+                      ),
+                      Expanded(
+                        flex: 2,
+                        child: Text(
+                          child.displayName,
+                          style: AtlasBookTheme.body(
+                            context,
+                          ).copyWith(fontWeight: FontWeight.w700),
                         ),
-                        Expanded(
-                          flex: 3,
-                          child: Text(
-                            [
-                              child.birthDate,
-                              child.birthPlace,
-                            ]
-                                .where(
-                                  (value) =>
-                                      value.trim().isNotEmpty,
-                                )
-                                .join(' • '),
-                            style: AtlasBookTheme.body(context).copyWith(
-                              fontSize: 13,
-                            ),
-                          ),
+                      ),
+                      Expanded(
+                        flex: 3,
+                        child: Text(
+                          [child.birthDate, child.birthPlace]
+                              .where((value) => value.trim().isNotEmpty)
+                              .join(' • '),
+                          style: AtlasBookTheme.body(
+                            context,
+                          ).copyWith(fontSize: 13),
                         ),
-                      ],
-                    ),
-                  );
-                },
-              ),
+                      ),
+                    ],
+                  ),
+                );
+              }),
           ],
         ),
       ),
     );
   }
 
-  TableRow _detailRow(
-    BuildContext context,
-    String label,
-    String value,
-  ) {
+  TableRow _detailRow(BuildContext context, String label, String value) {
     return TableRow(
       children: [
         Padding(
-          padding: const EdgeInsets.symmetric(
-            vertical: 10,
-            horizontal: 8,
-          ),
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
           child: Text(
             label,
-            style: AtlasBookTheme.sectionTitle(context).copyWith(
-              fontSize: 13,
-            ),
+            style: AtlasBookTheme.sectionTitle(context).copyWith(fontSize: 13),
           ),
         ),
         Padding(
-          padding: const EdgeInsets.symmetric(
-            vertical: 10,
-            horizontal: 8,
-          ),
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
           child: Text(
             value.trim().isEmpty ? 'Not recorded' : value,
-            style: AtlasBookTheme.body(context).copyWith(
-              fontSize: 13,
-            ),
+            style: AtlasBookTheme.body(context).copyWith(fontSize: 13),
           ),
         ),
       ],
@@ -3069,12 +3333,13 @@ class _CollagePageDialogState extends State<_CollagePageDialog> {
         ? widget.initialSelectedPaths.where(widget.photoPaths.contains).toSet()
         : widget.photoPaths.take(4).toSet();
 
-    _layoutKey = const {
-      'balanced',
-      'featured',
-      'filmstrip',
-      'corkboard',
-    }.contains(widget.initialLayoutKey)
+    _layoutKey =
+        const {
+          'balanced',
+          'featured',
+          'filmstrip',
+          'corkboard',
+        }.contains(widget.initialLayoutKey)
         ? widget.initialLayoutKey
         : 'balanced';
 
@@ -3084,9 +3349,7 @@ class _CollagePageDialogState extends State<_CollagePageDialog> {
 
     _titleController = TextEditingController(text: widget.initialTitle);
     _subtitleController = TextEditingController(text: widget.initialSubtitle);
-    _manualTransforms = _decodeManualTransforms(
-      widget.initialPhotoLayoutJson,
-    );
+    _manualTransforms = _decodeManualTransforms(widget.initialPhotoLayoutJson);
   }
 
   @override
@@ -3190,11 +3453,11 @@ class _CollagePageDialogState extends State<_CollagePageDialog> {
                     child: GridView.builder(
                       gridDelegate:
                           const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 2,
-                        crossAxisSpacing: 8,
-                        mainAxisSpacing: 8,
-                        childAspectRatio: 1,
-                      ),
+                            crossAxisCount: 2,
+                            crossAxisSpacing: 8,
+                            mainAxisSpacing: 8,
+                            childAspectRatio: 1,
+                          ),
                       itemCount: widget.photoPaths.length,
                       itemBuilder: (context, index) {
                         final path = widget.photoPaths[index];
@@ -3216,17 +3479,18 @@ class _CollagePageDialogState extends State<_CollagePageDialog> {
                                   top: 6,
                                   right: 6,
                                   child: Material(
-                                    color:
-                                        Theme.of(context).colorScheme.surface,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.surface,
                                     shape: const CircleBorder(),
                                     child: Checkbox(
                                       value: isSelected,
                                       onChanged: atLimit
                                           ? null
                                           : (value) => _togglePhoto(
-                                                path,
-                                                value ?? false,
-                                              ),
+                                              path,
+                                              value ?? false,
+                                            ),
                                     ),
                                   ),
                                 ),
@@ -3302,21 +3566,21 @@ class _CollagePageDialogState extends State<_CollagePageDialog> {
                       ),
                     )
                   : _layoutKey == 'corkboard'
-                      ? _EditableCorkboardPagePreview(
-                          photoPaths: selected,
-                          layoutSeed: _layoutSeed,
-                          title: _titleController.text,
-                          subtitle: _subtitleController.text,
-                          initialTransforms: _manualTransforms,
-                          onTransformsChanged: _updateManualTransforms,
-                        )
-                      : _CollagePagePreview(
-                          photoPaths: selected,
-                          layoutKey: _layoutKey,
-                          layoutSeed: _layoutSeed,
-                          title: _titleController.text,
-                          subtitle: _subtitleController.text,
-                        ),
+                  ? _EditableCorkboardPagePreview(
+                      photoPaths: selected,
+                      layoutSeed: _layoutSeed,
+                      title: _titleController.text,
+                      subtitle: _subtitleController.text,
+                      initialTransforms: _manualTransforms,
+                      onTransformsChanged: _updateManualTransforms,
+                    )
+                  : _CollagePagePreview(
+                      photoPaths: selected,
+                      layoutKey: _layoutKey,
+                      layoutSeed: _layoutSeed,
+                      title: _titleController.text,
+                      subtitle: _subtitleController.text,
+                    ),
             ),
           ],
         ),
@@ -3329,18 +3593,18 @@ class _CollagePageDialogState extends State<_CollagePageDialog> {
         FilledButton.icon(
           onPressed: canSave
               ? () => Navigator.pop(
-                    context,
-                    _CollagePageResult(
-                      photoPaths: selected,
-                      layoutKey: _layoutKey,
-                      layoutSeed: _layoutSeed,
-                      title: _titleController.text.trim(),
-                      subtitle: _subtitleController.text.trim(),
-                      photoLayoutJson: _layoutKey == 'corkboard'
-                          ? _encodeCurrentTransforms()
-                          : '{}',
-                    ),
-                  )
+                  context,
+                  _CollagePageResult(
+                    photoPaths: selected,
+                    layoutKey: _layoutKey,
+                    layoutSeed: _layoutSeed,
+                    title: _titleController.text.trim(),
+                    subtitle: _subtitleController.text.trim(),
+                    photoLayoutJson: _layoutKey == 'corkboard'
+                        ? _encodeCurrentTransforms()
+                        : '{}',
+                  ),
+                )
               : null,
           icon: const Icon(Icons.grid_view_outlined),
           label: Text(widget.isEditing ? 'Save Changes' : 'Add Collage'),
@@ -3393,7 +3657,6 @@ class _SavedCollagePreviewDialog extends StatelessWidget {
   }
 }
 
-
 class _ManualCollageTransform {
   final double centerX;
   final double centerY;
@@ -3412,13 +3675,13 @@ class _ManualCollageTransform {
   });
 
   Map<String, Object?> toJson() => {
-        'centerX': centerX,
-        'centerY': centerY,
-        'width': width,
-        'height': height,
-        'rotation': rotation,
-        'zIndex': zIndex,
-      };
+    'centerX': centerX,
+    'centerY': centerY,
+    'width': width,
+    'height': height,
+    'rotation': rotation,
+    'zIndex': zIndex,
+  };
 
   factory _ManualCollageTransform.fromJson(Map<String, Object?> json) {
     double number(String key, double fallback) {
@@ -3480,8 +3743,7 @@ class _EditableCorkboardPagePreview extends StatefulWidget {
   final String title;
   final String subtitle;
   final Map<String, _ManualCollageTransform> initialTransforms;
-  final ValueChanged<Map<String, _ManualCollageTransform>>
-      onTransformsChanged;
+  final ValueChanged<Map<String, _ManualCollageTransform>> onTransformsChanged;
 
   const _EditableCorkboardPagePreview({
     required this.photoPaths,
@@ -3532,7 +3794,6 @@ class _EditableCorkboardPagePreviewState
     );
   }
 
-
   void _selectPhoto(String path) {
     if (_selectedPath == path) return;
     setState(() => _selectedPath = path);
@@ -3576,13 +3837,10 @@ class _EditableCorkboardPagePreviewState
 
     final current = _transforms[path]!;
     final radians = degrees * math.pi / 180;
-    final nextRotation =
-        (current.rotation + radians).clamp(-0.60, 0.60);
+    final nextRotation = (current.rotation + radians).clamp(-0.60, 0.60);
 
     setState(() {
-      _transforms[path] = current.copyWith(
-        rotation: nextRotation,
-      );
+      _transforms[path] = current.copyWith(rotation: nextRotation);
     });
     _publish();
   }
@@ -3623,10 +3881,9 @@ class _EditableCorkboardPagePreviewState
             const SizedBox(height: 5),
             Text(
               widget.subtitle.trim(),
-              style: AtlasBookTheme.subtitle(context).copyWith(
-                fontSize: 13,
-                fontStyle: FontStyle.italic,
-              ),
+              style: AtlasBookTheme.subtitle(
+                context,
+              ).copyWith(fontSize: 13, fontStyle: FontStyle.italic),
               textAlign: TextAlign.center,
             ),
           ],
@@ -3654,18 +3911,16 @@ class _EditableCorkboardPagePreviewState
                   constraints.maxHeight,
                 );
 
-                for (var index = 0;
-                    index < widget.photoPaths.length;
-                    index++) {
+                for (var index = 0; index < widget.photoPaths.length; index++) {
                   final path = widget.photoPaths[index];
                   if (_transforms.containsKey(path)) continue;
 
                   final spec = autoSpecs[index];
                   _transforms[path] = _ManualCollageTransform(
-                    centerX: (spec.left + spec.width / 2) /
-                        constraints.maxWidth,
-                    centerY: (spec.top + spec.height / 2) /
-                        constraints.maxHeight,
+                    centerX:
+                        (spec.left + spec.width / 2) / constraints.maxWidth,
+                    centerY:
+                        (spec.top + spec.height / 2) / constraints.maxHeight,
                     width: spec.width / constraints.maxWidth,
                     height: spec.height / constraints.maxHeight,
                     rotation: spec.rotation,
@@ -3693,16 +3948,11 @@ class _EditableCorkboardPagePreviewState
                     children: [
                       Positioned.fill(
                         child: CustomPaint(
-                          painter:
-                              _CorkTexturePainter(seed: widget.layoutSeed),
+                          painter: _CorkTexturePainter(seed: widget.layoutSeed),
                         ),
                       ),
                       for (final path in ordered)
-                        _buildDraggablePhoto(
-                          context,
-                          path,
-                          constraints,
-                        ),
+                        _buildDraggablePhoto(context, path, constraints),
                     ],
                   ),
                 );
@@ -3772,10 +4022,8 @@ class _EditableCorkboardPagePreviewState
     final transform = _transforms[path]!;
     final itemWidth = transform.width * constraints.maxWidth;
     final itemHeight = transform.height * constraints.maxHeight;
-    final left =
-        transform.centerX * constraints.maxWidth - itemWidth / 2;
-    final top =
-        transform.centerY * constraints.maxHeight - itemHeight / 2;
+    final left = transform.centerX * constraints.maxWidth - itemWidth / 2;
+    final top = transform.centerY * constraints.maxHeight - itemHeight / 2;
     final selected = _selectedPath == path;
 
     return Positioned(
@@ -3804,10 +4052,14 @@ class _EditableCorkboardPagePreviewState
                   final halfW = current.width / 2;
                   final halfH = current.height / 2;
 
-                  final nextX =
-                      (current.centerX + dx).clamp(halfW, 1.0 - halfW);
-                  final nextY =
-                      (current.centerY + dy).clamp(halfH, 1.0 - halfH);
+                  final nextX = (current.centerX + dx).clamp(
+                    halfW,
+                    1.0 - halfW,
+                  );
+                  final nextY = (current.centerY + dy).clamp(
+                    halfH,
+                    1.0 - halfH,
+                  );
 
                   setState(() {
                     _transforms[path] = current.copyWith(
@@ -3890,17 +4142,18 @@ class _EditableCorkboardPagePreviewState
                   behavior: HitTestBehavior.opaque,
                   onPanUpdate: (details) {
                     final current = _transforms[path]!;
-                    final aspect =
-                        current.height <= 0 ? 1.0 : current.width / current.height;
+                    final aspect = current.height <= 0
+                        ? 1.0
+                        : current.width / current.height;
 
-                    final delta =
-                        (details.delta.dx + details.delta.dy) / 2;
+                    final delta = (details.delta.dx + details.delta.dy) / 2;
                     final widthDelta = delta / constraints.maxWidth;
 
-                    final newWidth =
-                        (current.width + widthDelta).clamp(0.14, 0.70);
-                    final newHeight =
-                        (newWidth / aspect).clamp(0.12, 0.70);
+                    final newWidth = (current.width + widthDelta).clamp(
+                      0.14,
+                      0.70,
+                    );
+                    final newHeight = (newWidth / aspect).clamp(0.12, 0.70);
 
                     setState(() {
                       _transforms[path] = current.copyWith(
@@ -3944,8 +4197,8 @@ class _EditableCorkboardPagePreviewState
                     final current = _transforms[path]!;
                     final rotationDelta =
                         (details.delta.dx - details.delta.dy) * 0.018;
-                    final newRotation =
-                        (current.rotation + rotationDelta).clamp(-0.60, 0.60);
+                    final newRotation = (current.rotation + rotationDelta)
+                        .clamp(-0.60, 0.60);
 
                     setState(() {
                       _transforms[path] = current.copyWith(
@@ -4024,10 +4277,7 @@ class _CollagePagePreview extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFFFFFCF5),
-        border: Border.all(
-          color: AtlasBookTheme.antiqueGoldSoft,
-          width: 1.2,
-        ),
+        border: Border.all(color: AtlasBookTheme.antiqueGoldSoft, width: 1.2),
       ),
       padding: const EdgeInsets.all(4),
       child: ClipRect(
@@ -4125,8 +4375,7 @@ class _CollagePagePreview extends StatelessWidget {
               ],
             ),
           ),
-          if (index != photoPaths.length - 1)
-            const SizedBox(height: 8),
+          if (index != photoPaths.length - 1) const SizedBox(height: 8),
         ],
       ],
     );
@@ -4163,7 +4412,8 @@ class _CollagePagePreview extends StatelessWidget {
           final length = (data[offset + 2] << 8) + data[offset + 3];
           if (length < 2 || offset + length + 2 > data.length) break;
 
-          final isSof = marker >= 0xC0 &&
+          final isSof =
+              marker >= 0xC0 &&
               marker <= 0xCF &&
               !{0xC4, 0xC8, 0xCC}.contains(marker);
           if (isSof && offset + 8 < data.length) {
@@ -4181,14 +4431,10 @@ class _CollagePagePreview extends StatelessWidget {
           data[1] == 0x50 &&
           data[2] == 0x4E &&
           data[3] == 0x47) {
-        final w = (data[16] << 24) |
-            (data[17] << 16) |
-            (data[18] << 8) |
-            data[19];
-        final h = (data[20] << 24) |
-            (data[21] << 16) |
-            (data[22] << 8) |
-            data[23];
+        final w =
+            (data[16] << 24) | (data[17] << 16) | (data[18] << 8) | data[19];
+        final h =
+            (data[20] << 24) | (data[21] << 16) | (data[22] << 8) | data[23];
         if (w > 0 && h > 0) return w / h;
       }
     } catch (_) {}
@@ -4196,23 +4442,13 @@ class _CollagePagePreview extends StatelessWidget {
     return 1.35;
   }
 
-  List<_CorkboardPhotoSpec> _corkboardSpecs(
-    double width,
-    double height,
-  ) {
+  List<_CorkboardPhotoSpec> _corkboardSpecs(double width, double height) {
     final random = math.Random(layoutSeed);
     final count = photoPaths.length;
 
     final anchorsByCount = <int, List<Offset>>{
-      2: const [
-        Offset(0.30, 0.30),
-        Offset(0.70, 0.70),
-      ],
-      3: const [
-        Offset(0.28, 0.27),
-        Offset(0.72, 0.34),
-        Offset(0.48, 0.73),
-      ],
+      2: const [Offset(0.30, 0.30), Offset(0.70, 0.70)],
+      3: const [Offset(0.28, 0.27), Offset(0.72, 0.34), Offset(0.48, 0.73)],
       4: const [
         Offset(0.27, 0.27),
         Offset(0.73, 0.28),
@@ -4268,13 +4504,12 @@ class _CollagePagePreview extends StatelessWidget {
       final baseWidth = count <= 2
           ? 0.43
           : count <= 4
-              ? 0.35
-              : count <= 6
-                  ? 0.29
-                  : 0.25;
+          ? 0.35
+          : count <= 6
+          ? 0.29
+          : 0.25;
 
-      var itemWidth =
-          width * (baseWidth + (random.nextDouble() - 0.5) * 0.05);
+      var itemWidth = width * (baseWidth + (random.nextDouble() - 0.5) * 0.05);
 
       // Thin mat + modest caption-like lower margin, rather than a large
       // Polaroid blank area.
@@ -4299,17 +4534,13 @@ class _CollagePagePreview extends StatelessWidget {
       var centerX = anchor.dx * width + jitterX;
       var centerY = anchor.dy * height + jitterY;
 
-      centerX = centerX.clamp(
-        itemWidth / 2 + 10,
-        width - itemWidth / 2 - 10,
-      );
+      centerX = centerX.clamp(itemWidth / 2 + 10, width - itemWidth / 2 - 10);
       centerY = centerY.clamp(
         itemHeight / 2 + 10,
         height - itemHeight / 2 - 10,
       );
 
-      final rotation =
-          (random.nextDouble() * 7.0 - 3.5) * math.pi / 180;
+      final rotation = (random.nextDouble() * 7.0 - 3.5) * math.pi / 180;
 
       specs.add(
         _CorkboardPhotoSpec(
@@ -4333,23 +4564,24 @@ class _CollagePagePreview extends StatelessWidget {
           constraints.maxHeight,
         );
         final savedTransforms = _decodeManualTransforms(photoLayoutJson);
-        final specs = List<_CorkboardPhotoSpec>.generate(
-          photoPaths.length,
-          (index) {
-            final saved = savedTransforms[photoPaths[index]];
-            if (saved == null) return autoSpecs[index];
+        final specs = List<_CorkboardPhotoSpec>.generate(photoPaths.length, (
+          index,
+        ) {
+          final saved = savedTransforms[photoPaths[index]];
+          if (saved == null) return autoSpecs[index];
 
-            return _CorkboardPhotoSpec(
-              left: saved.centerX * constraints.maxWidth -
-                  saved.width * constraints.maxWidth / 2,
-              top: saved.centerY * constraints.maxHeight -
-                  saved.height * constraints.maxHeight / 2,
-              width: saved.width * constraints.maxWidth,
-              height: saved.height * constraints.maxHeight,
-              rotation: saved.rotation,
-            );
-          },
-        );
+          return _CorkboardPhotoSpec(
+            left:
+                saved.centerX * constraints.maxWidth -
+                saved.width * constraints.maxWidth / 2,
+            top:
+                saved.centerY * constraints.maxHeight -
+                saved.height * constraints.maxHeight / 2,
+            width: saved.width * constraints.maxWidth,
+            height: saved.height * constraints.maxHeight,
+            rotation: saved.rotation,
+          );
+        });
 
         return Container(
           decoration: BoxDecoration(
@@ -4393,9 +4625,7 @@ class _CollagePagePreview extends StatelessWidget {
                       child: Stack(
                         clipBehavior: Clip.none,
                         children: [
-                          Positioned.fill(
-                            child: _photo(photoPaths[index]),
-                          ),
+                          Positioned.fill(child: _photo(photoPaths[index])),
                           Positioned(
                             top: -14,
                             left: 0,
@@ -4453,10 +4683,9 @@ class _CollagePagePreview extends StatelessWidget {
             const SizedBox(height: 5),
             Text(
               subtitle.trim(),
-              style: AtlasBookTheme.subtitle(context).copyWith(
-                fontSize: 13,
-                fontStyle: FontStyle.italic,
-              ),
+              style: AtlasBookTheme.subtitle(
+                context,
+              ).copyWith(fontSize: 13, fontStyle: FontStyle.italic),
               textAlign: TextAlign.center,
             ),
           ],
@@ -4492,9 +4721,7 @@ class _CollagePagePreview extends StatelessWidget {
 class _CorkTexturePainter extends CustomPainter {
   final int seed;
 
-  const _CorkTexturePainter({
-    required this.seed,
-  });
+  const _CorkTexturePainter({required this.seed});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -4507,9 +4734,7 @@ class _CorkTexturePainter extends CustomPainter {
       final radius = 0.35 + random.nextDouble() * 1.2;
       final dark = random.nextBool();
 
-      paint.color = (dark
-              ? const Color(0xFF6F472C)
-              : const Color(0xFFE0B47D))
+      paint.color = (dark ? const Color(0xFF6F472C) : const Color(0xFFE0B47D))
           .withValues(alpha: 0.20 + random.nextDouble() * 0.18);
 
       canvas.drawCircle(Offset(x, y), radius, paint);
@@ -4526,10 +4751,7 @@ class _PersonProfilePageResult {
   final int personId;
   final String? heroPhotoPath;
 
-  const _PersonProfilePageResult({
-    required this.personId,
-    this.heroPhotoPath,
-  });
+  const _PersonProfilePageResult({required this.personId, this.heroPhotoPath});
 }
 
 class _PersonProfilePageDialog extends StatefulWidget {
@@ -4565,13 +4787,14 @@ class _PersonProfilePageDialogState extends State<_PersonProfilePageDialog> {
     );
 
     final initialHero = widget.initialHeroPhotoPath;
-    _heroPhotoPath = initialHero != null &&
+    _heroPhotoPath =
+        initialHero != null &&
             initialHero.isNotEmpty &&
             widget.photoPaths.contains(initialHero)
         ? initialHero
         : widget.photoPaths.isEmpty
-            ? null
-            : widget.photoPaths.first;
+        ? null
+        : widget.photoPaths.first;
   }
 
   @override
@@ -4583,7 +4806,11 @@ class _PersonProfilePageDialogState extends State<_PersonProfilePageDialog> {
     final hasHero = heroPath != null && File(heroPath).existsSync();
 
     return AlertDialog(
-      title: Text(widget.isEditing ? 'Edit Person Profile Page' : 'Add Person Profile Page'),
+      title: Text(
+        widget.isEditing
+            ? 'Edit Person Profile Page'
+            : 'Add Person Profile Page',
+      ),
       content: SizedBox(
         width: 850,
         height: 650,
@@ -4669,8 +4896,8 @@ class _PersonProfilePageDialogState extends State<_PersonProfilePageDialog> {
                 imagePath: hasHero
                     ? heroPath
                     : hasProfilePhoto
-                        ? profilePath
-                        : null,
+                    ? profilePath
+                    : null,
               ),
             ),
           ],
@@ -4685,12 +4912,12 @@ class _PersonProfilePageDialogState extends State<_PersonProfilePageDialog> {
           onPressed: _person.id == null
               ? null
               : () => Navigator.pop(
-                    context,
-                    _PersonProfilePageResult(
-                      personId: _person.id!,
-                      heroPhotoPath: _heroPhotoPath,
-                    ),
+                  context,
+                  _PersonProfilePageResult(
+                    personId: _person.id!,
+                    heroPhotoPath: _heroPhotoPath,
                   ),
+                ),
           icon: const Icon(Icons.add),
           label: Text(widget.isEditing ? 'Save Changes' : 'Add Person Profile'),
         ),
@@ -4711,22 +4938,19 @@ class _SavedPersonProfilePreviewDialog extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final profilePath = person.profilePhotoPath;
-    final imagePath = heroPhotoPath.isNotEmpty &&
-            File(heroPhotoPath).existsSync()
+    final imagePath =
+        heroPhotoPath.isNotEmpty && File(heroPhotoPath).existsSync()
         ? heroPhotoPath
         : profilePath.isNotEmpty && File(profilePath).existsSync()
-            ? profilePath
-            : null;
+        ? profilePath
+        : null;
 
     return AlertDialog(
       title: const Text('Person Profile Preview'),
       content: SizedBox(
         width: 760,
         height: 620,
-        child: _PersonProfilePagePreview(
-          person: person,
-          imagePath: imagePath,
-        ),
+        child: _PersonProfilePagePreview(person: person, imagePath: imagePath),
       ),
       actions: [
         FilledButton(
@@ -4749,8 +4973,7 @@ class _PersonProfilePagePreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hasImage =
-        imagePath != null && File(imagePath!).existsSync();
+    final hasImage = imagePath != null && File(imagePath!).existsSync();
 
     return Container(
       padding: const EdgeInsets.all(28),
@@ -4763,7 +4986,6 @@ class _PersonProfilePagePreview extends StatelessWidget {
               person.displayName,
               textAlign: TextAlign.center,
               style: AtlasBookTheme.displayTitle(context),
-
             ),
             if (person.lifeSpan.isNotEmpty) ...[
               const SizedBox(height: 6),
@@ -4856,10 +5078,9 @@ class _WorkspaceStep extends StatelessWidget {
                   children: [
                     Text(
                       title,
-                      style:
-                          Theme.of(context).textTheme.titleMedium?.copyWith(
-                                fontWeight: FontWeight.w700,
-                              ),
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                     const SizedBox(height: 4),
                     Text(description),
@@ -4868,10 +5089,7 @@ class _WorkspaceStep extends StatelessWidget {
               ),
               if (actionLabel != null) ...[
                 const SizedBox(width: 16),
-                FilledButton(
-                  onPressed: onTap,
-                  child: Text(actionLabel!),
-                ),
+                FilledButton(onPressed: onTap, child: Text(actionLabel!)),
               ],
             ],
           ),
