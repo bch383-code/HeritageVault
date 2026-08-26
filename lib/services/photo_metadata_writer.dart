@@ -31,20 +31,12 @@ class PhotoMetadataWriter {
     }
 
     final extension = path.extension(filePath).toLowerCase();
-    const supported = {
-      '.jpg',
-      '.jpeg',
-      '.tif',
-      '.tiff',
-      '.png',
-      '.webp',
-    };
+    const supported = {'.jpg', '.jpeg', '.tif', '.tiff', '.png', '.webp'};
 
     if (!supported.contains(extension)) {
       return PhotoMetadataWriteResult(
         success: false,
-        message:
-            'Metadata writing is not enabled for $extension files yet.',
+        message: 'Metadata writing is not enabled for $extension files yet.',
       );
     }
 
@@ -60,13 +52,25 @@ class PhotoMetadataWriter {
 
     final backupPath = await _createBackup(source);
 
-    final keywords = <String>{
-      ...metadata.tags.map((tag) => tag.trim()).where((tag) => tag.isNotEmpty),
-      ...metadata.people
-          .map((person) => person.trim())
-          .where((person) => person.isNotEmpty)
-          .map((person) => 'Person: $person'),
-    }.toList();
+    final keywordByKey = <String, String>{};
+
+    void addKeyword(String value) {
+      final clean = value.trim();
+      if (clean.isEmpty) return;
+      keywordByKey.putIfAbsent(clean.toLowerCase(), () => clean);
+    }
+
+    for (final tag in metadata.tags) {
+      addKeyword(tag);
+    }
+    for (final person in metadata.people) {
+      final clean = person.trim();
+      if (clean.isNotEmpty) {
+        addKeyword('Person: $clean');
+      }
+    }
+
+    final keywords = keywordByKey.values.toList();
 
     final args = <String>[
       '-P',
@@ -79,7 +83,7 @@ class PhotoMetadataWriter {
       args.add('-XMP-dc:Description=${metadata.description.trim()}');
     }
 
-    // Clear and rewrite the keyword list so Heritage Vault and the
+    // Clear and rewrite the keyword list so Heirloom Atlas and the
     // embedded metadata remain predictable.
     args.add('-XMP-dc:Subject=');
     for (final keyword in keywords) {
@@ -96,18 +100,13 @@ class PhotoMetadataWriter {
     args.add(filePath);
 
     try {
-      final result = await Process.run(
-        executable,
-        args,
-        runInShell: false,
-      );
+      final result = await Process.run(executable, args, runInShell: false);
 
       if (result.exitCode != 0) {
         return PhotoMetadataWriteResult(
           success: false,
           backupPath: backupPath,
-          message:
-              'ExifTool could not update the photo.\n${result.stderr}',
+          message: 'ExifTool could not update the photo.\n${result.stderr}',
         );
       }
 
@@ -128,11 +127,7 @@ class PhotoMetadataWriter {
   static Future<String> _createBackup(File source) async {
     final documents = await getApplicationDocumentsDirectory();
     final backupDirectory = Directory(
-      path.join(
-        documents.path,
-        'Heritage Vault',
-        'Photo Metadata Backups',
-      ),
+      path.join(documents.path, 'Heirloom Atlas', 'Photo Metadata Backups'),
     );
 
     if (!await backupDirectory.exists()) {
@@ -164,27 +159,18 @@ class PhotoMetadataWriter {
     final directFile = File(directWindowsPath);
     if (await directFile.exists()) {
       try {
-        final result = await Process.run(
-          directWindowsPath,
-          ['-ver'],
-          runInShell: false,
-        );
+        final result = await Process.run(directWindowsPath, [
+          '-ver',
+        ], runInShell: false);
         if (result.exitCode == 0) return directWindowsPath;
       } catch (_) {}
     }
 
-    const candidates = [
-      'exiftool.exe',
-      'exiftool',
-    ];
+    const candidates = ['exiftool.exe', 'exiftool'];
 
     for (final candidate in candidates) {
       try {
-        final result = await Process.run(
-          candidate,
-          ['-ver'],
-          runInShell: true,
-        );
+        final result = await Process.run(candidate, ['-ver'], runInShell: true);
         if (result.exitCode == 0) return candidate;
       } catch (_) {}
     }

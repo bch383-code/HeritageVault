@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../database/database_helper.dart';
 import '../models/family_person.dart';
+import '../models/detected_face_record.dart';
 import '../models/photo_catalog_metadata.dart';
 import '../models/vault_photo.dart';
 import '../services/photo_metadata_reader.dart';
@@ -40,6 +41,7 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
   List<String> _knownTags = [];
   List<String> _knownLocations = [];
   List<FamilyPerson> _linkedFamilyPeople = [];
+  List<DetectedFaceRecord> _confirmedFaces = [];
 
   String _dateType = 'Approximate';
   bool _loading = true;
@@ -106,11 +108,15 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
         PhotoMetadataReader.read(_photo.filePath),
         _databaseHelper.getPhotoCatalogMetadata(_photo.filePath),
         _databaseHelper.getFamilyPeopleForPhoto(_photo.filePath),
+        _databaseHelper.getFacesForPhotoPaths([_photo.filePath]),
       ]);
 
       final embedded = results[0] as PhotoMetadata;
       final catalog = results[1] as PhotoCatalogMetadata;
       final linkedFamilyPeople = results[2] as List<FamilyPerson>;
+      final faces = (results[3] as List<DetectedFaceRecord>)
+          .where((face) => face.confirmed && face.personName.trim().isNotEmpty)
+          .toList();
 
       if (!mounted) return;
 
@@ -128,6 +134,7 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
       setState(() {
         _embeddedMetadata = embedded;
         _linkedFamilyPeople = linkedFamilyPeople;
+        _confirmedFaces = faces;
         _loading = false;
       });
     } catch (error) {
@@ -269,8 +276,132 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
         if (!mounted) return;
         setState(() => _embeddedMetadata = refreshed);
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result.message)),
+        final expectedDescription = metadata.description.trim();
+        final descriptionVerified =
+            expectedDescription.isEmpty ||
+            refreshed.description.trim() == expectedDescription;
+
+        final expectedKeywords = <String>{
+          ...metadata.tags
+              .map((tag) => tag.trim())
+              .where((tag) => tag.isNotEmpty),
+          ...metadata.people
+              .map((person) => person.trim())
+              .where((person) => person.isNotEmpty)
+              .map((person) => 'Person: $person'),
+        };
+
+        final actualKeywords = refreshed.tags
+            .map((tag) => tag.trim())
+            .where((tag) => tag.isNotEmpty)
+            .toSet();
+
+        final tagsVerified = metadata.tags
+            .map((tag) => tag.trim())
+            .where((tag) => tag.isNotEmpty)
+            .every(actualKeywords.contains);
+
+        final peopleVerified = metadata.people
+            .map((person) => person.trim())
+            .where((person) => person.isNotEmpty)
+            .map((person) => 'Person: $person')
+            .every(actualKeywords.contains);
+
+        final unexpectedKeywords =
+            actualKeywords.difference(expectedKeywords).toList()..sort();
+
+        final expectedLocation = metadata.location.trim();
+        final actualLocation = (refreshed.technical['XMP Location'] ?? '')
+            .trim();
+        final locationVerified =
+            expectedLocation.isEmpty || actualLocation == expectedLocation;
+
+        final failures = <String>[
+          if (!descriptionVerified) 'Description',
+          if (!tagsVerified) 'Tags / keywords',
+          if (!peopleVerified) 'People',
+          if (!locationVerified) 'Location',
+        ];
+
+        await showDialog<void>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: Text(
+              failures.isEmpty
+                  ? 'Metadata write verified'
+                  : 'Metadata write needs review',
+            ),
+            content: SizedBox(
+              width: 560,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _verificationRow(result.backupPath != null, 'Backup created'),
+                  _verificationRow(
+                    descriptionVerified,
+                    expectedDescription.isEmpty
+                        ? 'Description — nothing to write'
+                        : 'Description verified',
+                  ),
+                  _verificationRow(
+                    tagsVerified,
+                    metadata.tags.isEmpty
+                        ? 'Tags — nothing to write'
+                        : 'Tags verified',
+                  ),
+                  _verificationRow(
+                    peopleVerified,
+                    metadata.people.isEmpty
+                        ? 'People — nothing to write'
+                        : 'People verified',
+                  ),
+                  _verificationRow(
+                    locationVerified,
+                    expectedLocation.isEmpty
+                        ? 'Location — nothing to write'
+                        : locationVerified
+                        ? 'Location verified'
+                        : 'Location could not be verified',
+                  ),
+                  _verificationRow(
+                    true,
+                    'Original capture date was not changed',
+                  ),
+                  if (unexpectedKeywords.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      'Other embedded keywords still present: '
+                      '${unexpectedKeywords.join(', ')}',
+                    ),
+                  ],
+                  if (failures.isNotEmpty) ...[
+                    const SizedBox(height: 14),
+                    Text(
+                      'Could not verify: ${failures.join(', ')}. '
+                      'The backup was kept so the original can be restored.',
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ],
+                  if (result.backupPath != null) ...[
+                    const SizedBox(height: 14),
+                    const Text(
+                      'Backup:',
+                      style: TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 4),
+                    SelectableText(result.backupPath!),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Done'),
+              ),
+            ],
+          ),
         );
       } else {
         await showDialog<void>(
@@ -290,6 +421,165 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
     } finally {
       if (mounted) setState(() => _writingToPhoto = false);
     }
+  }
+
+  Future<void> _changeFacePerson(DetectedFaceRecord face) async {
+    final faceId = face.id;
+    if (faceId == null) return;
+
+    var typedName = face.personName;
+
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final query = typedName.trim().toLowerCase();
+          final suggestions = _knownPeople
+              .where(
+                (name) =>
+                    name != face.personName &&
+                    (query.isEmpty || name.toLowerCase().contains(query)),
+              )
+              .take(8)
+              .toList();
+
+          void submit() {
+            final clean = typedName.trim();
+            if (clean.isEmpty || clean == face.personName) return;
+            FocusScope.of(dialogContext).unfocus();
+            Navigator.pop(dialogContext, clean);
+          }
+
+          return AlertDialog(
+            title: const Text('Change face identity'),
+            content: SizedBox(
+              width: 460,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Currently identified as ${face.personName}'),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    initialValue: face.personName,
+                    autofocus: true,
+                    textInputAction: TextInputAction.done,
+                    decoration: const InputDecoration(
+                      labelText: 'Correct person',
+                      border: OutlineInputBorder(),
+                    ),
+                    onChanged: (value) {
+                      typedName = value;
+                      setDialogState(() {});
+                    },
+                    onFieldSubmitted: (_) => submit(),
+                  ),
+                  if (suggestions.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: suggestions
+                          .map(
+                            (name) => ActionChip(
+                              label: Text(name),
+                              onPressed: () =>
+                                  Navigator.pop(dialogContext, name),
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(onPressed: submit, child: const Text('Update Name')),
+            ],
+          );
+        },
+      ),
+    );
+
+    if (newName == null || newName.trim().isEmpty) return;
+
+    await _databaseHelper.reassignConfirmedFace(
+      faceId: faceId,
+      newPersonName: newName,
+    );
+    await _loadPhoto();
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Face changed from ${face.personName} to ${newName.trim()}.',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _markFaceUnidentified(DetectedFaceRecord face) async {
+    final faceId = face.id;
+    if (faceId == null) return;
+
+    final confirmed =
+        await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Mark face unidentified?'),
+            content: Text(
+              'Heirloom Atlas will stop treating this face as '
+              '"${face.personName}". The face will return to Unidentified '
+              'Faces for review. The original photo will not be deleted.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('Mark Unidentified'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!confirmed) return;
+
+    await _databaseHelper.markFaceUnidentified(faceId);
+
+    final remainingFaces = _confirmedFaces
+        .where((item) => item.id != faceId)
+        .toList();
+    final stillHasPerson = remainingFaces.any(
+      (item) => item.personName == face.personName,
+    );
+
+    if (!stillHasPerson) {
+      _people.remove(face.personName);
+      await _databaseHelper.savePhotoCatalogMetadata(_currentCatalogMetadata());
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _confirmedFaces = remainingFaces;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '${face.personName} was removed from this face. '
+          'It is unidentified again.',
+        ),
+      ),
+    );
   }
 
   Future<void> _chooseFamilyTreePeople() async {
@@ -315,8 +605,9 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
       personIds: selectedIds,
     );
 
-    final linked =
-        await _databaseHelper.getFamilyPeopleForPhoto(_photo.filePath);
+    final linked = await _databaseHelper.getFamilyPeopleForPhoto(
+      _photo.filePath,
+    );
 
     if (!mounted) return;
 
@@ -383,131 +674,131 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? Center(child: Text('Could not load photo.\n\n$_error'))
-              : Row(
-                  children: [
-                    Expanded(
-                      flex: 3,
-                      child: Container(
-                        color: Theme.of(context)
-                            .colorScheme
-                            .surfaceContainerHighest,
-                        padding: const EdgeInsets.all(20),
-                        child: Column(
-                          children: [
-                            Expanded(
-                              child: file.existsSync()
-                                  ? Image.file(file, fit: BoxFit.contain)
-                                  : const Center(
-                                      child: Text('Original file not found.'),
-                                    ),
-                            ),
-                            const SizedBox(height: 10),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                IconButton.filledTonal(
-                                  tooltip: 'Previous photo',
-                                  onPressed: _index > 0
-                                      ? () => _move(-1)
-                                      : null,
-                                  icon: const Icon(Icons.chevron_left),
+          ? Center(child: Text('Could not load photo.\n\n$_error'))
+          : Row(
+              children: [
+                Expanded(
+                  flex: 3,
+                  child: Container(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.surfaceContainerHighest,
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      children: [
+                        Expanded(
+                          child: file.existsSync()
+                              ? Image.file(file, fit: BoxFit.contain)
+                              : const Center(
+                                  child: Text('Original file not found.'),
                                 ),
-                                Flexible(
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                    ),
-                                    child: Text(
-                                      '${_index + 1} of ${widget.photos.length}',
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
+                        ),
+                        const SizedBox(height: 10),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            IconButton.filledTonal(
+                              tooltip: 'Previous photo',
+                              onPressed: _index > 0 ? () => _move(-1) : null,
+                              icon: const Icon(Icons.chevron_left),
+                            ),
+                            Flexible(
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                ),
+                                child: Text(
+                                  '${_index + 1} of ${widget.photos.length}',
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
                                   ),
                                 ),
-                                IconButton.filledTonal(
-                                  tooltip: 'Next photo',
-                                  onPressed: _index < widget.photos.length - 1
-                                      ? () => _move(1)
-                                      : null,
-                                  icon: const Icon(Icons.chevron_right),
-                                ),
-                              ],
+                              ),
                             ),
-                            const SizedBox(height: 8),
-                            SelectableText(
-                              _photo.filePath,
-                              maxLines: 2,
-                              style: Theme.of(context).textTheme.bodySmall,
+                            IconButton.filledTonal(
+                              tooltip: 'Next photo',
+                              onPressed: _index < widget.photos.length - 1
+                                  ? () => _move(1)
+                                  : null,
+                              icon: const Icon(Icons.chevron_right),
                             ),
                           ],
                         ),
-                      ),
+                        const SizedBox(height: 8),
+                        SelectableText(
+                          _photo.filePath,
+                          maxLines: 2,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
                     ),
-                    const VerticalDivider(width: 1),
-                    Expanded(
-                      flex: 2,
-                      child: ListView(
-                        padding: const EdgeInsets.all(22),
-                        children: [
-                          Text(
-                            'Photo Details',
-                            style: Theme.of(context)
-                                .textTheme
-                                .headlineSmall
-                                ?.copyWith(fontWeight: FontWeight.w800),
-                          ),
-                          const SizedBox(height: 18),
-                          _FamilyTreeLinksCard(
-                            people: _linkedFamilyPeople,
-                            onEdit: _chooseFamilyTreePeople,
-                          ),
-                          const SizedBox(height: 18),
-                          _ChipEditor(
-                            label: 'People / metadata keywords',
-                            hint: 'Add a person',
-                            values: _people,
-                            suggestions: _knownPeople,
-                            onAdd: _addPerson,
-                            onRemove: (value) =>
-                                setState(() => _people.remove(value)),
-                          ),
-                          const SizedBox(height: 18),
-                          _ChipEditor(
-                            label: 'Tags',
-                            hint: 'Add a tag',
-                            values: _tags,
-                            suggestions: _knownTags,
-                            onAdd: _addTag,
-                            onRemove: (value) =>
-                                setState(() => _tags.remove(value)),
-                          ),
-                          const SizedBox(height: 18),
-                          LayoutBuilder(
-                            builder: (context, constraints) {
-                              final stackFields =
-                                  constraints.maxWidth < 430;
+                  ),
+                ),
+                const VerticalDivider(width: 1),
+                Expanded(
+                  flex: 2,
+                  child: ListView(
+                    padding: const EdgeInsets.all(22),
+                    children: [
+                      Text(
+                        'Photo Details',
+                        style: Theme.of(context).textTheme.headlineSmall
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                      const SizedBox(height: 18),
+                      _ConfirmedFacesCard(
+                        faces: _confirmedFaces,
+                        onChangePerson: _changeFacePerson,
+                        onUnidentify: _markFaceUnidentified,
+                      ),
+                      const SizedBox(height: 18),
+                      _FamilyTreeLinksCard(
+                        people: _linkedFamilyPeople,
+                        onEdit: _chooseFamilyTreePeople,
+                      ),
+                      const SizedBox(height: 18),
+                      _ChipEditor(
+                        label: 'People / metadata keywords',
+                        hint: 'Add a person',
+                        values: _people,
+                        suggestions: _knownPeople,
+                        onAdd: _addPerson,
+                        onRemove: (value) =>
+                            setState(() => _people.remove(value)),
+                      ),
+                      const SizedBox(height: 18),
+                      _ChipEditor(
+                        label: 'Tags',
+                        hint: 'Add a tag',
+                        values: _tags,
+                        suggestions: _knownTags,
+                        onAdd: _addTag,
+                        onRemove: (value) =>
+                            setState(() => _tags.remove(value)),
+                      ),
+                      const SizedBox(height: 18),
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          final stackFields = constraints.maxWidth < 430;
 
-                              final typeField = SizedBox(
-                                width: stackFields
-                                    ? constraints.maxWidth
-                                    : 145,
-                                child: DropdownButtonFormField<String>(
-                                  initialValue: _dateType,
-                                  isExpanded: true,
-                                  decoration: const InputDecoration(
-                                    labelText: 'Date type',
-                                    border: OutlineInputBorder(),
-                                  ),
-                                  items: const [
-                                    'Exact',
-                                    'Approximate',
-                                    'Year only',
-                                    'Decade',
-                                    'Unknown',
-                                  ]
+                          final typeField = SizedBox(
+                            width: stackFields ? constraints.maxWidth : 145,
+                            child: DropdownButtonFormField<String>(
+                              initialValue: _dateType,
+                              isExpanded: true,
+                              decoration: const InputDecoration(
+                                labelText: 'Date type',
+                                border: OutlineInputBorder(),
+                              ),
+                              items:
+                                  const [
+                                        'Exact',
+                                        'Approximate',
+                                        'Year only',
+                                        'Decade',
+                                        'Unknown',
+                                      ]
                                       .map(
                                         (value) => DropdownMenuItem(
                                           value: value,
@@ -518,71 +809,72 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
                                         ),
                                       )
                                       .toList(),
-                                  onChanged: (value) {
-                                    if (value != null) {
-                                      setState(() => _dateType = value);
-                                    }
-                                  },
-                                ),
-                              );
+                              onChanged: (value) {
+                                if (value != null) {
+                                  setState(() => _dateType = value);
+                                }
+                              },
+                            ),
+                          );
 
-                              final dateField = TextField(
-                                controller: _dateController,
-                                enabled: _dateType != 'Unknown',
-                                decoration: InputDecoration(
-                                  labelText: 'Archival date',
-                                  hintText: _dateType == 'Decade'
-                                      ? '1950'
-                                      : _dateType == 'Year only'
-                                          ? '1956'
-                                          : '1956-07-04 or Summer 1948',
-                                  border: const OutlineInputBorder(),
-                                ),
-                              );
+                          final dateField = TextField(
+                            controller: _dateController,
+                            enabled: _dateType != 'Unknown',
+                            decoration: InputDecoration(
+                              labelText: 'Archival date',
+                              hintText: _dateType == 'Decade'
+                                  ? '1950'
+                                  : _dateType == 'Year only'
+                                  ? '1956'
+                                  : '1956-07-04 or Summer 1948',
+                              border: const OutlineInputBorder(),
+                            ),
+                          );
 
-                              if (stackFields) {
-                                return Column(
-                                  children: [
-                                    typeField,
-                                    const SizedBox(height: 10),
-                                    dateField,
-                                  ],
-                                );
-                              }
+                          if (stackFields) {
+                            return Column(
+                              children: [
+                                typeField,
+                                const SizedBox(height: 10),
+                                dateField,
+                              ],
+                            );
+                          }
 
-                              return Row(
-                                crossAxisAlignment:
-                                    CrossAxisAlignment.start,
-                                children: [
-                                  typeField,
-                                  const SizedBox(width: 10),
-                                  Expanded(child: dateField),
-                                ],
-                              );
-                            },
-                          ),
-                          const SizedBox(height: 14),
-                          Autocomplete<String>(
-                            initialValue:
-                                TextEditingValue(text: _locationController.text),
-                            optionsBuilder: (value) {
-                              final query = value.text.trim().toLowerCase();
-                              if (query.isEmpty) return const Iterable<String>.empty();
-                              return _knownLocations.where(
-                                (item) => item.toLowerCase().contains(query),
-                              );
-                            },
-                            onSelected: (value) {
-                              _locationController.text = value;
-                            },
-                            fieldViewBuilder: (
-                              context,
-                              controller,
-                              focusNode,
-                              onFieldSubmitted,
-                            ) {
+                          return Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              typeField,
+                              const SizedBox(width: 10),
+                              Expanded(child: dateField),
+                            ],
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 14),
+                      Autocomplete<String>(
+                        initialValue: TextEditingValue(
+                          text: _locationController.text,
+                        ),
+                        optionsBuilder: (value) {
+                          final query = value.text.trim().toLowerCase();
+
+                          if (query.isEmpty) {
+                            return _knownLocations;
+                          }
+
+                          return _knownLocations.where(
+                            (item) => item.toLowerCase().contains(query),
+                          );
+                        },
+                        onSelected: (value) {
+                          _locationController.text = value;
+                        },
+                        fieldViewBuilder:
+                            (context, controller, focusNode, onFieldSubmitted) {
                               controller.addListener(() {
-                                if (_locationController.text != controller.text) {
+                                if (_locationController.text !=
+                                    controller.text) {
                                   _locationController.text = controller.text;
                                 }
                               });
@@ -596,62 +888,78 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
                                 ),
                               );
                             },
-                          ),
-                          const SizedBox(height: 14),
-                          TextField(
-                            controller: _descriptionController,
-                            maxLines: 4,
-                            decoration: const InputDecoration(
-                              labelText: 'Description',
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                          const SizedBox(height: 14),
-                          TextField(
-                            controller: _notesController,
-                            maxLines: 4,
-                            decoration: const InputDecoration(
-                              labelText: 'Heirloom Atlas Notes',
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                          const SizedBox(height: 26),
-                          const Divider(),
-                          const SizedBox(height: 10),
-                          Text(
-                            'Embedded Photo Metadata',
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleLarge
-                                ?.copyWith(fontWeight: FontWeight.w800),
-                          ),
-                          const SizedBox(height: 10),
-                          if (_embeddedMetadata != null) ...[
-                            _embeddedRow('Date', _embeddedMetadata!.dateTaken),
-                            _embeddedRow(
-                              'Description',
-                              _embeddedMetadata!.description,
-                            ),
-                            if (_embeddedMetadata!.tags.isNotEmpty) ...[
-                              const Text(
-                                'Embedded Tags',
-                                style: TextStyle(fontWeight: FontWeight.w800),
-                              ),
-                              const SizedBox(height: 8),
-                              Wrap(
-                                spacing: 6,
-                                runSpacing: 6,
-                                children: _embeddedMetadata!.tags
-                                    .map((tag) => Chip(label: Text(tag)))
-                                    .toList(),
-                              ),
-                            ],
-                          ],
-                        ],
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 14),
+                      TextField(
+                        controller: _descriptionController,
+                        maxLines: 4,
+                        decoration: const InputDecoration(
+                          labelText: 'Description',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      TextField(
+                        controller: _notesController,
+                        maxLines: 4,
+                        decoration: const InputDecoration(
+                          labelText: 'Heirloom Atlas Notes',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 26),
+                      const Divider(),
+                      const SizedBox(height: 10),
+                      Text(
+                        'Embedded Photo Metadata',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      if (_embeddedMetadata != null) ...[
+                        _embeddedRow('Date', _embeddedMetadata!.dateTaken),
+                        _embeddedRow(
+                          'Description',
+                          _embeddedMetadata!.description,
+                        ),
+                        if (_embeddedMetadata!.tags.isNotEmpty) ...[
+                          const Text(
+                            'Embedded Tags',
+                            style: TextStyle(fontWeight: FontWeight.w800),
+                          ),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 6,
+                            children: _embeddedMetadata!.tags
+                                .map((tag) => Chip(label: Text(tag)))
+                                .toList(),
+                          ),
+                        ],
+                      ],
+                    ],
+                  ),
                 ),
+              ],
+            ),
+    );
+  }
+
+  Widget _verificationRow(bool success, String label) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            success ? Icons.check_circle_outline : Icons.warning_amber_outlined,
+            size: 20,
+          ),
+          const SizedBox(width: 8),
+          Expanded(child: Text(label)),
+        ],
+      ),
     );
   }
 
@@ -671,15 +979,104 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
   }
 }
 
+class _ConfirmedFacesCard extends StatelessWidget {
+  final List<DetectedFaceRecord> faces;
+  final ValueChanged<DetectedFaceRecord> onChangePerson;
+  final ValueChanged<DetectedFaceRecord> onUnidentify;
+
+  const _ConfirmedFacesCard({
+    required this.faces,
+    required this.onChangePerson,
+    required this.onUnidentify,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.face_retouching_natural_outlined),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Faces in this Photo',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (faces.isEmpty)
+              const Text('No confirmed faces in this photo.')
+            else
+              ...faces.map((face) {
+                final thumbnail = File(face.thumbnailPath);
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceContainerLow,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        radius: 24,
+                        backgroundImage: thumbnail.existsSync()
+                            ? FileImage(thumbnail)
+                            : null,
+                        child: thumbnail.existsSync()
+                            ? null
+                            : const Icon(Icons.person_outline),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          face.personName,
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: () => onChangePerson(face),
+                        icon: const Icon(Icons.edit_outlined, size: 17),
+                        label: const Text('Change Name'),
+                      ),
+                      const SizedBox(width: 6),
+                      TextButton.icon(
+                        onPressed: () => onUnidentify(face),
+                        icon: const Icon(Icons.person_off_outlined, size: 17),
+                        label: const Text('Mark Unidentified'),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            if (faces.isNotEmpty)
+              Text(
+                'Changing a name corrects this face only. Mark Unidentified '
+                'removes the identity and returns the face to the review queue.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _FamilyTreeLinksCard extends StatelessWidget {
   final List<FamilyPerson> people;
   final VoidCallback onEdit;
 
-  const _FamilyTreeLinksCard({
-    required this.people,
-    required this.onEdit,
-  });
+  const _FamilyTreeLinksCard({required this.people, required this.onEdit});
 
   @override
   Widget build(BuildContext context) {
@@ -698,8 +1095,8 @@ class _FamilyTreeLinksCard extends StatelessWidget {
                   child: Text(
                     'Family Tree Links',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                 ),
                 OutlinedButton.icon(
@@ -713,9 +1110,9 @@ class _FamilyTreeLinksCard extends StatelessWidget {
             Text(
               people.isEmpty
                   ? 'Connect this photo to people in your Family Tree. '
-                      'Atlas Book will use these links to gather photos automatically.'
+                        'Atlas Book will use these links to gather photos automatically.'
                   : 'This photo is connected to ${people.length} '
-                      '${people.length == 1 ? 'person' : 'people'} in your Family Tree.',
+                        '${people.length == 1 ? 'person' : 'people'} in your Family Tree.',
             ),
             if (people.isNotEmpty) ...[
               const SizedBox(height: 12),
@@ -902,13 +1299,13 @@ class _ChipEditorState extends State<_ChipEditor> {
     final matches = query.isEmpty
         ? <String>[]
         : widget.suggestions
-            .where(
-              (item) =>
-                  !widget.values.contains(item) &&
-                  item.toLowerCase().contains(query),
-            )
-            .take(6)
-            .toList();
+              .where(
+                (item) =>
+                    !widget.values.contains(item) &&
+                    item.toLowerCase().contains(query),
+              )
+              .take(6)
+              .toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

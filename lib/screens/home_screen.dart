@@ -135,32 +135,27 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildHero() {
     return ClipRRect(
       borderRadius: BorderRadius.circular(24),
-      child: AspectRatio(
-        aspectRatio: 16 / 6,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            Image.asset(
-              'assets/branding/heirloom_atlas_banner.png',
-              fit: BoxFit.cover,
-              alignment: Alignment.center,
-              errorBuilder: (context, error, stackTrace) {
-                return Container(
-                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                  alignment: Alignment.center,
-                  child: const Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.image_not_supported_outlined, size: 48),
-                      SizedBox(height: 10),
-                      Text('Home banner image not found'),
-                    ],
-                  ),
-                );
-              },
+      child: Image.asset(
+        'assets/branding/heirloom_atlas_banner.png',
+        width: double.infinity,
+        fit: BoxFit.fitWidth,
+        alignment: Alignment.center,
+        filterQuality: FilterQuality.high,
+        errorBuilder: (context, error, stackTrace) {
+          return Container(
+            height: 220,
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            alignment: Alignment.center,
+            child: const Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.image_not_supported_outlined, size: 48),
+                SizedBox(height: 10),
+                Text('Home banner image not found'),
+              ],
             ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }

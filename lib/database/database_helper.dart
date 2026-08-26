@@ -43,15 +43,12 @@ class DatabaseHelper {
       await heritageVaultDirectory.create(recursive: true);
     }
 
-    _databasePath = path.join(
-      heritageVaultDirectory.path,
-      'heritage_vault.db',
-    );
+    _databasePath = path.join(heritageVaultDirectory.path, 'heritage_vault.db');
 
     return databaseFactory.openDatabase(
       _databasePath!,
       options: OpenDatabaseOptions(
-        version: 23,
+        version: 26,
         onCreate: (database, version) async {
           await _createManualCoinsTable(database);
           await _createImportedCoinsTable(database);
@@ -73,6 +70,8 @@ class DatabaseHelper {
           await _createFamilyPersonLinksTable(database);
           await _createSportsCardsTable(database);
           await _createSportsCardCatalogTables(database);
+          await _createPersonGroupsTables(database);
+          await _createPhotoPersonFamilyLinksTable(database);
         },
         onUpgrade: (database, oldVersion, newVersion) async {
           if (oldVersion < 2) {
@@ -158,9 +157,325 @@ class DatabaseHelper {
           if (oldVersion < 23) {
             await _createPhotoFingerprintTable(database);
           }
+          if (oldVersion < 24) {
+            await database.execute(
+              "ALTER TABLE photo_faces "
+              "ADD COLUMN review_status TEXT NOT NULL DEFAULT 'pending'",
+            );
+            await database.execute(
+              "UPDATE photo_faces SET review_status = 'identified' "
+              "WHERE confirmed = 1 AND person_name <> ''",
+            );
+          }
+          if (oldVersion < 25) {
+            await _createPersonGroupsTables(database);
+          }
+          if (oldVersion < 26) {
+            await _createPhotoPersonFamilyLinksTable(database);
+          }
         },
       ),
     );
+  }
+
+  static Future<void> _createPhotoPersonFamilyLinksTable(
+    Database database,
+  ) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS photo_person_family_links (
+        person_name TEXT PRIMARY KEY COLLATE NOCASE,
+        family_person_id INTEGER NOT NULL,
+        created_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        updated_at_milliseconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS photo_person_family_links_family_index
+      ON photo_person_family_links(family_person_id)
+    ''');
+  }
+
+  Future<void> setFamilyTreeLinkForPhotoPerson({
+    required String personName,
+    required int familyPersonId,
+  }) async {
+    final cleanName = personName.trim();
+    if (cleanName.isEmpty) {
+      throw ArgumentError('A photo person name is required.');
+    }
+
+    final database = await this.database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final existing = await database.query(
+      'photo_person_family_links',
+      columns: ['created_at_milliseconds'],
+      where: 'person_name = ? COLLATE NOCASE',
+      whereArgs: [cleanName],
+      limit: 1,
+    );
+
+    await database.insert('photo_person_family_links', {
+      'person_name': cleanName,
+      'family_person_id': familyPersonId,
+      'created_at_milliseconds': existing.isEmpty
+          ? now
+          : _mapInt(existing.first['created_at_milliseconds']),
+      'updated_at_milliseconds': now,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<Map<String, int>> getPhotoPersonFamilyTreeLinks() async {
+    final database = await this.database;
+    final rows = await database.query('photo_person_family_links');
+    final result = <String, int>{};
+    for (final row in rows) {
+      final name = row['person_name'] as String? ?? '';
+      if (name.isNotEmpty) {
+        result[name] = _mapInt(row['family_person_id']);
+      }
+    }
+    return result;
+  }
+
+  Future<void> removeFamilyTreeLinkForPhotoPerson(String personName) async {
+    final database = await this.database;
+    await database.delete(
+      'photo_person_family_links',
+      where: 'person_name = ? COLLATE NOCASE',
+      whereArgs: [personName.trim()],
+    );
+  }
+
+  static Future<void> _createPersonGroupsTables(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS person_groups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        created_at_milliseconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await database.execute('''
+      CREATE UNIQUE INDEX IF NOT EXISTS person_groups_name_index
+      ON person_groups(name COLLATE NOCASE)
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS person_group_people (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id INTEGER NOT NULL,
+        person_name TEXT NOT NULL,
+        created_at_milliseconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await database.execute('''
+      CREATE UNIQUE INDEX IF NOT EXISTS person_group_people_unique_index
+      ON person_group_people(group_id, person_name COLLATE NOCASE)
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS person_group_people_name_index
+      ON person_group_people(person_name COLLATE NOCASE)
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS person_group_photos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id INTEGER NOT NULL,
+        photo_file_path TEXT NOT NULL,
+        created_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(group_id, photo_file_path)
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS person_group_photos_group_index
+      ON person_group_photos(group_id)
+    ''');
+  }
+
+  Future<int> createPersonGroup({
+    required String name,
+    Iterable<String> personNames = const [],
+    Iterable<String> photoFilePaths = const [],
+  }) async {
+    final cleanName = name.trim();
+    if (cleanName.isEmpty) {
+      throw ArgumentError('A group name is required.');
+    }
+
+    final database = await this.database;
+    return database.transaction((transaction) async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final groupId = await transaction.insert('person_groups', {
+        'name': cleanName,
+        'created_at_milliseconds': now,
+      }, conflictAlgorithm: ConflictAlgorithm.abort);
+
+      for (final personName
+          in personNames
+              .map((value) => value.trim())
+              .where((value) => value.isNotEmpty)
+              .toSet()) {
+        await transaction.insert('person_group_people', {
+          'group_id': groupId,
+          'person_name': personName,
+          'created_at_milliseconds': now,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+
+      for (final filePath
+          in photoFilePaths
+              .map((value) => value.trim())
+              .where((value) => value.isNotEmpty)
+              .toSet()) {
+        await transaction.insert('person_group_photos', {
+          'group_id': groupId,
+          'photo_file_path': filePath,
+          'created_at_milliseconds': now,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+
+      return groupId;
+    });
+  }
+
+  Future<List<Map<String, Object?>>> getPersonGroups() async {
+    final database = await this.database;
+    return database.rawQuery('''
+      SELECT
+        g.id,
+        g.name,
+        g.created_at_milliseconds,
+        (SELECT COUNT(*) FROM person_group_people p
+         WHERE p.group_id = g.id) AS people_count,
+        (SELECT COUNT(*) FROM person_group_photos ph
+         WHERE ph.group_id = g.id) AS photo_count
+      FROM person_groups g
+      ORDER BY g.name COLLATE NOCASE
+    ''');
+  }
+
+  Future<List<String>> getPersonNamesForGroup(int groupId) async {
+    final database = await this.database;
+    final rows = await database.query(
+      'person_group_people',
+      columns: ['person_name'],
+      where: 'group_id = ?',
+      whereArgs: [groupId],
+      orderBy: 'person_name COLLATE NOCASE',
+    );
+    return rows
+        .map((row) => row['person_name'] as String? ?? '')
+        .where((value) => value.isNotEmpty)
+        .toList();
+  }
+
+  Future<List<String>> getPhotoPathsForPersonGroup(int groupId) async {
+    final database = await this.database;
+    final rows = await database.query(
+      'person_group_photos',
+      columns: ['photo_file_path'],
+      where: 'group_id = ?',
+      whereArgs: [groupId],
+      orderBy: 'created_at_milliseconds ASC, id ASC',
+    );
+    return rows
+        .map((row) => row['photo_file_path'] as String? ?? '')
+        .where((value) => value.isNotEmpty)
+        .toList();
+  }
+
+  Future<void> replacePersonGroupPeople({
+    required int groupId,
+    required Iterable<String> personNames,
+  }) async {
+    final database = await this.database;
+    await database.transaction((transaction) async {
+      await transaction.delete(
+        'person_group_people',
+        where: 'group_id = ?',
+        whereArgs: [groupId],
+      );
+      final now = DateTime.now().millisecondsSinceEpoch;
+      for (final personName
+          in personNames
+              .map((value) => value.trim())
+              .where((value) => value.isNotEmpty)
+              .toSet()) {
+        await transaction.insert('person_group_people', {
+          'group_id': groupId,
+          'person_name': personName,
+          'created_at_milliseconds': now,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+    });
+  }
+
+  Future<void> replacePersonGroupPhotos({
+    required int groupId,
+    required Iterable<String> photoFilePaths,
+  }) async {
+    final database = await this.database;
+    await database.transaction((transaction) async {
+      await transaction.delete(
+        'person_group_photos',
+        where: 'group_id = ?',
+        whereArgs: [groupId],
+      );
+      final now = DateTime.now().millisecondsSinceEpoch;
+      for (final filePath
+          in photoFilePaths
+              .map((value) => value.trim())
+              .where((value) => value.isNotEmpty)
+              .toSet()) {
+        await transaction.insert('person_group_photos', {
+          'group_id': groupId,
+          'photo_file_path': filePath,
+          'created_at_milliseconds': now,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+    });
+  }
+
+  Future<void> renamePersonGroup({
+    required int groupId,
+    required String name,
+  }) async {
+    final cleanName = name.trim();
+    if (cleanName.isEmpty) {
+      throw ArgumentError('A group name is required.');
+    }
+    final database = await this.database;
+    await database.update(
+      'person_groups',
+      {'name': cleanName},
+      where: 'id = ?',
+      whereArgs: [groupId],
+    );
+  }
+
+  Future<void> deletePersonGroup(int groupId) async {
+    final database = await this.database;
+    await database.transaction((transaction) async {
+      await transaction.delete(
+        'person_group_people',
+        where: 'group_id = ?',
+        whereArgs: [groupId],
+      );
+      await transaction.delete(
+        'person_group_photos',
+        where: 'group_id = ?',
+        whereArgs: [groupId],
+      );
+      await transaction.delete(
+        'person_groups',
+        where: 'id = ?',
+        whereArgs: [groupId],
+      );
+    });
   }
 
   static Future<void> _createManualCoinsTable(Database database) async {
@@ -209,9 +524,7 @@ class DatabaseHelper {
     await database.execute(
       'ALTER TABLE imported_coins ADD COLUMN quantity_owned INTEGER NOT NULL DEFAULT 0',
     );
-    await database.execute(
-      'ALTER TABLE imported_coins ADD COLUMN value REAL',
-    );
+    await database.execute('ALTER TABLE imported_coins ADD COLUMN value REAL');
     await _createStorageLocationsTable(database);
   }
 
@@ -268,21 +581,12 @@ class DatabaseHelper {
     final map = postcard.toMap();
     map.remove('id');
 
-    return database.update(
-      'postcards',
-      map,
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    return database.update('postcards', map, where: 'id = ?', whereArgs: [id]);
   }
 
   Future<int> deletePostcard(int id) async {
     final database = await this.database;
-    return database.delete(
-      'postcards',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    return database.delete('postcards', where: 'id = ?', whereArgs: [id]);
   }
 
   Future<List<Postcard>> getPostcards() async {
@@ -333,14 +637,11 @@ class DatabaseHelper {
       final id = await transaction.insert('valuables', map);
 
       for (var index = 0; index < valuable.imagePaths.length; index++) {
-        await transaction.insert(
-          'valuable_images',
-          {
-            'valuable_id': id,
-            'image_path': valuable.imagePaths[index],
-            'sort_order': index,
-          },
-        );
+        await transaction.insert('valuable_images', {
+          'valuable_id': id,
+          'image_path': valuable.imagePaths[index],
+          'sort_order': index,
+        });
       }
 
       return id;
@@ -372,14 +673,11 @@ class DatabaseHelper {
       );
 
       for (var index = 0; index < valuable.imagePaths.length; index++) {
-        await transaction.insert(
-          'valuable_images',
-          {
-            'valuable_id': id,
-            'image_path': valuable.imagePaths[index],
-            'sort_order': index,
-          },
-        );
+        await transaction.insert('valuable_images', {
+          'valuable_id': id,
+          'image_path': valuable.imagePaths[index],
+          'sort_order': index,
+        });
       }
 
       return changed;
@@ -396,11 +694,7 @@ class DatabaseHelper {
         whereArgs: [id],
       );
 
-      return transaction.delete(
-        'valuables',
-        where: 'id = ?',
-        whereArgs: [id],
-      );
+      return transaction.delete('valuables', where: 'id = ?', whereArgs: [id]);
     });
   }
 
@@ -433,12 +727,7 @@ class DatabaseHelper {
           .where((value) => value.isNotEmpty)
           .toList();
 
-      result.add(
-        Valuable.fromMap(
-          row,
-          imagePaths: imagePaths,
-        ),
-      );
+      result.add(Valuable.fromMap(row, imagePaths: imagePaths));
     }
 
     return result;
@@ -478,14 +767,11 @@ class DatabaseHelper {
       final id = await transaction.insert('antiques', map);
 
       for (var index = 0; index < antique.imagePaths.length; index++) {
-        await transaction.insert(
-          'antique_images',
-          {
-            'antique_id': id,
-            'image_path': antique.imagePaths[index],
-            'sort_order': index,
-          },
-        );
+        await transaction.insert('antique_images', {
+          'antique_id': id,
+          'image_path': antique.imagePaths[index],
+          'sort_order': index,
+        });
       }
 
       return id;
@@ -517,14 +803,11 @@ class DatabaseHelper {
       );
 
       for (var index = 0; index < antique.imagePaths.length; index++) {
-        await transaction.insert(
-          'antique_images',
-          {
-            'antique_id': id,
-            'image_path': antique.imagePaths[index],
-            'sort_order': index,
-          },
-        );
+        await transaction.insert('antique_images', {
+          'antique_id': id,
+          'image_path': antique.imagePaths[index],
+          'sort_order': index,
+        });
       }
 
       return changed;
@@ -541,11 +824,7 @@ class DatabaseHelper {
         whereArgs: [id],
       );
 
-      return transaction.delete(
-        'antiques',
-        where: 'id = ?',
-        whereArgs: [id],
-      );
+      return transaction.delete('antiques', where: 'id = ?', whereArgs: [id]);
     });
   }
 
@@ -578,17 +857,11 @@ class DatabaseHelper {
           .where((value) => value.isNotEmpty)
           .toList();
 
-      result.add(
-        Antique.fromMap(
-          row,
-          imagePaths: imagePaths,
-        ),
-      );
+      result.add(Antique.fromMap(row, imagePaths: imagePaths));
     }
 
     return result;
   }
-
 
   static Future<void> _createPhotoLibraryTables(Database database) async {
     await database.execute('''
@@ -638,14 +911,10 @@ class DatabaseHelper {
 
   Future<void> setSetting(String key, String value) async {
     final database = await this.database;
-    await database.insert(
-      'app_settings',
-      {
-        'setting_key': key,
-        'setting_value': value,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await database.insert('app_settings', {
+      'setting_key': key,
+      'setting_value': value,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<int> replaceIndexedPhotos(List<VaultPhoto> photos) async {
@@ -679,10 +948,7 @@ class DatabaseHelper {
     return rows.map(VaultPhoto.fromMap).toList();
   }
 
-
-  static Future<void> _createPhotoFingerprintTable(
-    Database database,
-  ) async {
+  static Future<void> _createPhotoFingerprintTable(Database database) async {
     await database.execute('''
       CREATE TABLE IF NOT EXISTS photo_fingerprints (
         file_path TEXT PRIMARY KEY,
@@ -716,20 +982,16 @@ class DatabaseHelper {
     required int averageB,
   }) async {
     final database = await this.database;
-    await database.insert(
-      'photo_fingerprints',
-      {
-        'file_path': filePath,
-        'file_size': fileSize,
-        'modified_milliseconds': modifiedMilliseconds,
-        'hash_hex': hashHex,
-        'average_r': averageR,
-        'average_g': averageG,
-        'average_b': averageB,
-        'analyzed_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await database.insert('photo_fingerprints', {
+      'file_path': filePath,
+      'file_size': fileSize,
+      'modified_milliseconds': modifiedMilliseconds,
+      'hash_hex': hashHex,
+      'average_r': averageR,
+      'average_g': averageG,
+      'average_b': averageB,
+      'analyzed_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<void> deletePhotoFingerprintsNotIn(Iterable<String> filePaths) async {
@@ -769,9 +1031,7 @@ class DatabaseHelper {
     ''');
   }
 
-  Future<PhotoCatalogMetadata> getPhotoCatalogMetadata(
-    String filePath,
-  ) async {
+  Future<PhotoCatalogMetadata> getPhotoCatalogMetadata(String filePath) async {
     final database = await this.database;
     final rows = await database.query(
       'photo_catalog_metadata',
@@ -793,9 +1053,7 @@ class DatabaseHelper {
     return rows.map(PhotoCatalogMetadata.fromMap).toList();
   }
 
-  Future<void> savePhotoCatalogMetadata(
-    PhotoCatalogMetadata metadata,
-  ) async {
+  Future<void> savePhotoCatalogMetadata(PhotoCatalogMetadata metadata) async {
     final database = await this.database;
     await database.insert(
       'photo_catalog_metadata',
@@ -803,7 +1061,6 @@ class DatabaseHelper {
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
-
 
   static Future<void> _createPhotoFacesTable(Database database) async {
     await database.execute('''
@@ -820,6 +1077,7 @@ class DatabaseHelper {
         thumbnail_path TEXT NOT NULL DEFAULT '',
         person_name TEXT NOT NULL DEFAULT '',
         confirmed INTEGER NOT NULL DEFAULT 0,
+        review_status TEXT NOT NULL DEFAULT 'pending',
         UNIQUE(photo_file_path, face_index)
       )
     ''');
@@ -873,15 +1131,12 @@ class DatabaseHelper {
     final database = await this.database;
     final placeholders = List.filled(photoPaths.length, '?').join(',');
 
-    final rows = await database.rawQuery(
-      '''
+    final rows = await database.rawQuery('''
       SELECT *
       FROM photo_faces
       WHERE photo_file_path IN ($placeholders)
       ORDER BY photo_file_path, face_index
-      ''',
-      photoPaths,
-    );
+      ''', photoPaths);
 
     return rows.map(DetectedFaceRecord.fromMap).toList();
   }
@@ -898,13 +1153,76 @@ class DatabaseHelper {
     await database.rawUpdate(
       '''
       UPDATE photo_faces
-      SET person_name = ?, confirmed = 1
+      SET person_name = ?, confirmed = 1, review_status = 'identified'
       WHERE id IN ($placeholders)
       ''',
       [personName, ...faceIds],
     );
   }
 
+  Future<void> markFaceUnidentified(int faceId) async {
+    final database = await this.database;
+    await database.update(
+      'photo_faces',
+      {'person_name': '', 'confirmed': 0, 'review_status': 'pending'},
+      where: 'id = ?',
+      whereArgs: [faceId],
+    );
+  }
+
+  Future<void> reassignConfirmedFace({
+    required int faceId,
+    required String newPersonName,
+  }) async {
+    final cleanName = newPersonName.trim();
+    if (cleanName.isEmpty) return;
+
+    final database = await this.database;
+    final faceRows = await database.query(
+      'photo_faces',
+      where: 'id = ?',
+      whereArgs: [faceId],
+      limit: 1,
+    );
+    if (faceRows.isEmpty) return;
+
+    final face = DetectedFaceRecord.fromMap(faceRows.first);
+    final oldName = face.personName.trim();
+
+    await database.update(
+      'photo_faces',
+      {'person_name': cleanName, 'confirmed': 1, 'review_status': 'identified'},
+      where: 'id = ?',
+      whereArgs: [faceId],
+    );
+
+    final metadata = await getPhotoCatalogMetadata(face.photoFilePath);
+    final people = metadata.people.toSet()..add(cleanName);
+
+    if (oldName.isNotEmpty && oldName != cleanName) {
+      final otherOldFaceRows = await database.query(
+        'photo_faces',
+        columns: ['id'],
+        where:
+            'photo_file_path = ? AND confirmed = 1 AND person_name = ? AND id <> ?',
+        whereArgs: [face.photoFilePath, oldName, faceId],
+        limit: 1,
+      );
+      if (otherOldFaceRows.isEmpty) people.remove(oldName);
+    }
+
+    await savePhotoCatalogMetadata(
+      PhotoCatalogMetadata(
+        filePath: metadata.filePath,
+        people: people.toList(),
+        tags: metadata.tags,
+        approximateDate: metadata.approximateDate,
+        location: metadata.location,
+        description: metadata.description,
+        notes: metadata.notes,
+      ),
+    );
+  }
 
   Future<List<DetectedFaceRecord>> getConfirmedFaces() async {
     final database = await this.database;
@@ -922,7 +1240,7 @@ class DatabaseHelper {
     final rows = await database.rawQuery('''
       SELECT COUNT(*) AS total
       FROM photo_faces
-      WHERE confirmed = 0
+      WHERE confirmed = 0 AND review_status <> 'unknown'
     ''');
 
     return _mapInt(rows.first['total']);
@@ -932,11 +1250,51 @@ class DatabaseHelper {
     final database = await this.database;
     final rows = await database.query(
       'photo_faces',
-      where: 'confirmed = 0',
+      where: "confirmed = 0 AND review_status <> 'unknown'",
       orderBy: 'photo_file_path, face_index',
     );
 
     return rows.map(DetectedFaceRecord.fromMap).toList();
+  }
+
+  Future<void> markFaceUnknown(int faceId) async {
+    final database = await this.database;
+    await database.update(
+      'photo_faces',
+      {'person_name': '', 'confirmed': 0, 'review_status': 'unknown'},
+      where: 'id = ?',
+      whereArgs: [faceId],
+    );
+  }
+
+  Future<void> restoreUnknownFace(int faceId) async {
+    final database = await this.database;
+    await database.update(
+      'photo_faces',
+      {'review_status': 'pending'},
+      where: "id = ? AND review_status = 'unknown'",
+      whereArgs: [faceId],
+    );
+  }
+
+  Future<List<DetectedFaceRecord>> getUnknownFaces() async {
+    final database = await this.database;
+    final rows = await database.query(
+      'photo_faces',
+      where: "confirmed = 0 AND review_status = 'unknown'",
+      orderBy: 'photo_file_path, face_index',
+    );
+    return rows.map(DetectedFaceRecord.fromMap).toList();
+  }
+
+  Future<int> getUnknownFaceCount() async {
+    final database = await this.database;
+    final rows = await database.rawQuery('''
+      SELECT COUNT(*) AS total
+      FROM photo_faces
+      WHERE confirmed = 0 AND review_status = 'unknown'
+    ''');
+    return _mapInt(rows.first['total']);
   }
 
   Future<void> renameConfirmedPerson({
@@ -977,10 +1335,7 @@ class DatabaseHelper {
     }
   }
 
-
-  static Future<void> _createPhotoFaceScanStateTable(
-    Database database,
-  ) async {
+  static Future<void> _createPhotoFaceScanStateTable(Database database) async {
     await database.execute('''
       CREATE TABLE IF NOT EXISTS photo_face_scan_state (
         file_path TEXT PRIMARY KEY,
@@ -1000,8 +1355,9 @@ class DatabaseHelper {
 
     return {
       for (final row in rows)
-        row['file_path'] as String? ?? '':
-            _mapInt(row['modified_milliseconds']),
+        row['file_path'] as String? ?? '': _mapInt(
+          row['modified_milliseconds'],
+        ),
     };
   }
 
@@ -1010,17 +1366,12 @@ class DatabaseHelper {
     required int faceCount,
   }) async {
     final database = await this.database;
-    await database.insert(
-      'photo_face_scan_state',
-      {
-        'file_path': photo.filePath,
-        'modified_milliseconds': photo.modifiedMilliseconds,
-        'scanned_at_milliseconds':
-            DateTime.now().millisecondsSinceEpoch,
-        'face_count': faceCount,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await database.insert('photo_face_scan_state', {
+      'file_path': photo.filePath,
+      'modified_milliseconds': photo.modifiedMilliseconds,
+      'scanned_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+      'face_count': faceCount,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   static Future<void> _createPhotoMetadataImportStateTable(
@@ -1044,30 +1395,22 @@ class DatabaseHelper {
 
     return {
       for (final row in rows)
-        row['file_path'] as String? ?? '':
-            _mapInt(row['modified_milliseconds']),
+        row['file_path'] as String? ?? '': _mapInt(
+          row['modified_milliseconds'],
+        ),
     };
   }
 
-  Future<void> markPhotoMetadataImported(
-    VaultPhoto photo,
-  ) async {
+  Future<void> markPhotoMetadataImported(VaultPhoto photo) async {
     final database = await this.database;
-    await database.insert(
-      'photo_metadata_import_state',
-      {
-        'file_path': photo.filePath,
-        'modified_milliseconds': photo.modifiedMilliseconds,
-        'imported_at_milliseconds':
-            DateTime.now().millisecondsSinceEpoch,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await database.insert('photo_metadata_import_state', {
+      'file_path': photo.filePath,
+      'modified_milliseconds': photo.modifiedMilliseconds,
+      'imported_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
-  static Future<void> _createCustomCollectionsTable(
-    Database database,
-  ) async {
+  static Future<void> _createCustomCollectionsTable(Database database) async {
     await database.execute('''
       CREATE TABLE IF NOT EXISTS custom_collections (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1096,8 +1439,11 @@ class DatabaseHelper {
     final database = await this.database;
     final map = collection.toMap();
     map.remove('id');
-    return database.insert('custom_collections', map,
-        conflictAlgorithm: ConflictAlgorithm.abort);
+    return database.insert(
+      'custom_collections',
+      map,
+      conflictAlgorithm: ConflictAlgorithm.abort,
+    );
   }
 
   Future<int> updateCustomCollection(CustomCollection collection) async {
@@ -1106,14 +1452,21 @@ class DatabaseHelper {
     final database = await this.database;
     final map = collection.toMap();
     map.remove('id');
-    return database.update('custom_collections', map,
-        where: 'id = ?', whereArgs: [id]);
+    return database.update(
+      'custom_collections',
+      map,
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 
   Future<int> deleteCustomCollection(int id) async {
     final database = await this.database;
-    return database.delete('custom_collections',
-        where: 'id = ?', whereArgs: [id]);
+    return database.delete(
+      'custom_collections',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 
   static Future<void> _createCustomCollectionItemsTable(
@@ -1149,18 +1502,14 @@ class DatabaseHelper {
     return rows.map(CustomCollectionItem.fromMap).toList();
   }
 
-  Future<int> insertCustomCollectionItem(
-    CustomCollectionItem item,
-  ) async {
+  Future<int> insertCustomCollectionItem(CustomCollectionItem item) async {
     final database = await this.database;
     final map = item.toMap();
     map.remove('id');
     return database.insert('custom_collection_items', map);
   }
 
-  Future<int> updateCustomCollectionItem(
-    CustomCollectionItem item,
-  ) async {
+  Future<int> updateCustomCollectionItem(CustomCollectionItem item) async {
     final id = item.id;
     if (id == null) {
       throw ArgumentError('An item ID is required.');
@@ -1230,15 +1579,27 @@ class DatabaseHelper {
   }
 
   Future<int> updateFamilyPerson(FamilyPerson person) async {
-    if (person.id == null) throw ArgumentError('A family person ID is required.');
+    if (person.id == null) {
+      throw ArgumentError('A family person ID is required.');
+    }
     final database = await this.database;
     final map = person.toMap()..remove('id');
-    return database.update('family_people', map, where: 'id = ?', whereArgs: [person.id]);
+    return database.update(
+      'family_people',
+      map,
+      where: 'id = ?',
+      whereArgs: [person.id],
+    );
   }
 
   Future<FamilyPerson?> getFamilyPerson(int id) async {
     final database = await this.database;
-    final rows = await database.query('family_people', where: 'id = ?', whereArgs: [id], limit: 1);
+    final rows = await database.query(
+      'family_people',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
     return rows.isEmpty ? null : FamilyPerson.fromMap(rows.first);
   }
 
@@ -1247,9 +1608,12 @@ class DatabaseHelper {
     final search = searchText.trim();
     final rows = await database.query(
       'family_people',
-      where: search.isEmpty ? null : 'first_name LIKE ? OR middle_name LIKE ? OR last_name LIKE ? OR birth_name LIKE ? OR birth_place LIKE ? OR death_place LIKE ?',
+      where: search.isEmpty
+          ? null
+          : 'first_name LIKE ? OR middle_name LIKE ? OR last_name LIKE ? OR birth_name LIKE ? OR birth_place LIKE ? OR death_place LIKE ?',
       whereArgs: search.isEmpty ? null : List<Object?>.filled(6, '%$search%'),
-      orderBy: 'last_name COLLATE NOCASE, first_name COLLATE NOCASE, middle_name COLLATE NOCASE',
+      orderBy:
+          'last_name COLLATE NOCASE, first_name COLLATE NOCASE, middle_name COLLATE NOCASE',
     );
     return rows.map(FamilyPerson.fromMap).toList();
   }
@@ -1325,15 +1689,11 @@ class DatabaseHelper {
     }
 
     final database = await this.database;
-    await database.insert(
-      'family_parent_child',
-      {
-        'parent_id': parentId,
-        'child_id': childId,
-        'parent_role': parentRole,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await database.insert('family_parent_child', {
+      'parent_id': parentId,
+      'child_id': childId,
+      'parent_role': parentRole,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<void> addFamilySpouse({
@@ -1348,14 +1708,10 @@ class DatabaseHelper {
     final high = person1Id < person2Id ? person2Id : person1Id;
 
     final database = await this.database;
-    await database.insert(
-      'family_spouses',
-      {
-        'person1_id': low,
-        'person2_id': high,
-      },
-      conflictAlgorithm: ConflictAlgorithm.ignore,
-    );
+    await database.insert('family_spouses', {
+      'person1_id': low,
+      'person2_id': high,
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
   }
 
   Future<List<FamilyPerson>> getFamilyParents(int childId) async {
@@ -1461,10 +1817,7 @@ class DatabaseHelper {
     );
   }
 
-
-  static Future<void> _createFamilyPersonLinksTable(
-    Database database,
-  ) async {
+  static Future<void> _createFamilyPersonLinksTable(Database database) async {
     await database.execute('''
       CREATE TABLE IF NOT EXISTS family_person_links (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1503,16 +1856,12 @@ class DatabaseHelper {
     }
 
     final database = await this.database;
-    await database.insert(
-      'family_person_links',
-      {
-        'person_id': personId,
-        'item_type': cleanType,
-        'item_key': cleanKey,
-        'created_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
-      },
-      conflictAlgorithm: ConflictAlgorithm.ignore,
-    );
+    await database.insert('family_person_links', {
+      'person_id': personId,
+      'item_type': cleanType,
+      'item_key': cleanKey,
+      'created_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
   }
 
   Future<void> unlinkFamilyPersonFromItem({
@@ -1553,16 +1902,12 @@ class DatabaseHelper {
 
       final now = DateTime.now().millisecondsSinceEpoch;
       for (final personId in personIds.toSet()) {
-        await transaction.insert(
-          'family_person_links',
-          {
-            'person_id': personId,
-            'item_type': cleanType,
-            'item_key': cleanKey,
-            'created_at_milliseconds': now,
-          },
-          conflictAlgorithm: ConflictAlgorithm.ignore,
-        );
+        await transaction.insert('family_person_links', {
+          'person_id': personId,
+          'item_type': cleanType,
+          'item_key': cleanKey,
+          'created_at_milliseconds': now,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
     });
   }
@@ -1632,13 +1977,8 @@ class DatabaseHelper {
         .toList();
   }
 
-  Future<List<String>> getPhotoPathsForFamilyPeople(
-    Iterable<int> personIds,
-  ) {
-    return getItemKeysForFamilyPeople(
-      personIds: personIds,
-      itemType: 'photo',
-    );
+  Future<List<String>> getPhotoPathsForFamilyPeople(Iterable<int> personIds) {
+    return getItemKeysForFamilyPeople(personIds: personIds, itemType: 'photo');
   }
 
   Future<void> linkFamilyPersonToPhoto({
@@ -1663,15 +2003,9 @@ class DatabaseHelper {
     );
   }
 
-  Future<List<FamilyPerson>> getFamilyPeopleForPhoto(
-    String photoFilePath,
-  ) {
-    return getFamilyPeopleForItem(
-      itemType: 'photo',
-      itemKey: photoFilePath,
-    );
+  Future<List<FamilyPerson>> getFamilyPeopleForPhoto(String photoFilePath) {
+    return getFamilyPeopleForItem(itemType: 'photo', itemKey: photoFilePath);
   }
-
 
   static Future<void> _createGedcomImportTables(Database database) async {
     await database.execute('''
@@ -1721,15 +2055,11 @@ class DatabaseHelper {
     await database.transaction((transaction) async {
       final batch = transaction.batch();
       for (final entry in links.entries) {
-        batch.insert(
-          'gedcom_person_links',
-          {
-            'import_key': importKey,
-            'gedcom_xref': entry.key,
-            'person_id': entry.value,
-          },
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
+        batch.insert('gedcom_person_links', {
+          'import_key': importKey,
+          'gedcom_xref': entry.key,
+          'person_id': entry.value,
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
       }
       await batch.commit(noResult: true);
     });
@@ -1744,19 +2074,15 @@ class DatabaseHelper {
     required int familyCount,
   }) async {
     final database = await this.database;
-    await database.insert(
-      'gedcom_imports',
-      {
-        'import_key': importKey,
-        'file_name': fileName,
-        'file_size': fileSize,
-        'modified_milliseconds': modifiedMilliseconds,
-        'individual_count': individualCount,
-        'family_count': familyCount,
-        'imported_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await database.insert('gedcom_imports', {
+      'import_key': importKey,
+      'file_name': fileName,
+      'file_size': fileSize,
+      'modified_milliseconds': modifiedMilliseconds,
+      'individual_count': individualCount,
+      'family_count': familyCount,
+      'imported_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<void> importFamilyRelationshipsBatch({
@@ -1802,7 +2128,6 @@ class DatabaseHelper {
     });
   }
 
-
   Future<Map<String, Object?>> getFamilyDiagnostics() async {
     final database = await this.database;
 
@@ -1822,7 +2147,10 @@ class DatabaseHelper {
     if (backupDirectory != null && await backupDirectory.exists()) {
       final files = await backupDirectory
           .list()
-          .where((entity) => entity is File && entity.path.toLowerCase().endsWith('.db'))
+          .where(
+            (entity) =>
+                entity is File && entity.path.toLowerCase().endsWith('.db'),
+          )
           .cast<File>()
           .toList();
 
@@ -1843,21 +2171,21 @@ class DatabaseHelper {
     };
   }
 
-
-
   Future<List<Map<String, Object?>>> inspectDatabaseBackups() async {
     final sourcePath = _databasePath;
     if (sourcePath == null || sourcePath.isEmpty) return const [];
 
-    final backupDirectory =
-        Directory(path.join(path.dirname(sourcePath), 'Backups'));
+    final backupDirectory = Directory(
+      path.join(path.dirname(sourcePath), 'Backups'),
+    );
     if (!await backupDirectory.exists()) return const [];
 
-    final files = await backupDirectory.list()
+    final files = await backupDirectory
+        .list()
         .where((e) => e is File && e.path.toLowerCase().endsWith('.db'))
-        .cast<File>().toList();
-    files.sort((a, b) =>
-        b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+        .cast<File>()
+        .toList();
+    files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
 
     Future<int> countTable(Database db, String table) async {
       final exists = await db.rawQuery(
@@ -1865,8 +2193,7 @@ class DatabaseHelper {
         [table],
       );
       if (exists.isEmpty) return 0;
-      final rows =
-          await db.rawQuery('SELECT COUNT(*) AS total FROM $table');
+      final rows = await db.rawQuery('SELECT COUNT(*) AS total FROM $table');
       return _mapInt(rows.first['total']);
     }
 
@@ -1876,22 +2203,17 @@ class DatabaseHelper {
       try {
         backupDb = await databaseFactory.openDatabase(
           file.path,
-          options: OpenDatabaseOptions(
-            readOnly: true,
-            singleInstance: false,
-          ),
+          options: OpenDatabaseOptions(readOnly: true, singleInstance: false),
         );
         results.add({
           'name': path.basename(file.path),
           'path': file.path,
           'modified': file.lastModifiedSync().millisecondsSinceEpoch,
           'people': await countTable(backupDb, 'family_people'),
-          'parent_child':
-              await countTable(backupDb, 'family_parent_child'),
+          'parent_child': await countTable(backupDb, 'family_parent_child'),
           'spouses': await countTable(backupDb, 'family_spouses'),
           'gedcom_imports': await countTable(backupDb, 'gedcom_imports'),
-          'gedcom_links':
-              await countTable(backupDb, 'gedcom_person_links'),
+          'gedcom_links': await countTable(backupDb, 'gedcom_person_links'),
           'error': '',
         });
       } catch (error) {
@@ -1912,7 +2234,6 @@ class DatabaseHelper {
     }
     return results;
   }
-
 
   Future<Map<String, Object?>> inspectDatabaseFile(String filePath) async {
     Database? checkDb;
@@ -1954,15 +2275,18 @@ class DatabaseHelper {
     }
 
     await db.execute('PRAGMA wal_checkpoint(FULL)');
-    final backupDirectory =
-        Directory(path.join(path.dirname(sourcePath), 'Backups'));
+    final backupDirectory = Directory(
+      path.join(path.dirname(sourcePath), 'Backups'),
+    );
     await backupDirectory.create(recursive: true);
 
     final now = DateTime.now();
     String two(int n) => n.toString().padLeft(2, '0');
-    final stamp = '${now.year}${two(now.month)}${two(now.day)}_'
+    final stamp =
+        '${now.year}${two(now.month)}${two(now.day)}_'
         '${two(now.hour)}${two(now.minute)}${two(now.second)}';
-    final safeLabel = label.trim()
+    final safeLabel = label
+        .trim()
         .replaceAll(RegExp(r'[^A-Za-z0-9_-]+'), '_')
         .replaceAll(RegExp(r'_+'), '_');
 
@@ -1984,10 +2308,7 @@ class DatabaseHelper {
     return {'path': destination, 'verified': verified, 'backup': backup};
   }
 
-
-  Future<String?> createDatabaseBackup({
-    String reason = 'automatic',
-  }) async {
+  Future<String?> createDatabaseBackup({String reason = 'automatic'}) async {
     final database = await this.database;
     final sourcePath = _databasePath;
 
@@ -2005,7 +2326,8 @@ class DatabaseHelper {
 
     final now = DateTime.now();
     String twoDigits(int value) => value.toString().padLeft(2, '0');
-    final timestamp = '${now.year}${twoDigits(now.month)}${twoDigits(now.day)}_'
+    final timestamp =
+        '${now.year}${twoDigits(now.month)}${twoDigits(now.day)}_'
         '${twoDigits(now.hour)}${twoDigits(now.minute)}${twoDigits(now.second)}';
     final safeReason = reason.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
     final backupPath = path.join(
@@ -2041,11 +2363,7 @@ class DatabaseHelper {
 
   Future<int> deleteCoin(int id) async {
     final database = await this.database;
-    return database.delete(
-      'coins',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    return database.delete('coins', where: 'id = ?', whereArgs: [id]);
   }
 
   Future<int> replaceImportedCoins(List<ImportedCoin> coins) async {
@@ -2108,7 +2426,8 @@ class DatabaseHelper {
       'imported_coins',
       where: whereParts.isEmpty ? null : whereParts.join(' AND '),
       whereArgs: whereArguments.isEmpty ? null : whereArguments,
-      orderBy: 'category COLLATE NOCASE, year COLLATE NOCASE, '
+      orderBy:
+          'category COLLATE NOCASE, year COLLATE NOCASE, '
           'mint COLLATE NOCASE, variety COLLATE NOCASE',
     );
 
@@ -2161,37 +2480,34 @@ class DatabaseHelper {
       notes: coin.notes,
     );
 
-    return updateImportedCoin(
-      originalCoin: coin,
-      updatedCoin: updatedCoin,
-    );
+    return updateImportedCoin(originalCoin: coin, updatedCoin: updatedCoin);
   }
 
   Future<int> updateImportedCoin({
-  required ImportedCoin originalCoin,
-  required ImportedCoin updatedCoin,
-}) async {
-  final database = await this.database;
+    required ImportedCoin originalCoin,
+    required ImportedCoin updatedCoin,
+  }) async {
+    final database = await this.database;
 
-  return database.update(
-    'imported_coins',
-    _importedCoinMap(updatedCoin),
-    where: '''
+    return database.update(
+      'imported_coins',
+      _importedCoinMap(updatedCoin),
+      where: '''
       category = ? AND
       series = ? AND
       year = ? AND
       mint = ? AND
       variety = ?
     ''',
-    whereArgs: [
-      originalCoin.category,
-      originalCoin.series,
-      originalCoin.year,
-      originalCoin.mint,
-      originalCoin.variety,
-    ],
-  );
-}
+      whereArgs: [
+        originalCoin.category,
+        originalCoin.series,
+        originalCoin.year,
+        originalCoin.mint,
+        originalCoin.variety,
+      ],
+    );
+  }
 
   Map<String, Object?> _importedCoinMap(ImportedCoin coin) {
     return {
@@ -2224,6 +2540,7 @@ class DatabaseHelper {
       notes: row['notes'] as String? ?? '',
     );
   }
+
   int _mapInt(Object? value) {
     if (value is int) return value;
     if (value is num) return value.toInt();
@@ -2313,7 +2630,6 @@ class DatabaseHelper {
       );
     }).toList();
   }
-
 
   static Future<void> _createSportsCardsTable(Database database) async {
     await database.execute('''
@@ -2416,38 +2732,30 @@ class DatabaseHelper {
       for (final entry in grouped.entries) {
         final first = entry.value.first;
 
-        await transaction.insert(
-          'sports_card_sets',
-          {
-            'source_key': entry.key,
-            'source_name': 'Migrated',
-            'sport': first['sport'] as String? ?? '',
-            'year': first['year'] as String? ?? '',
-            'brand': first['brand'] as String? ?? '',
-            'set_name': first['set_name'] as String? ?? '',
-            'installed_at_milliseconds': now,
-            'refreshed_at_milliseconds': now,
-          },
-          conflictAlgorithm: ConflictAlgorithm.ignore,
-        );
+        await transaction.insert('sports_card_sets', {
+          'source_key': entry.key,
+          'source_name': 'Migrated',
+          'sport': first['sport'] as String? ?? '',
+          'year': first['year'] as String? ?? '',
+          'brand': first['brand'] as String? ?? '',
+          'set_name': first['set_name'] as String? ?? '',
+          'installed_at_milliseconds': now,
+          'refreshed_at_milliseconds': now,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
 
         for (final row in entry.value) {
-          final catalogId = await transaction.insert(
-            'sports_card_catalog',
-            {
-              'source_key': entry.key,
-              'sport': row['sport'] as String? ?? '',
-              'year': row['year'] as String? ?? '',
-              'brand': row['brand'] as String? ?? '',
-              'set_name': row['set_name'] as String? ?? '',
-              'card_number': row['card_number'] as String? ?? '',
-              'player': row['player'] as String? ?? '',
-              'team': row['team'] as String? ?? '',
-              'attributes': row['attributes'] as String? ?? '',
-              'catalog_notes': row['notes'] as String? ?? '',
-            },
-            conflictAlgorithm: ConflictAlgorithm.ignore,
-          );
+          final catalogId = await transaction.insert('sports_card_catalog', {
+            'source_key': entry.key,
+            'sport': row['sport'] as String? ?? '',
+            'year': row['year'] as String? ?? '',
+            'brand': row['brand'] as String? ?? '',
+            'set_name': row['set_name'] as String? ?? '',
+            'card_number': row['card_number'] as String? ?? '',
+            'player': row['player'] as String? ?? '',
+            'team': row['team'] as String? ?? '',
+            'attributes': row['attributes'] as String? ?? '',
+            'catalog_notes': row['notes'] as String? ?? '',
+          }, conflictAlgorithm: ConflictAlgorithm.ignore);
 
           var resolvedId = catalogId;
           if (resolvedId == 0) {
@@ -2462,20 +2770,16 @@ class DatabaseHelper {
             resolvedId = _staticMapInt(match.first['id']);
           }
 
-          await transaction.insert(
-            'sports_card_collection',
-            {
-              'catalog_id': resolvedId,
-              'status': row['status'] as String? ?? 'Untracked',
-              'quantity_owned': _staticMapInt(row['quantity_owned']),
-              'grade': row['grade'] as String? ?? '',
-              'storage_location': row['storage_location'] as String? ?? '',
-              'value': row['value'],
-              'notes': row['notes'] as String? ?? '',
-              'updated_at_milliseconds': now,
-            },
-            conflictAlgorithm: ConflictAlgorithm.ignore,
-          );
+          await transaction.insert('sports_card_collection', {
+            'catalog_id': resolvedId,
+            'status': row['status'] as String? ?? 'Untracked',
+            'quantity_owned': _staticMapInt(row['quantity_owned']),
+            'grade': row['grade'] as String? ?? '',
+            'storage_location': row['storage_location'] as String? ?? '',
+            'value': row['value'],
+            'notes': row['notes'] as String? ?? '',
+            'updated_at_milliseconds': now,
+          }, conflictAlgorithm: ConflictAlgorithm.ignore);
         }
       }
     });
@@ -2491,7 +2795,8 @@ class DatabaseHelper {
     final db = await database;
     return db.query(
       'sports_card_sets',
-      orderBy: 'sport COLLATE NOCASE, year DESC, brand COLLATE NOCASE, set_name COLLATE NOCASE',
+      orderBy:
+          'sport COLLATE NOCASE, year DESC, brand COLLATE NOCASE, set_name COLLATE NOCASE',
     );
   }
 
@@ -2521,20 +2826,16 @@ class DatabaseHelper {
           ? now
           : _staticMapInt(existingSet.first['installed_at_milliseconds']);
 
-      await transaction.insert(
-        'sports_card_sets',
-        {
-          'source_key': sourceKey,
-          'source_name': sourceName,
-          'sport': sport,
-          'year': year,
-          'brand': brand,
-          'set_name': setName,
-          'installed_at_milliseconds': installedAt,
-          'refreshed_at_milliseconds': now,
-        },
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+      await transaction.insert('sports_card_sets', {
+        'source_key': sourceKey,
+        'source_name': sourceName,
+        'sport': sport,
+        'year': year,
+        'brand': brand,
+        'set_name': setName,
+        'installed_at_milliseconds': installedAt,
+        'refreshed_at_milliseconds': now,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
 
       final oldRows = await transaction.rawQuery(
         '''
@@ -2549,8 +2850,7 @@ class DatabaseHelper {
       );
 
       final userByNumber = <String, Map<String, Object?>>{
-        for (final row in oldRows)
-          row['card_number'] as String? ?? '': row,
+        for (final row in oldRows) row['card_number'] as String? ?? '': row,
       };
 
       final oldCatalog = await transaction.query(
@@ -2577,41 +2877,36 @@ class DatabaseHelper {
       var imported = 0;
 
       for (final card in cards) {
-        final catalogId = await transaction.insert(
-          'sports_card_catalog',
-          {
-            'source_key': sourceKey,
-            'sport': sport,
-            'year': year,
-            'brand': brand,
-            'set_name': setName,
-            'card_number': card.cardNumber,
-            'player': card.player,
-            'team': card.team,
-            'attributes': card.attributes,
-            'catalog_notes': card.notes,
-          },
-        );
+        final catalogId = await transaction.insert('sports_card_catalog', {
+          'source_key': sourceKey,
+          'sport': sport,
+          'year': year,
+          'brand': brand,
+          'set_name': setName,
+          'card_number': card.cardNumber,
+          'player': card.player,
+          'team': card.team,
+          'attributes': card.attributes,
+          'catalog_notes': card.notes,
+        });
 
         final previous = userByNumber[card.cardNumber];
 
-        await transaction.insert(
-          'sports_card_collection',
-          {
-            'catalog_id': catalogId,
-            'status': previous?['status'] as String? ?? 'Untracked',
-            'quantity_owned': _staticMapInt(previous?['quantity_owned']),
-            'grade': previous?['grade'] as String? ?? '',
-            'storage_location': previous?['storage_location'] as String? ?? '',
-            'value': previous?['value'],
-            'value_source': previous?['value_source'] as String? ?? '',
-            'value_updated_at_milliseconds':
-                _staticMapInt(previous?['value_updated_at_milliseconds']),
-            'image_path': previous?['image_path'] as String? ?? '',
-            'notes': previous?['notes'] as String? ?? '',
-            'updated_at_milliseconds': now,
-          },
-        );
+        await transaction.insert('sports_card_collection', {
+          'catalog_id': catalogId,
+          'status': previous?['status'] as String? ?? 'Untracked',
+          'quantity_owned': _staticMapInt(previous?['quantity_owned']),
+          'grade': previous?['grade'] as String? ?? '',
+          'storage_location': previous?['storage_location'] as String? ?? '',
+          'value': previous?['value'],
+          'value_source': previous?['value_source'] as String? ?? '',
+          'value_updated_at_milliseconds': _staticMapInt(
+            previous?['value_updated_at_milliseconds'],
+          ),
+          'image_path': previous?['image_path'] as String? ?? '',
+          'notes': previous?['notes'] as String? ?? '',
+          'updated_at_milliseconds': now,
+        });
 
         imported++;
       }
@@ -2644,8 +2939,7 @@ class DatabaseHelper {
       args.addAll(List<Object?>.filled(7, pattern));
     }
 
-    final rows = await db.rawQuery(
-      '''
+    final rows = await db.rawQuery('''
       SELECT c.id, c.sport, c.year, c.brand, c.set_name, c.card_number,
              c.player, c.team, c.attributes,
              COALESCE(u.status, 'Untracked') AS status,
@@ -2662,9 +2956,7 @@ class DatabaseHelper {
       LEFT JOIN sports_card_collection u ON u.catalog_id = c.id
       WHERE ${where.join(' AND ')}
       ORDER BY CAST(c.card_number AS INTEGER), c.card_number COLLATE NOCASE
-      ''',
-      args,
-    );
+      ''', args);
 
     return rows.map(SportsCard.fromMap).toList();
   }
@@ -2683,19 +2975,14 @@ class DatabaseHelper {
       'LOWER(c.card_number) = LOWER(?)',
     ];
 
-    final args = <Object?>[
-      year.trim(),
-      brand.trim(),
-      cardNumber.trim(),
-    ];
+    final args = <Object?>[year.trim(), brand.trim(), cardNumber.trim()];
 
     if (setName.trim().isNotEmpty) {
       where.add('LOWER(c.set_name) = LOWER(?)');
       args.add(setName.trim());
     }
 
-    final rows = await db.rawQuery(
-      '''
+    final rows = await db.rawQuery('''
       SELECT c.id, c.sport, c.year, c.brand, c.set_name, c.card_number,
              c.player, c.team, c.attributes,
              COALESCE(u.status, 'Untracked') AS status,
@@ -2712,9 +2999,7 @@ class DatabaseHelper {
       LEFT JOIN sports_card_collection u ON u.catalog_id = c.id
       WHERE ${where.join(' AND ')}
       LIMIT 2
-      ''',
-      args,
-    );
+      ''', args);
 
     if (rows.length != 1) {
       return null;
@@ -2724,26 +3009,24 @@ class DatabaseHelper {
   }
 
   Future<int> updateSportsCard(SportsCard card) async {
-    if (card.id == null) throw ArgumentError('Sports card catalog ID required.');
+    if (card.id == null) {
+      throw ArgumentError('Sports card catalog ID required.');
+    }
     final db = await database;
 
-    return db.insert(
-      'sports_card_collection',
-      {
-        'catalog_id': card.id,
-        'status': card.status,
-        'quantity_owned': card.quantityOwned,
-        'grade': card.grade,
-        'storage_location': card.storageLocation,
-        'value': card.value,
-        'value_source': card.valueSource,
-        'value_updated_at_milliseconds': card.valueUpdatedAtMilliseconds,
-        'image_path': card.imagePath,
-        'notes': card.notes,
-        'updated_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    return db.insert('sports_card_collection', {
+      'catalog_id': card.id,
+      'status': card.status,
+      'quantity_owned': card.quantityOwned,
+      'grade': card.grade,
+      'storage_location': card.storageLocation,
+      'value': card.value,
+      'value_source': card.valueSource,
+      'value_updated_at_milliseconds': card.valueUpdatedAtMilliseconds,
+      'image_path': card.imagePath,
+      'notes': card.notes,
+      'updated_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<Map<String, int>> getSportsCardSummary({
@@ -2771,10 +3054,7 @@ class DatabaseHelper {
       'untracked': _mapInt(row['untracked']),
     };
   }
-
-
 }
-
 
 class CollectionSummary {
   final int total;
@@ -2819,6 +3099,7 @@ class CategoryProgress {
     return owned / tracked;
   }
 }
+
 class StorageProgress {
   final String storageLocation;
   final int total;

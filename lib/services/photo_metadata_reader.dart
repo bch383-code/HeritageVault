@@ -35,6 +35,7 @@ class PhotoMetadataReader {
 
     String dateTaken = '';
     String description = '';
+    String exifDescription = '';
     String latitude = '';
     String longitude = '';
     String cameraMake = '';
@@ -55,7 +56,7 @@ class PhotoMetadataReader {
         value('Image DateTime'),
       ]);
 
-      description = _firstNonEmpty([
+      exifDescription = _firstNonEmpty([
         value('Image ImageDescription'),
         value('EXIF UserComment'),
       ]);
@@ -93,8 +94,7 @@ class PhotoMetadataReader {
               }
             }
 
-            if (description.isEmpty &&
-                (local == 'description' || local == 'title')) {
+            if (description.isEmpty && local == 'description') {
               for (final li in element.descendants.whereType<XmlElement>()) {
                 if (li.name.local.toLowerCase() == 'li') {
                   final text = li.innerText.trim();
@@ -131,8 +131,71 @@ class PhotoMetadataReader {
           // Ignore malformed or unsupported XMP.
         }
       }
+
+      if (description.isEmpty) {
+        description = exifDescription;
+      }
     } catch (_) {
       // Metadata problems must never prevent the photo from opening.
+      description = exifDescription;
+    }
+
+    // ExifTool is also used by Heirloom Atlas to write metadata. When it is
+    // available, read back the exact XMP fields we write so verification is
+    // symmetrical and does not depend on raw XMP packet parsing.
+    try {
+      final exifTool = await _findExifTool();
+      if (exifTool != null) {
+        final result = await Process.run(exifTool, [
+          '-j',
+          '-XMP-dc:Description',
+          '-XMP-dc:Subject',
+          '-XMP-iptcCore:Location',
+          filePath,
+        ], runInShell: false);
+
+        if (result.exitCode == 0) {
+          final decoded = jsonDecode(result.stdout.toString());
+          if (decoded is List && decoded.isNotEmpty && decoded.first is Map) {
+            final row = Map<String, dynamic>.from(decoded.first as Map);
+
+            final xmpDescription =
+                (row['Description'] ?? row['XMP-dc:Description'] ?? '')
+                    .toString()
+                    .trim();
+            if (xmpDescription.isNotEmpty) {
+              description = xmpDescription;
+            }
+
+            final subject = row['Subject'] ?? row['XMP-dc:Subject'];
+            if (subject is List) {
+              for (final item in subject) {
+                final value = item.toString().trim();
+                if (value.isNotEmpty) tags.add(value);
+              }
+            } else if (subject != null) {
+              final rawSubject = subject.toString().trim();
+              if (rawSubject.isNotEmpty) {
+                for (final item in rawSubject.split(',')) {
+                  final value = item.trim();
+                  if (value.isNotEmpty) tags.add(value);
+                }
+              }
+            }
+
+            final xmpLocation =
+                (row['Location'] ?? row['XMP-iptcCore:Location'] ?? '')
+                    .toString()
+                    .trim();
+            if (xmpLocation.isNotEmpty) {
+              technical['XMP Location'] = xmpLocation;
+            }
+          }
+        }
+      }
+    } catch (_) {
+      // ExifTool read-back is optional. Existing EXIF/XMP parsing remains
+      // the fallback for normal metadata display.
     }
 
     return PhotoMetadata(
@@ -146,6 +209,29 @@ class PhotoMetadataReader {
       rating: rating,
       technical: technical,
     );
+  }
+
+  static Future<String?> _findExifTool() async {
+    const directWindowsPath = r'C:\ExifTool\exiftool.exe';
+
+    final directFile = File(directWindowsPath);
+    if (await directFile.exists()) {
+      try {
+        final result = await Process.run(directWindowsPath, [
+          '-ver',
+        ], runInShell: false);
+        if (result.exitCode == 0) return directWindowsPath;
+      } catch (_) {}
+    }
+
+    for (final candidate in ['exiftool.exe', 'exiftool']) {
+      try {
+        final result = await Process.run(candidate, ['-ver'], runInShell: true);
+        if (result.exitCode == 0) return candidate;
+      } catch (_) {}
+    }
+
+    return null;
   }
 
   static String _firstNonEmpty(List<String> values) {
