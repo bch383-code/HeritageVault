@@ -200,6 +200,103 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
     return selectedIds;
   }
 
+  Future<void> _chooseGenerations() async {
+    final bookId = widget.book.id;
+    if (bookId == null) return;
+
+    final allPeople = await _databaseHelper.getFamilyPeople();
+    if (!mounted) return;
+
+    if (allPeople.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Add people to the Family Tree before choosing generations.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final result = await showDialog<_GenerationSelectionResult>(
+      context: context,
+      builder: (_) => _GenerationPickerDialog(people: allPeople),
+    );
+
+    if (result == null) return;
+
+    setState(() => _loadingPeople = true);
+
+    final selectedIds = await _buildGenerationPersonIds(
+      rootPersonId: result.rootPersonId,
+      direction: result.direction,
+      generationCount: result.generationCount,
+    );
+
+    await _repository.replaceBookPeople(bookId, selectedIds);
+    await _loadSelectedPeople();
+
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '${selectedIds.length} '
+          '${selectedIds.length == 1 ? 'person' : 'people'} added from '
+          '${result.generationCount} '
+          '${result.generationCount == 1 ? 'generation' : 'generations'}.',
+        ),
+      ),
+    );
+  }
+
+  Future<Set<int>> _buildGenerationPersonIds({
+    required int rootPersonId,
+    required _GenerationDirection direction,
+    required int generationCount,
+  }) async {
+    final selectedIds = <int>{rootPersonId};
+
+    // The starting person is generation 1, so a 3-generation book follows
+    // relationships two steps away from that person.
+    final relationshipDepth = generationCount - 1;
+    if (relationshipDepth <= 0) return selectedIds;
+
+    Future<void> walkAncestors(int personId, int depth) async {
+      if (depth >= relationshipDepth) return;
+
+      final parents = await _databaseHelper.getFamilyParents(personId);
+      for (final parent in parents) {
+        final parentId = parent.id;
+        if (parentId == null) continue;
+
+        selectedIds.add(parentId);
+        await walkAncestors(parentId, depth + 1);
+      }
+    }
+
+    Future<void> walkDescendants(int personId, int depth) async {
+      if (depth >= relationshipDepth) return;
+
+      final children = await _databaseHelper.getFamilyChildren(personId);
+      for (final child in children) {
+        final childId = child.id;
+        if (childId == null) continue;
+
+        selectedIds.add(childId);
+        await walkDescendants(childId, depth + 1);
+      }
+    }
+
+    if (direction == _GenerationDirection.ancestors) {
+      await walkAncestors(rootPersonId, 0);
+    } else {
+      await walkDescendants(rootPersonId, 0);
+    }
+
+    return selectedIds;
+  }
+
   Future<void> _loadSavedBookPhotos() async {
     final bookId = widget.book.id;
     if (bookId == null) return;
@@ -1012,33 +1109,42 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
                   onTap: switch (book.scope) {
                     AtlasBookScope.people => _choosePeople,
                     AtlasBookScope.branch => _chooseFamilyBranch,
-                    AtlasBookScope.generations => null,
+                    AtlasBookScope.generations => _chooseGenerations,
                   },
                   actionLabel: switch (book.scope) {
                     AtlasBookScope.people => 'Choose People',
                     AtlasBookScope.branch => 'Choose Branch',
-                    AtlasBookScope.generations => null,
+                    AtlasBookScope.generations => 'Choose Generations',
                   },
                 ),
-                if (book.scope != AtlasBookScope.generations) ...[
-                  const SizedBox(height: 12),
-                  _SelectedPeoplePanel(
-                    loading: _loadingPeople,
-                    people: _selectedPeople,
-                    onChoosePeople: book.scope == AtlasBookScope.branch
-                        ? _chooseFamilyBranch
-                        : _choosePeople,
-                    emptyMessage: book.scope == AtlasBookScope.branch
-                        ? 'No family branch has been selected yet.'
-                        : 'No people have been added to this book yet.',
-                    actionLabel: book.scope == AtlasBookScope.branch
-                        ? 'Choose Branch'
-                        : 'Choose People',
-                    editLabel: book.scope == AtlasBookScope.branch
-                        ? 'Change Branch'
-                        : 'Edit',
-                  ),
-                ],
+                const SizedBox(height: 12),
+                _SelectedPeoplePanel(
+                  loading: _loadingPeople,
+                  people: _selectedPeople,
+                  onChoosePeople: switch (book.scope) {
+                    AtlasBookScope.people => _choosePeople,
+                    AtlasBookScope.branch => _chooseFamilyBranch,
+                    AtlasBookScope.generations => _chooseGenerations,
+                  },
+                  emptyMessage: switch (book.scope) {
+                    AtlasBookScope.people =>
+                      'No people have been added to this book yet.',
+                    AtlasBookScope.branch =>
+                      'No family branch has been selected yet.',
+                    AtlasBookScope.generations =>
+                      'No generations have been selected yet.',
+                  },
+                  actionLabel: switch (book.scope) {
+                    AtlasBookScope.people => 'Choose People',
+                    AtlasBookScope.branch => 'Choose Branch',
+                    AtlasBookScope.generations => 'Choose Generations',
+                  },
+                  editLabel: switch (book.scope) {
+                    AtlasBookScope.people => 'Edit',
+                    AtlasBookScope.branch => 'Change Branch',
+                    AtlasBookScope.generations => 'Change Generations',
+                  },
+                ),
                 const SizedBox(height: 12),
                 _WorkspaceStep(
                   number: '2',
@@ -1131,6 +1237,353 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
         return 'Choose the family branch this book will follow.';
       case AtlasBookScope.generations:
         return 'Choose which generations you want represented in the book.';
+    }
+  }
+}
+
+enum _GenerationDirection { ancestors, descendants }
+
+extension on _GenerationDirection {
+  String get label {
+    switch (this) {
+      case _GenerationDirection.ancestors:
+        return 'Ancestor generations';
+      case _GenerationDirection.descendants:
+        return 'Descendant generations';
+    }
+  }
+
+  String get description {
+    switch (this) {
+      case _GenerationDirection.ancestors:
+        return 'Start with this person and move backward through parents, grandparents, and earlier generations.';
+      case _GenerationDirection.descendants:
+        return 'Start with this person and move forward through children, grandchildren, and later generations.';
+    }
+  }
+
+  IconData get icon {
+    switch (this) {
+      case _GenerationDirection.ancestors:
+        return Icons.arrow_upward;
+      case _GenerationDirection.descendants:
+        return Icons.arrow_downward;
+    }
+  }
+}
+
+class _GenerationSelectionResult {
+  final int rootPersonId;
+  final _GenerationDirection direction;
+  final int generationCount;
+
+  const _GenerationSelectionResult({
+    required this.rootPersonId,
+    required this.direction,
+    required this.generationCount,
+  });
+}
+
+class _GenerationPickerDialog extends StatefulWidget {
+  final List<FamilyPerson> people;
+
+  const _GenerationPickerDialog({required this.people});
+
+  @override
+  State<_GenerationPickerDialog> createState() =>
+      _GenerationPickerDialogState();
+}
+
+class _GenerationPickerDialogState extends State<_GenerationPickerDialog> {
+  int? _rootPersonId;
+  _GenerationDirection _direction = _GenerationDirection.ancestors;
+  int _generationCount = 3;
+  String _search = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final query = _search.trim().toLowerCase();
+    final visiblePeople =
+        widget.people.where((person) {
+          if (query.isEmpty) return true;
+          return [
+            person.displayName,
+            person.lifeSpan,
+            person.birthPlace,
+          ].join(' ').toLowerCase().contains(query);
+        }).toList()..sort(
+          (a, b) => a.displayName.toLowerCase().compareTo(
+            b.displayName.toLowerCase(),
+          ),
+        );
+
+    FamilyPerson? selectedRoot;
+    for (final person in widget.people) {
+      if (person.id == _rootPersonId) {
+        selectedRoot = person;
+        break;
+      }
+    }
+
+    return Dialog(
+      child: SizedBox(
+        width: 900,
+        height: 760,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(22, 18, 12, 12),
+              child: Row(
+                children: [
+                  const Icon(Icons.layers_outlined, size: 30),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Choose Generations',
+                          style: Theme.of(context).textTheme.titleLarge
+                              ?.copyWith(fontWeight: FontWeight.w900),
+                        ),
+                        const SizedBox(height: 3),
+                        const Text(
+                          'Choose a starting person, a direction, and how many generations should be included.',
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Close',
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    flex: 5,
+                    child: Column(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: TextField(
+                            onChanged: (value) =>
+                                setState(() => _search = value),
+                            decoration: const InputDecoration(
+                              labelText: 'Choose the starting person',
+                              hintText: 'Search your Family Tree...',
+                              prefixIcon: Icon(Icons.search),
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: visiblePeople.isEmpty
+                              ? const Center(
+                                  child: Text('No matching people found.'),
+                                )
+                              : ListView.separated(
+                                  itemCount: visiblePeople.length,
+                                  separatorBuilder: (_, _) =>
+                                      const Divider(height: 1),
+                                  itemBuilder: (context, index) {
+                                    final person = visiblePeople[index];
+                                    final personId = person.id;
+                                    if (personId == null) {
+                                      return const SizedBox.shrink();
+                                    }
+
+                                    final selected = personId == _rootPersonId;
+                                    final path = person.profilePhotoPath;
+                                    final hasPhoto =
+                                        path.isNotEmpty &&
+                                        File(path).existsSync();
+
+                                    return ListTile(
+                                      selected: selected,
+                                      leading: CircleAvatar(
+                                        backgroundImage: hasPhoto
+                                            ? FileImage(File(path))
+                                            : null,
+                                        child: hasPhoto
+                                            ? null
+                                            : const Icon(Icons.person_outline),
+                                      ),
+                                      title: Text(
+                                        person.displayName,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      subtitle: Text(
+                                        [
+                                          if (person.lifeSpan.isNotEmpty)
+                                            person.lifeSpan,
+                                          if (person.birthPlace.isNotEmpty)
+                                            person.birthPlace,
+                                        ].join(' • '),
+                                      ),
+                                      trailing: selected
+                                          ? const Icon(Icons.check_circle)
+                                          : null,
+                                      onTap: () => setState(
+                                        () => _rootPersonId = personId,
+                                      ),
+                                    );
+                                  },
+                                ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const VerticalDivider(width: 1),
+                  Expanded(
+                    flex: 4,
+                    child: ListView(
+                      padding: const EdgeInsets.all(20),
+                      children: [
+                        Text(
+                          'Generation Settings',
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w900),
+                        ),
+                        const SizedBox(height: 14),
+                        if (selectedRoot == null)
+                          const Text(
+                            'Select a starting person from the Family Tree.',
+                          )
+                        else
+                          Card(
+                            child: ListTile(
+                              leading: const Icon(
+                                Icons.person_pin_circle_outlined,
+                              ),
+                              title: Text(selectedRoot.displayName),
+                              subtitle: const Text('Generation 1'),
+                            ),
+                          ),
+                        const SizedBox(height: 20),
+                        const Text(
+                          'Direction',
+                          style: TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                        const SizedBox(height: 8),
+                        ..._GenerationDirection.values.map(
+                          (direction) => ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(direction.icon),
+                            title: Text(direction.label),
+                            subtitle: Text(direction.description),
+                            trailing: Icon(
+                              _direction == direction
+                                  ? Icons.radio_button_checked
+                                  : Icons.radio_button_unchecked,
+                            ),
+                            onTap: () => setState(() => _direction = direction),
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                        Row(
+                          children: [
+                            const Expanded(
+                              child: Text(
+                                'Generations in the book',
+                                style: TextStyle(fontWeight: FontWeight.w800),
+                              ),
+                            ),
+                            Text(
+                              '$_generationCount',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ],
+                        ),
+                        Slider(
+                          value: _generationCount.toDouble(),
+                          min: 1,
+                          max: 5,
+                          divisions: 4,
+                          label: '$_generationCount',
+                          onChanged: (value) =>
+                              setState(() => _generationCount = value.round()),
+                        ),
+                        Text(_generationExplanation()),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text('The starting person counts as generation 1.'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancel'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.icon(
+                    onPressed: _rootPersonId == null
+                        ? null
+                        : () => Navigator.pop(
+                            context,
+                            _GenerationSelectionResult(
+                              rootPersonId: _rootPersonId!,
+                              direction: _direction,
+                              generationCount: _generationCount,
+                            ),
+                          ),
+                    icon: const Icon(Icons.layers_outlined),
+                    label: const Text('Use These Generations'),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _generationExplanation() {
+    if (_generationCount == 1) {
+      return 'Generation 1: the starting person only.';
+    }
+
+    if (_direction == _GenerationDirection.ancestors) {
+      switch (_generationCount) {
+        case 2:
+          return 'Generation 1 + parents.';
+        case 3:
+          return 'Generation 1 + parents + grandparents.';
+        case 4:
+          return 'Generation 1 through great-grandparents.';
+        default:
+          return 'Generation 1 through 2× great-grandparents.';
+      }
+    }
+
+    switch (_generationCount) {
+      case 2:
+        return 'Generation 1 + children.';
+      case 3:
+        return 'Generation 1 + children + grandchildren.';
+      case 4:
+        return 'Generation 1 through great-grandchildren.';
+      default:
+        return 'Generation 1 through great-great-grandchildren.';
     }
   }
 }
