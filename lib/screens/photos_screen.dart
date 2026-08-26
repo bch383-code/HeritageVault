@@ -618,6 +618,128 @@ class _PhotosScreenState extends State<PhotosScreen> {
                       (a, b) => a.toLowerCase().compareTo(b.toLowerCase()),
                     );
 
+              Future<void> addCatalogPerson() async {
+                var typedName = '';
+
+                final newName = await showDialog<String>(
+                  context: dialogContext,
+                  builder: (nameDialogContext) => StatefulBuilder(
+                    builder: (context, setNameState) {
+                      final query = typedName.trim().toLowerCase();
+                      final existingPeople = metadata.people.toSet();
+                      final suggestions = knownNames
+                          .where(
+                            (name) =>
+                                !existingPeople.contains(name) &&
+                                (query.isEmpty ||
+                                    name.toLowerCase().contains(query)),
+                          )
+                          .take(12)
+                          .toList();
+
+                      void submit([String? selected]) {
+                        final clean = (selected ?? typedName).trim();
+                        if (clean.isEmpty || existingPeople.contains(clean)) {
+                          return;
+                        }
+                        Navigator.pop(nameDialogContext, clean);
+                      }
+
+                      return AlertDialog(
+                        title: const Text('Add Person'),
+                        content: SizedBox(
+                          width: 500,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Choose a Known Person or type a new name.',
+                              ),
+                              const SizedBox(height: 12),
+                              TextField(
+                                autofocus: true,
+                                textInputAction: TextInputAction.done,
+                                decoration: const InputDecoration(
+                                  labelText: 'Person',
+                                  hintText: 'Search or enter a name',
+                                  prefixIcon: Icon(Icons.person_add_alt_1),
+                                  border: OutlineInputBorder(),
+                                ),
+                                onChanged: (value) {
+                                  typedName = value;
+                                  setNameState(() {});
+                                },
+                                onSubmitted: (_) => submit(),
+                              ),
+                              if (suggestions.isNotEmpty) ...[
+                                const SizedBox(height: 12),
+                                Text(
+                                  'Known People',
+                                  style: Theme.of(context).textTheme.labelLarge
+                                      ?.copyWith(fontWeight: FontWeight.w800),
+                                ),
+                                const SizedBox(height: 6),
+                                Wrap(
+                                  spacing: 6,
+                                  runSpacing: 6,
+                                  children: suggestions
+                                      .map(
+                                        (name) => ActionChip(
+                                          avatar: const Icon(
+                                            Icons.person,
+                                            size: 16,
+                                          ),
+                                          label: Text(name),
+                                          onPressed: () => submit(name),
+                                        ),
+                                      )
+                                      .toList(),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(nameDialogContext),
+                            child: const Text('Cancel'),
+                          ),
+                          FilledButton.icon(
+                            onPressed: () => submit(),
+                            icon: const Icon(Icons.add),
+                            label: const Text('Add Person'),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                );
+
+                if (newName == null || newName.trim().isEmpty) return;
+
+                final updatedPeople =
+                    <String>{...metadata.people, newName.trim()}.toList()..sort(
+                      (a, b) => a.toLowerCase().compareTo(b.toLowerCase()),
+                    );
+
+                await _databaseHelper.savePhotoCatalogMetadata(
+                  PhotoCatalogMetadata(
+                    filePath: metadata.filePath,
+                    people: updatedPeople,
+                    tags: metadata.tags,
+                    approximateDate: metadata.approximateDate,
+                    location: metadata.location,
+                    description: metadata.description,
+                    notes: metadata.notes,
+                  ),
+                );
+
+                if (!mounted || !dialogContext.mounted) return;
+                setState(() {});
+                setDialogState(() {});
+              }
+
               Future<void> changeFaceName(DetectedFaceRecord face) async {
                 final faceId = face.id;
                 if (faceId == null) return;
@@ -866,17 +988,39 @@ class _PhotosScreenState extends State<PhotosScreen> {
                                   : ListView(
                                       padding: const EdgeInsets.all(20),
                                       children: [
-                                        if (metadata.people.isNotEmpty) ...[
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                'People',
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .titleMedium
+                                                    ?.copyWith(
+                                                      fontWeight:
+                                                          FontWeight.w900,
+                                                    ),
+                                              ),
+                                            ),
+                                            TextButton.icon(
+                                              onPressed: addCatalogPerson,
+                                              icon: const Icon(
+                                                Icons.person_add_alt_1,
+                                                size: 18,
+                                              ),
+                                              label: const Text('Add Person'),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 8),
+                                        if (metadata.people.isEmpty)
                                           Text(
-                                            'People',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .titleMedium
-                                                ?.copyWith(
-                                                  fontWeight: FontWeight.w900,
-                                                ),
-                                          ),
-                                          const SizedBox(height: 8),
+                                            'No people added yet.',
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.bodySmall,
+                                          )
+                                        else
                                           Wrap(
                                             spacing: 6,
                                             runSpacing: 6,
@@ -887,8 +1031,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                                                 )
                                                 .toList(),
                                           ),
-                                          const SizedBox(height: 18),
-                                        ],
+                                        const SizedBox(height: 18),
                                         Text(
                                           'Faces in this Photo',
                                           style: Theme.of(context)
@@ -2732,7 +2875,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
         icon: Icons.people_outline,
         title:
             'Identify people in $_missingPeopleCount ${_missingPeopleCount == 1 ? 'photo' : 'photos'}',
-        filter: 'No People',
+        action: _startGuidedPeopleCleanup,
       );
     }
     if (_missingDateCount > 0) {
@@ -2781,6 +2924,383 @@ class _PhotosScreenState extends State<PhotosScreen> {
       icon: Icons.check_circle_outline,
       title: 'Your collection is caught up',
     );
+  }
+
+  Future<void> _startGuidedPeopleCleanup() async {
+    final queue = _photos.where((photo) {
+      final metadata = _catalogByPath[photo.filePath];
+      return metadata == null || metadata.people.isEmpty;
+    }).toList();
+
+    if (queue.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Every photo already has people identified.'),
+        ),
+      );
+      return;
+    }
+
+    final confirmedFaces = await _databaseHelper.getConfirmedFaces();
+    if (!mounted) return;
+
+    final knownNames =
+        confirmedFaces
+            .map((face) => face.personName.trim())
+            .where((name) => name.isNotEmpty)
+            .toSet()
+            .toList()
+          ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+    var index = 0;
+    var savedCount = 0;
+    var skippedCount = 0;
+    final selectedByPhoto = <String, Set<String>>{};
+    final typedByPhoto = <String, String>{};
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final photo = queue[index];
+          final existing =
+              _catalogByPath[photo.filePath] ??
+              PhotoCatalogMetadata(filePath: photo.filePath);
+          final file = File(photo.filePath);
+          final selectedNames = selectedByPhoto.putIfAbsent(
+            photo.filePath,
+            () => <String>{},
+          );
+          final nameController = TextEditingController(
+            text: typedByPhoto[photo.filePath] ?? '',
+          );
+          nameController.selection = TextSelection.collapsed(
+            offset: nameController.text.length,
+          );
+
+          Future<void> finish() async {
+            Navigator.pop(dialogContext);
+          }
+
+          Future<void> advance({required bool skipped}) async {
+            if (skipped) skippedCount++;
+            if (index >= queue.length - 1) {
+              await finish();
+              return;
+            }
+            setDialogState(() => index++);
+          }
+
+          void addTypedName() {
+            final clean = nameController.text.trim();
+            if (clean.isEmpty) return;
+            selectedNames.add(clean);
+            nameController.clear();
+            typedByPhoto[photo.filePath] = '';
+            setDialogState(() {});
+          }
+
+          Future<void> saveAndNext() async {
+            addTypedName();
+
+            if (selectedNames.isEmpty) {
+              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                const SnackBar(
+                  content: Text(
+                    'Choose or enter at least one person, or choose Skip for now.',
+                  ),
+                ),
+              );
+              return;
+            }
+
+            final updatedPeople =
+                <String>{
+                    ...existing.people
+                        .map((name) => name.trim())
+                        .where((name) => name.isNotEmpty),
+                    ...selectedNames,
+                  }.toList()
+                  ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+            final updated = PhotoCatalogMetadata(
+              filePath: existing.filePath,
+              people: updatedPeople,
+              tags: existing.tags,
+              approximateDate: existing.approximateDate,
+              location: existing.location,
+              description: existing.description,
+              notes: existing.notes,
+            );
+
+            await _databaseHelper.savePhotoCatalogMetadata(updated);
+            _catalogByPath[photo.filePath] = updated;
+            savedCount++;
+
+            if (!mounted || !dialogContext.mounted) return;
+            if (index >= queue.length - 1) {
+              await finish();
+              return;
+            }
+
+            setState(() {});
+            setDialogState(() => index++);
+          }
+
+          final query = nameController.text.trim().toLowerCase();
+          final suggestions = knownNames
+              .where(
+                (name) =>
+                    !selectedNames.contains(name) &&
+                    (query.isEmpty || name.toLowerCase().contains(query)),
+              )
+              .take(12)
+              .toList();
+
+          return Dialog(
+            child: SizedBox(
+              width: 1120,
+              height: 760,
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 8, 12),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.people_outline),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Guided Cleanup • Identify People',
+                                style: Theme.of(context).textTheme.titleLarge
+                                    ?.copyWith(fontWeight: FontWeight.w900),
+                              ),
+                              Text(
+                                '${index + 1} of ${queue.length} • '
+                                '$savedCount saved • $skippedCount skipped',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Done for now',
+                          onPressed: finish,
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Expanded(
+                          flex: 3,
+                          child: Container(
+                            padding: const EdgeInsets.all(20),
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.surfaceContainerHighest,
+                            child: file.existsSync()
+                                ? Image.file(
+                                    file,
+                                    fit: BoxFit.contain,
+                                    cacheWidth: 1400,
+                                  )
+                                : const Center(
+                                    child: Icon(
+                                      Icons.image_not_supported_outlined,
+                                      size: 60,
+                                    ),
+                                  ),
+                          ),
+                        ),
+                        const VerticalDivider(width: 1),
+                        SizedBox(
+                          width: 410,
+                          child: Padding(
+                            padding: const EdgeInsets.all(20),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  photo.fileName,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.titleMedium
+                                      ?.copyWith(fontWeight: FontWeight.w900),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  photo.relativeFolder.isEmpty
+                                      ? 'Pictures'
+                                      : photo.relativeFolder,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                                const SizedBox(height: 22),
+                                Text(
+                                  'Who is in this photo?',
+                                  style: Theme.of(context).textTheme.titleMedium
+                                      ?.copyWith(fontWeight: FontWeight.w900),
+                                ),
+                                const SizedBox(height: 8),
+                                const Text(
+                                  'Choose known people below or type a new name. '
+                                  'You can add more than one person.',
+                                ),
+                                const SizedBox(height: 14),
+                                TextField(
+                                  controller: nameController,
+                                  textInputAction: TextInputAction.done,
+                                  onChanged: (value) {
+                                    typedByPhoto[photo.filePath] = value;
+                                    setDialogState(() {});
+                                  },
+                                  onSubmitted: (_) => addTypedName(),
+                                  decoration: InputDecoration(
+                                    labelText: 'Person',
+                                    hintText: 'Type a name',
+                                    prefixIcon: const Icon(
+                                      Icons.person_add_alt_1,
+                                    ),
+                                    suffixIcon: IconButton(
+                                      tooltip: 'Add person',
+                                      onPressed: addTypedName,
+                                      icon: const Icon(Icons.add),
+                                    ),
+                                    border: const OutlineInputBorder(),
+                                  ),
+                                ),
+                                if (suggestions.isNotEmpty) ...[
+                                  const SizedBox(height: 10),
+                                  Text(
+                                    'Known People',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelLarge
+                                        ?.copyWith(fontWeight: FontWeight.w800),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Wrap(
+                                    spacing: 6,
+                                    runSpacing: 6,
+                                    children: suggestions
+                                        .map(
+                                          (name) => ActionChip(
+                                            avatar: const Icon(
+                                              Icons.person,
+                                              size: 16,
+                                            ),
+                                            label: Text(name),
+                                            onPressed: () {
+                                              selectedNames.add(name);
+                                              setDialogState(() {});
+                                            },
+                                          ),
+                                        )
+                                        .toList(),
+                                  ),
+                                ],
+                                if (selectedNames.isNotEmpty) ...[
+                                  const SizedBox(height: 14),
+                                  Text(
+                                    'Selected',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelLarge
+                                        ?.copyWith(fontWeight: FontWeight.w800),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Wrap(
+                                    spacing: 6,
+                                    runSpacing: 6,
+                                    children: selectedNames
+                                        .map(
+                                          (name) => InputChip(
+                                            label: Text(name),
+                                            onDeleted: () {
+                                              selectedNames.remove(name);
+                                              setDialogState(() {});
+                                            },
+                                          ),
+                                        )
+                                        .toList(),
+                                  ),
+                                ],
+                                const Spacer(),
+                                const Divider(),
+                                const SizedBox(height: 8),
+                                Row(
+                                  children: [
+                                    TextButton.icon(
+                                      onPressed: () => advance(skipped: true),
+                                      icon: const Icon(Icons.skip_next),
+                                      label: const Text('Skip'),
+                                    ),
+                                    const Spacer(),
+                                    FilledButton.icon(
+                                      onPressed: saveAndNext,
+                                      icon: const Icon(Icons.save_outlined),
+                                      label: Text(
+                                        index == queue.length - 1
+                                            ? 'Save & Finish'
+                                            : 'Save & Next',
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                Center(
+                                  child: TextButton(
+                                    onPressed: finish,
+                                    child: const Text('Done for now'),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+
+    if (!mounted) return;
+
+    final catalogRecords = await _databaseHelper.getAllPhotoCatalogMetadata();
+    if (!mounted) return;
+
+    setState(() {
+      _catalogByPath = {
+        for (final record in catalogRecords) record.filePath: record,
+      };
+      _quickFilters.remove('No People');
+      _currentFolder = '';
+    });
+
+    if (savedCount > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Guided cleanup identified people in $savedCount '
+            '${savedCount == 1 ? 'photo' : 'photos'}.',
+          ),
+        ),
+      );
+    }
   }
 
   Future<void> _startGuidedDateCleanup() async {
@@ -3193,6 +3713,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                   complete: _identifiedPeoplePhotoCount,
                   missing: _missingPeopleCount,
                   filter: 'No People',
+                  action: _startGuidedPeopleCleanup,
                 ),
                 metric(
                   icon: Icons.event_outlined,
