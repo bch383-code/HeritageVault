@@ -40,6 +40,9 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
   List<Map<String, Object?>> _personGroups = const [];
   String _selectedGroupFilter = 'All';
   Map<String, FamilyPerson> _familyTreeLinks = <String, FamilyPerson>{};
+  Map<String, int> _likelyCounts = <String, int>{};
+  Map<String, int> _possibleCounts = <String, int>{};
+  int _unidentifiedCount = 0;
 
   @override
   void initState() {
@@ -61,6 +64,7 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
         _databaseHelper.getAllPhotoCatalogMetadata(),
         _databaseHelper.getPersonGroups(),
         _databaseHelper.getPhotoPersonFamilyTreeLinks(),
+        _databaseHelper.getUnconfirmedFaces(),
       ]);
 
       final faces = results[0] as List<DetectedFaceRecord>;
@@ -68,6 +72,7 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
       final catalogRecords = results[2] as List<PhotoCatalogMetadata>;
       final personGroups = results[3] as List<Map<String, Object?>>;
       final linkIds = results[4] as Map<String, int>;
+      final unidentifiedFaces = results[5] as List<DetectedFaceRecord>;
       final familyLinks = <String, FamilyPerson>{};
       for (final entry in linkIds.entries) {
         final familyPerson = await _databaseHelper.getFamilyPerson(entry.value);
@@ -84,6 +89,35 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
       final sortedEntries = grouped.entries.toList()
         ..sort((a, b) => a.key.toLowerCase().compareTo(b.key.toLowerCase()));
 
+      final likelyCounts = <String, int>{};
+      final possibleCounts = <String, int>{};
+
+      for (final entry in grouped.entries) {
+        final rejectedIds = await _databaseHelper.getRejectedFaceIdsForPerson(
+          entry.key,
+        );
+        var likely = 0;
+        var possible = 0;
+        for (final candidate in unidentifiedFaces) {
+          final candidateId = candidate.id;
+          if (candidateId != null && rejectedIds.contains(candidateId)) {
+            continue;
+          }
+
+          final similarity = FaceRecognitionService.consensusSimilarity(
+            candidate.embedding,
+            entry.value,
+          );
+          if (similarity >= 0.78) {
+            likely++;
+          } else if (similarity >= 0.64) {
+            possible++;
+          }
+        }
+        likelyCounts[entry.key] = likely;
+        possibleCounts[entry.key] = possible;
+      }
+
       if (!mounted) return;
 
       setState(() {
@@ -94,6 +128,9 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
         };
         _personGroups = personGroups;
         _familyTreeLinks = familyLinks;
+        _likelyCounts = likelyCounts;
+        _possibleCounts = possibleCounts;
+        _unidentifiedCount = unidentifiedFaces.length;
         _loading = false;
       });
     } catch (error) {
@@ -193,7 +230,16 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('People')),
+      appBar: AppBar(
+        title: const Text('People'),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh People',
+            onPressed: _loading ? null : _load,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
@@ -340,6 +386,53 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
                       ),
                     ),
                   ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
+                  child: Row(
+                    children: [
+                      _overviewStat(
+                        context,
+                        icon: Icons.people_outline,
+                        label: 'People',
+                        value: '${_people.length}',
+                      ),
+                      const SizedBox(width: 10),
+                      _overviewStat(
+                        context,
+                        icon: Icons.check_circle_outline,
+                        label: 'Confirmed Faces',
+                        value:
+                            '${_people.values.fold<int>(0, (sum, faces) => sum + faces.length)}',
+                      ),
+                      const SizedBox(width: 10),
+                      _overviewStat(
+                        context,
+                        icon: Icons.person_search_outlined,
+                        label: 'Likely',
+                        value:
+                            '${_likelyCounts.values.fold<int>(0, (sum, value) => sum + value)}',
+                        accent: const Color(0xFF2E7D32),
+                      ),
+                      const SizedBox(width: 10),
+                      _overviewStat(
+                        context,
+                        icon: Icons.help_outline,
+                        label: 'Possible',
+                        value:
+                            '${_possibleCounts.values.fold<int>(0, (sum, value) => sum + value)}',
+                        accent: const Color(0xFFF9A825),
+                      ),
+                      const SizedBox(width: 10),
+                      _overviewStat(
+                        context,
+                        icon: Icons.face_retouching_off_outlined,
+                        label: 'Unidentified',
+                        value: '$_unidentifiedCount',
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 14),
                 Expanded(
                   child: GridView.builder(
                     padding: const EdgeInsets.all(20),
@@ -349,7 +442,7 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
                           maxCrossAxisExtent: 320,
                           mainAxisSpacing: 16,
                           crossAxisSpacing: 16,
-                          childAspectRatio: 1.15,
+                          childAspectRatio: 1.02,
                         ),
                     itemBuilder: (context, index) {
                       final entry = _visiblePeople[index];
@@ -415,7 +508,49 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
                                               context,
                                             ).textTheme.bodySmall,
                                           ),
-                                          const SizedBox(height: 4),
+                                          const SizedBox(height: 7),
+                                          Wrap(
+                                            spacing: 6,
+                                            runSpacing: 4,
+                                            children: [
+                                              _reviewCountChip(
+                                                label: 'Likely',
+                                                count: _likelyCounts[name] ?? 0,
+                                                color: const Color(0xFF2E7D32),
+                                                onTap:
+                                                    (_likelyCounts[name] ??
+                                                            0) ==
+                                                        0
+                                                    ? null
+                                                    : () =>
+                                                          _showPersonRecommendationQueue(
+                                                            personName: name,
+                                                            referenceFaces:
+                                                                faces,
+                                                            likelyOnly: true,
+                                                          ),
+                                              ),
+                                              _reviewCountChip(
+                                                label: 'Possible',
+                                                count:
+                                                    _possibleCounts[name] ?? 0,
+                                                color: const Color(0xFFF9A825),
+                                                onTap:
+                                                    (_possibleCounts[name] ??
+                                                            0) ==
+                                                        0
+                                                    ? null
+                                                    : () =>
+                                                          _showPersonRecommendationQueue(
+                                                            personName: name,
+                                                            referenceFaces:
+                                                                faces,
+                                                            likelyOnly: false,
+                                                          ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 7),
                                           Row(
                                             children: [
                                               Icon(
@@ -462,6 +597,556 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
               ],
             ),
     );
+  }
+
+  Widget _overviewStat(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required String value,
+    Color? accent,
+  }) {
+    final color = accent ?? Theme.of(context).colorScheme.primary;
+    return Expanded(
+      child: Card(
+        margin: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
+            children: [
+              Icon(icon, color: color),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      value,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w900,
+                        color: color,
+                      ),
+                    ),
+                    Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _reviewCountChip({
+    required String label,
+    required int count,
+    required Color color,
+    VoidCallback? onTap,
+  }) {
+    final child = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.45)),
+      ),
+      child: Text(
+        '$label $count',
+        style: TextStyle(
+          color: color,
+          fontSize: 11,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+
+    if (onTap == null) return child;
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(999),
+      onTap: onTap,
+      child: child,
+    );
+  }
+
+  Future<void> _showPersonRecommendationQueue({
+    required String personName,
+    required List<DetectedFaceRecord> referenceFaces,
+    required bool likelyOnly,
+  }) async {
+    var currentReferenceFaces = [...referenceFaces];
+    final selectedFaceIds = <int>{};
+    var remaining = <_PersonMatchCandidate>[];
+    var changed = false;
+
+    Future<List<_PersonMatchCandidate>> refreshCandidates() async {
+      final unidentified = await _databaseHelper.getUnconfirmedFaces();
+      final rejectedIds = await _databaseHelper.getRejectedFaceIdsForPerson(
+        personName,
+      );
+
+      final refreshed = <_PersonMatchCandidate>[];
+
+      for (final candidate in unidentified) {
+        final candidateId = candidate.id;
+        if (candidateId != null && rejectedIds.contains(candidateId)) {
+          continue;
+        }
+
+        final similarity = FaceRecognitionService.consensusSimilarity(
+          candidate.embedding,
+          currentReferenceFaces,
+        );
+
+        final matchesBucket = likelyOnly
+            ? similarity >= 0.78
+            : similarity >= 0.64 && similarity < 0.78;
+
+        if (matchesBucket) {
+          refreshed.add(
+            _PersonMatchCandidate(face: candidate, similarity: similarity),
+          );
+        }
+      }
+
+      refreshed.sort((a, b) => b.similarity.compareTo(a.similarity));
+      return refreshed;
+    }
+
+    remaining = await refreshCandidates();
+
+    if (!mounted) return;
+
+    if (remaining.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'No ${likelyOnly ? 'likely' : 'possible'} matches remain for $personName.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final bucketLabel = likelyOnly
+              ? 'Likely Matches'
+              : 'Possible Matches';
+          final bucketColor = likelyOnly
+              ? const Color(0xFF2E7D32)
+              : const Color(0xFFF9A825);
+
+          Future<void> refreshQueue() async {
+            final latestConfirmed = await _databaseHelper.getConfirmedFaces();
+            currentReferenceFaces = latestConfirmed
+                .where((face) => face.personName == personName)
+                .toList();
+
+            final refreshed = await refreshCandidates();
+
+            if (!mounted || !dialogContext.mounted) return;
+
+            setDialogState(() {
+              remaining = refreshed;
+              selectedFaceIds.removeWhere(
+                (id) => !remaining.any((candidate) => candidate.face.id == id),
+              );
+            });
+          }
+
+          return Dialog(
+            child: SizedBox(
+              width: 1050,
+              height: 760,
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 14, 8, 10),
+                    child: Row(
+                      children: [
+                        Icon(
+                          likelyOnly
+                              ? Icons.check_circle_outline
+                              : Icons.help_outline,
+                          color: bucketColor,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '$bucketLabel for $personName',
+                                style: Theme.of(context).textTheme.titleLarge
+                                    ?.copyWith(fontWeight: FontWeight.w800),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                '${remaining.length} face'
+                                '${remaining.length == 1 ? '' : 's'} to review • '
+                                'updates automatically as matches are confirmed',
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Refresh matches',
+                          onPressed: refreshQueue,
+                          icon: const Icon(Icons.refresh),
+                        ),
+                        IconButton(
+                          tooltip: 'Close',
+                          onPressed: () => Navigator.pop(dialogContext),
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+                    child: Row(
+                      children: [
+                        Text(
+                          '${selectedFaceIds.length} selected',
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                        const Spacer(),
+                        TextButton(
+                          onPressed: remaining.isEmpty
+                              ? null
+                              : () {
+                                  setDialogState(() {
+                                    selectedFaceIds
+                                      ..clear()
+                                      ..addAll(
+                                        remaining
+                                            .map(
+                                              (candidate) => candidate.face.id,
+                                            )
+                                            .whereType<int>(),
+                                      );
+                                  });
+                                },
+                          child: const Text('Select All'),
+                        ),
+                        TextButton(
+                          onPressed: selectedFaceIds.isEmpty
+                              ? null
+                              : () => setDialogState(selectedFaceIds.clear),
+                          child: const Text('Clear'),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton.tonalIcon(
+                          onPressed: selectedFaceIds.isEmpty
+                              ? null
+                              : () async {
+                                  final selected = remaining
+                                      .where(
+                                        (candidate) =>
+                                            candidate.face.id != null &&
+                                            selectedFaceIds.contains(
+                                              candidate.face.id,
+                                            ),
+                                      )
+                                      .toList();
+
+                                  for (final candidate in selected) {
+                                    final faceId = candidate.face.id;
+                                    if (faceId == null) continue;
+
+                                    await _databaseHelper.rejectFaceMatch(
+                                      personName: personName,
+                                      faceId: faceId,
+                                    );
+                                  }
+
+                                  selectedFaceIds.clear();
+                                  changed = true;
+                                  await _load();
+                                  await refreshQueue();
+                                },
+                          icon: const Icon(Icons.person_off_outlined),
+                          label: Text(
+                            'Not This Person (${selectedFaceIds.length})',
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton.icon(
+                          onPressed: selectedFaceIds.isEmpty
+                              ? null
+                              : () async {
+                                  final selected = remaining
+                                      .where(
+                                        (candidate) =>
+                                            candidate.face.id != null &&
+                                            selectedFaceIds.contains(
+                                              candidate.face.id,
+                                            ),
+                                      )
+                                      .toList();
+
+                                  for (final candidate in selected) {
+                                    await _confirmPossibleMatch(
+                                      personName: personName,
+                                      candidate: candidate,
+                                    );
+                                    final faceId = candidate.face.id;
+                                    if (faceId != null) {
+                                      await _databaseHelper
+                                          .clearFaceMatchRejection(
+                                            personName: personName,
+                                            faceId: faceId,
+                                          );
+                                    }
+                                  }
+
+                                  selectedFaceIds.clear();
+                                  changed = true;
+                                  await _load();
+                                  await refreshQueue();
+                                },
+                          icon: const Icon(Icons.done_all),
+                          label: Text(
+                            'Confirm Selected (${selectedFaceIds.length})',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: remaining.isEmpty
+                        ? Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.check_circle_outline,
+                                  size: 54,
+                                  color: bucketColor,
+                                ),
+                                const SizedBox(height: 12),
+                                const Text(
+                                  'No additional matches right now.',
+                                  style: TextStyle(fontWeight: FontWeight.w800),
+                                ),
+                                const SizedBox(height: 6),
+                                const Text(
+                                  'If another confirmation changes the model '
+                                  'consensus, new matches will appear here automatically.',
+                                  textAlign: TextAlign.center,
+                                ),
+                              ],
+                            ),
+                          )
+                        : GridView.builder(
+                            padding: const EdgeInsets.all(16),
+                            itemCount: remaining.length,
+                            gridDelegate:
+                                const SliverGridDelegateWithMaxCrossAxisExtent(
+                                  maxCrossAxisExtent: 250,
+                                  mainAxisSpacing: 14,
+                                  crossAxisSpacing: 14,
+                                  childAspectRatio: 0.74,
+                                ),
+                            itemBuilder: (context, index) {
+                              final candidate = remaining[index];
+                              final face = candidate.face;
+                              final thumb = File(face.thumbnailPath);
+                              final source = File(face.photoFilePath);
+                              final faceId = face.id;
+                              final selected =
+                                  faceId != null &&
+                                  selectedFaceIds.contains(faceId);
+
+                              return Card(
+                                clipBehavior: Clip.antiAlias,
+                                child: Stack(
+                                  children: [
+                                    Positioned.fill(
+                                      child: Column(
+                                        children: [
+                                          Expanded(
+                                            child: InkWell(
+                                              onTap: faceId == null
+                                                  ? null
+                                                  : () {
+                                                      setDialogState(() {
+                                                        if (selected) {
+                                                          selectedFaceIds
+                                                              .remove(faceId);
+                                                        } else {
+                                                          selectedFaceIds.add(
+                                                            faceId,
+                                                          );
+                                                        }
+                                                      });
+                                                    },
+                                              child: Container(
+                                                width: double.infinity,
+                                                color: Theme.of(context)
+                                                    .colorScheme
+                                                    .surfaceContainerHighest,
+                                                child: thumb.existsSync()
+                                                    ? Image.file(
+                                                        thumb,
+                                                        fit: BoxFit.cover,
+                                                      )
+                                                    : const Center(
+                                                        child: Icon(
+                                                          Icons.face_outlined,
+                                                          size: 60,
+                                                        ),
+                                                      ),
+                                              ),
+                                            ),
+                                          ),
+                                          Padding(
+                                            padding: const EdgeInsets.all(10),
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.stretch,
+                                              children: [
+                                                Text(
+                                                  '${(candidate.similarity * 100).toStringAsFixed(1)}% similarity',
+                                                  style: TextStyle(
+                                                    fontWeight: FontWeight.w900,
+                                                    color: bucketColor,
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 4),
+                                                Text(
+                                                  path.basename(source.path),
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: Theme.of(
+                                                    context,
+                                                  ).textTheme.bodySmall,
+                                                ),
+                                                const SizedBox(height: 8),
+                                                FilledButton.icon(
+                                                  onPressed: () async {
+                                                    await _confirmPossibleMatch(
+                                                      personName: personName,
+                                                      candidate: candidate,
+                                                    );
+
+                                                    final candidateFaceId =
+                                                        candidate.face.id;
+                                                    if (candidateFaceId !=
+                                                        null) {
+                                                      await _databaseHelper
+                                                          .clearFaceMatchRejection(
+                                                            personName:
+                                                                personName,
+                                                            faceId:
+                                                                candidateFaceId,
+                                                          );
+                                                      selectedFaceIds.remove(
+                                                        candidateFaceId,
+                                                      );
+                                                    }
+
+                                                    changed = true;
+                                                    await _load();
+                                                    await refreshQueue();
+                                                  },
+                                                  icon: const Icon(
+                                                    Icons.check_circle_outline,
+                                                  ),
+                                                  label: const Text(
+                                                    'Confirm Match',
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 6),
+                                                OutlinedButton.icon(
+                                                  onPressed: () async {
+                                                    final candidateFaceId =
+                                                        candidate.face.id;
+                                                    if (candidateFaceId !=
+                                                        null) {
+                                                      await _databaseHelper
+                                                          .rejectFaceMatch(
+                                                            personName:
+                                                                personName,
+                                                            faceId:
+                                                                candidateFaceId,
+                                                          );
+                                                      selectedFaceIds.remove(
+                                                        candidateFaceId,
+                                                      );
+                                                    }
+
+                                                    changed = true;
+                                                    await _load();
+                                                    await refreshQueue();
+                                                  },
+                                                  icon: const Icon(
+                                                    Icons.close,
+                                                    size: 18,
+                                                  ),
+                                                  label: const Text(
+                                                    'Not This Person',
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    Positioned(
+                                      top: 8,
+                                      right: 8,
+                                      child: Material(
+                                        color: Colors.transparent,
+                                        child: Checkbox(
+                                          value: selected,
+                                          onChanged: faceId == null
+                                              ? null
+                                              : (checked) {
+                                                  setDialogState(() {
+                                                    if (checked == true) {
+                                                      selectedFaceIds.add(
+                                                        faceId,
+                                                      );
+                                                    } else {
+                                                      selectedFaceIds.remove(
+                                                        faceId,
+                                                      );
+                                                    }
+                                                  });
+                                                },
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+
+    if (changed) {
+      await _load();
+    }
   }
 
   Future<void> _createGroupFlow() async {
@@ -1093,24 +1778,16 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
     final matches = <_PersonMatchCandidate>[];
 
     for (final candidate in unidentified) {
-      var bestSimilarity = -1.0;
+      final similarity = FaceRecognitionService.consensusSimilarity(
+        candidate.embedding,
+        referenceFaces,
+      );
 
-      for (final reference in referenceFaces) {
-        final similarity = FaceRecognitionService.cosineSimilarity(
-          candidate.embedding,
-          reference.embedding,
-        );
-
-        if (similarity > bestSimilarity) {
-          bestSimilarity = similarity;
-        }
-      }
-
-      // Lower than the automatic suggestion threshold so the user can
-      // manually review plausible candidates.
-      if (bestSimilarity >= 0.55) {
+      // Keep this broad enough for manual review, but require agreement
+      // across confirmed examples when more than one is available.
+      if (similarity >= 0.64) {
         matches.add(
-          _PersonMatchCandidate(face: candidate, similarity: bestSimilarity),
+          _PersonMatchCandidate(face: candidate, similarity: similarity),
         );
       }
     }
@@ -1605,6 +2282,7 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) {
+          final activeFaces = _people[name] ?? faces;
           final filtered = allPhotos.where((photo) {
             final metadata = _catalogByPath[photo.filePath];
             final query = search.trim().toLowerCase();
@@ -1662,61 +2340,158 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
               child: Column(
                 children: [
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(18, 14, 8, 10),
+                    padding: const EdgeInsets.fromLTRB(20, 18, 10, 14),
                     child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        CircleAvatar(
+                          radius: 34,
+                          backgroundImage:
+                              activeFaces.isNotEmpty &&
+                                  File(
+                                    activeFaces.first.thumbnailPath,
+                                  ).existsSync()
+                              ? FileImage(File(activeFaces.first.thumbnailPath))
+                              : null,
+                          child:
+                              activeFaces.isNotEmpty &&
+                                  File(
+                                    activeFaces.first.thumbnailPath,
+                                  ).existsSync()
+                              ? null
+                              : const Icon(Icons.person_outline, size: 34),
+                        ),
+                        const SizedBox(width: 14),
                         Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                name,
-                                style: Theme.of(context).textTheme.titleLarge
-                                    ?.copyWith(fontWeight: FontWeight.w800),
+                              Row(
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .headlineSmall
+                                          ?.copyWith(
+                                            fontWeight: FontWeight.w900,
+                                          ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  if (_familyTreeLinks[name] != null)
+                                    Tooltip(
+                                      message:
+                                          'Linked to ${_familyPersonDisplayName(_familyTreeLinks[name]!)}',
+                                      child: Icon(
+                                        Icons.account_tree,
+                                        size: 20,
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.primary,
+                                      ),
+                                    ),
+                                ],
                               ),
-                              const SizedBox(height: 3),
-                              Text(
-                                '${allPhotos.length} photos • '
-                                '${faces.length} confirmed faces • '
-                                '$knownDates dated • '
-                                '$knownLocations locations',
+                              const SizedBox(height: 8),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  _profileStatPill(
+                                    icon: Icons.photo_library_outlined,
+                                    label:
+                                        '${allPhotos.length} photo${allPhotos.length == 1 ? '' : 's'}',
+                                  ),
+                                  _profileStatPill(
+                                    icon: Icons.check_circle_outline,
+                                    label:
+                                        '${faces.length} confirmed face${faces.length == 1 ? '' : 's'}',
+                                  ),
+                                  _profileStatPill(
+                                    icon: Icons.event_outlined,
+                                    label: '$knownDates dated',
+                                  ),
+                                  _profileStatPill(
+                                    icon: Icons.place_outlined,
+                                    label: '$knownLocations locations',
+                                  ),
+                                  if ((_likelyCounts[name] ?? 0) > 0)
+                                    _profileStatPill(
+                                      icon: Icons.person_search_outlined,
+                                      label: '${_likelyCounts[name]} likely',
+                                      color: const Color(0xFF2E7D32),
+                                      onTap: () =>
+                                          _showPersonRecommendationQueue(
+                                            personName: name,
+                                            referenceFaces:
+                                                _people[name] ?? faces,
+                                            likelyOnly: true,
+                                          ),
+                                    ),
+                                  if ((_possibleCounts[name] ?? 0) > 0)
+                                    _profileStatPill(
+                                      icon: Icons.help_outline,
+                                      label:
+                                          '${_possibleCounts[name]} possible',
+                                      color: const Color(0xFFF9A825),
+                                      onTap: () =>
+                                          _showPersonRecommendationQueue(
+                                            personName: name,
+                                            referenceFaces:
+                                                _people[name] ?? faces,
+                                            likelyOnly: false,
+                                          ),
+                                    ),
+                                ],
                               ),
                             ],
                           ),
                         ),
-                        OutlinedButton.icon(
-                          onPressed: () async {
-                            final changed = await _manageFamilyTreeLink(name);
-                            if (!context.mounted) return;
-                            if (changed) setDialogState(() {});
-                          },
-                          icon: const Icon(Icons.account_tree_outlined),
-                          label: Text(
-                            _familyTreeLinks[name] == null
-                                ? 'Link to Family Tree'
-                                : 'Family Tree Link',
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        OutlinedButton.icon(
-                          onPressed: () async {
-                            final changed = await _showPossibleMatches(
-                              name,
-                              _people[name] ?? faces,
-                            );
+                        const SizedBox(width: 12),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            FilledButton.tonalIcon(
+                              onPressed: () async {
+                                final changed = await _manageFamilyTreeLink(
+                                  name,
+                                );
+                                if (!context.mounted) return;
+                                if (changed) setDialogState(() {});
+                              },
+                              icon: const Icon(Icons.account_tree_outlined),
+                              label: Text(
+                                _familyTreeLinks[name] == null
+                                    ? 'Link Family Tree'
+                                    : 'Family Tree',
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            OutlinedButton.icon(
+                              onPressed: () async {
+                                final changed = await _showPossibleMatches(
+                                  name,
+                                  _people[name] ?? faces,
+                                );
 
-                            if (!context.mounted) return;
+                                if (!context.mounted) return;
 
-                            if (changed) {
-                              setDialogState(() {
-                                allPhotos = _photosForPerson(name);
-                              });
-                            }
-                          },
-                          icon: const Icon(Icons.person_search_outlined),
-                          label: const Text('Search Possible Matches'),
+                                if (changed) {
+                                  setDialogState(() {
+                                    allPhotos = _photosForPerson(name);
+                                  });
+                                }
+                              },
+                              icon: const Icon(Icons.person_search_outlined),
+                              label: const Text('Review Matches'),
+                            ),
+                          ],
                         ),
-                        const SizedBox(width: 8),
+                        const SizedBox(width: 6),
                         IconButton(
                           tooltip: 'Close',
                           onPressed: () => Navigator.pop(dialogContext),
@@ -1729,9 +2504,25 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
                   Material(
                     color: Theme.of(context).colorScheme.surfaceContainerLow,
                     child: Padding(
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
                       child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          Row(
+                            children: [
+                              Text(
+                                'Photo Gallery',
+                                style: Theme.of(context).textTheme.titleSmall
+                                    ?.copyWith(fontWeight: FontWeight.w900),
+                              ),
+                              const Spacer(),
+                              Text(
+                                '${filtered.length} shown',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
                           TextField(
                             onChanged: (value) {
                               setDialogState(() => search = value);
@@ -1787,15 +2578,6 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
                                   }
                                 },
                               ),
-                              Padding(
-                                padding: const EdgeInsets.only(top: 12),
-                                child: Text(
-                                  '${filtered.length} matching photos',
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w800,
-                                  ),
-                                ),
-                              ),
                             ],
                           ),
                         ],
@@ -1815,7 +2597,7 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
                                   maxCrossAxisExtent: 260,
                                   mainAxisSpacing: 12,
                                   crossAxisSpacing: 12,
-                                  childAspectRatio: 1,
+                                  childAspectRatio: 0.92,
                                 ),
                             itemBuilder: (context, index) {
                               final photo = filtered[index];
@@ -1863,7 +2645,12 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
                                         ),
                                       ),
                                       Padding(
-                                        padding: const EdgeInsets.all(8),
+                                        padding: const EdgeInsets.fromLTRB(
+                                          10,
+                                          8,
+                                          10,
+                                          10,
+                                        ),
                                         child: Column(
                                           crossAxisAlignment:
                                               CrossAxisAlignment.start,
@@ -1872,30 +2659,35 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
                                               photo.fileName,
                                               maxLines: 1,
                                               overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.w800,
+                                              ),
                                             ),
-                                            if ((metadata?.approximateDate
-                                                        .trim() ??
-                                                    '')
-                                                .isNotEmpty)
-                                              Text(
-                                                metadata!.approximateDate,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: Theme.of(
-                                                  context,
-                                                ).textTheme.bodySmall,
-                                              ),
-                                            if ((metadata?.location.trim() ??
-                                                    '')
-                                                .isNotEmpty)
-                                              Text(
-                                                metadata!.location,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: Theme.of(
-                                                  context,
-                                                ).textTheme.bodySmall,
-                                              ),
+                                            const SizedBox(height: 5),
+                                            Wrap(
+                                              spacing: 6,
+                                              runSpacing: 5,
+                                              children: [
+                                                if ((metadata?.approximateDate
+                                                            .trim() ??
+                                                        '')
+                                                    .isNotEmpty)
+                                                  _profileStatPill(
+                                                    icon: Icons
+                                                        .calendar_today_outlined,
+                                                    label: metadata!
+                                                        .approximateDate,
+                                                  ),
+                                                if ((metadata?.location
+                                                            .trim() ??
+                                                        '')
+                                                    .isNotEmpty)
+                                                  _profileStatPill(
+                                                    icon: Icons.place_outlined,
+                                                    label: metadata!.location,
+                                                  ),
+                                              ],
+                                            ),
                                           ],
                                         ),
                                       ),
@@ -1912,6 +2704,48 @@ class _KnownPeopleScreenState extends State<KnownPeopleScreen> {
           );
         },
       ),
+    );
+  }
+
+  Widget _profileStatPill({
+    required IconData icon,
+    required String label,
+    Color? color,
+    VoidCallback? onTap,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final resolvedColor = color ?? scheme.primary;
+
+    final child = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: resolvedColor.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: resolvedColor.withValues(alpha: 0.28)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: resolvedColor),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              color: resolvedColor,
+              fontWeight: FontWeight.w800,
+              fontSize: 12,
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (onTap == null) return child;
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(999),
+      onTap: onTap,
+      child: child,
     );
   }
 

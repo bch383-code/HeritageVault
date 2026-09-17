@@ -1,12 +1,20 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 
 import '../database/database_helper.dart';
 import '../models/imported_coin.dart';
 
 class CoinDetailScreen extends StatefulWidget {
   final ImportedCoin coin;
+  final String? initialImagePath;
 
-  const CoinDetailScreen({super.key, required this.coin});
+  const CoinDetailScreen({
+    super.key,
+    required this.coin,
+    this.initialImagePath,
+  });
 
   @override
   State<CoinDetailScreen> createState() => _CoinDetailScreenState();
@@ -18,12 +26,16 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
   late final TextEditingController _gradeController;
   late final TextEditingController _notesController;
   late String _status;
+  late String _imagePath;
   bool _isSaving = false;
 
   @override
   void initState() {
     super.initState();
     _status = widget.coin.status;
+    _imagePath = widget.initialImagePath?.trim().isNotEmpty == true
+        ? widget.initialImagePath!.trim()
+        : widget.coin.imagePath;
     _storageController = TextEditingController(text: widget.coin.storageLocation);
     _gradeController = TextEditingController(text: widget.coin.grade);
     _notesController = TextEditingController(text: widget.coin.notes);
@@ -35,6 +47,13 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
     _gradeController.dispose();
     _notesController.dispose();
     super.dispose();
+  }
+
+  Future<void> _chooseImage() async {
+    final file = await FilePicker.pickFile(type: FileType.image);
+    final filePath = file?.path;
+    if (filePath == null || filePath.trim().isEmpty) return;
+    setState(() => _imagePath = filePath.trim());
   }
 
   Future<void> _save() async {
@@ -105,6 +124,42 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
                       _ReadOnlyField(label: 'Year', value: widget.coin.year),
                       _ReadOnlyField(label: 'Mint', value: widget.coin.mint),
                       _ReadOnlyField(label: 'Variety', value: widget.coin.variety),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Coin Photo',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const SizedBox(height: 14),
+                      if (_imagePath.isNotEmpty)
+                        SizedBox(
+                          height: 260,
+                          width: double.infinity,
+                          child: File(_imagePath).existsSync()
+                              ? Image.file(File(_imagePath), fit: BoxFit.contain)
+                              : const Center(
+                                  child: Icon(Icons.broken_image_outlined, size: 52),
+                                ),
+                        )
+                      else
+                        const Text('No photo attached.'),
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: _chooseImage,
+                        icon: const Icon(Icons.add_photo_alternate_outlined),
+                        label: Text(
+                          _imagePath.isEmpty ? 'Choose Image' : 'Change Image',
+                        ),
+                      ),
                     ],
                   ),
                 ),

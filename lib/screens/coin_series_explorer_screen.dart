@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../database/database_helper.dart';
 import '../models/imported_coin.dart';
+import '../services/coin_import_service.dart';
 import '../reference/coin_series_reference.dart';
 import '../widgets/series_card.dart';
 import 'coins_screen.dart';
@@ -16,12 +17,13 @@ class CoinSeriesExplorerScreen extends StatefulWidget {
       _CoinSeriesExplorerScreenState();
 }
 
-class _CoinSeriesExplorerScreenState
-    extends State<CoinSeriesExplorerScreen> {
+class _CoinSeriesExplorerScreenState extends State<CoinSeriesExplorerScreen> {
   final DatabaseHelper _databaseHelper = DatabaseHelper.instance;
+  final CoinImportService _importService = CoinImportService();
   final TextEditingController _searchController = TextEditingController();
 
   bool _isLoading = true;
+  bool _isImporting = false;
   String? _errorMessage;
   List<_SeriesProgress> _series = const [];
   String _searchText = '';
@@ -79,8 +81,7 @@ class _CoinSeriesExplorerScreenState
           name: reference.series,
           owned: coins.where((coin) => coin.status == 'Owned').length,
           needed: coins.where((coin) => coin.status == 'Need').length,
-          untracked:
-              coins.where((coin) => coin.status == 'Untracked').length,
+          untracked: coins.where((coin) => coin.status == 'Untracked').length,
         );
       }).toList();
 
@@ -117,64 +118,237 @@ class _CoinSeriesExplorerScreenState
   }
 
   List<String> get _denominations {
-    final denominations = CoinSeriesLibrary.series
-        .map((reference) => reference.denomination)
-        .toSet()
-        .toList()
-      ..sort();
+    final denominations =
+        CoinSeriesLibrary.series
+            .map((reference) => reference.denomination)
+            .toSet()
+            .toList()
+          ..sort();
 
     return ['All denominations', ...denominations];
   }
 
-Future<void> _openSeries(String seriesName) async {
-  if (seriesName.toLowerCase().contains('morgan')) {
+  Future<void> _importSpreadsheet() async {
+    if (_isImporting) return;
+
+    setState(() => _isImporting = true);
+
+    try {
+      final result = await _importService.chooseAndReadWorkbook();
+      if (!mounted || result == null) return;
+
+      final importMode = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Import Coin Workbook'),
+          content: SizedBox(
+            width: 580,
+            child: Text(
+              '${result.fileName}\n\n'
+              '${result.coins.length} coin entries were found.\n'
+              'Owned: ${result.ownedCount}\n'
+              'Needed: ${result.neededCount}\n'
+              'Untracked: ${result.untrackedCount}\n\n'
+              'Choose how Heirloom Atlas should import this workbook.\n\n'
+              'Merge keeps your current collection and adds new coin entries. '
+              'For matching coins, your existing Heirloom Atlas information '
+              'is preserved.\n\n'
+              'Replace removes the current imported coin list and replaces it '
+              'with the workbook contents. A database backup is created first.',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            OutlinedButton.icon(
+              onPressed: () => Navigator.pop(dialogContext, 'merge'),
+              icon: const Icon(Icons.merge_type),
+              label: const Text('Merge'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(dialogContext, 'replace'),
+              icon: const Icon(Icons.swap_horiz),
+              label: const Text('Replace Current'),
+            ),
+          ],
+        ),
+      );
+
+      if (!mounted || importMode == null) return;
+
+      await _databaseHelper.createDatabaseBackup(
+        reason: importMode == 'merge'
+            ? 'before_spreadsheet_merge'
+            : 'before_spreadsheet_replace',
+      );
+
+      late final int savedCount;
+      var addedCount = 0;
+      var preservedCount = 0;
+
+      if (importMode == 'merge') {
+        final currentCoins = await _databaseHelper.getImportedCoins();
+
+        String coinKey(ImportedCoin coin) => [
+              coin.category.trim().toLowerCase(),
+              coin.series.trim().toLowerCase(),
+              coin.year.trim().toLowerCase(),
+              coin.mint.trim().toLowerCase(),
+              coin.variety.trim().toLowerCase(),
+            ].join('|');
+
+        final merged = <String, ImportedCoin>{};
+
+        // Workbook entries establish the incoming catalog.
+        for (final coin in result.coins) {
+          merged[coinKey(coin)] = coin;
+        }
+
+        // Existing Heirloom Atlas entries win on a match so user-entered
+        // status, quantity, storage, grade, value, notes, and image are kept.
+        for (final coin in currentCoins) {
+          final key = coinKey(coin);
+          if (merged.containsKey(key)) {
+            preservedCount++;
+          } else {
+            addedCount++;
+          }
+          merged[key] = coin;
+        }
+
+        final incomingKeys = result.coins.map(coinKey).toSet();
+        final currentKeys = currentCoins.map(coinKey).toSet();
+        addedCount =
+            incomingKeys.where((key) => !currentKeys.contains(key)).length;
+
+        savedCount = await _databaseHelper.replaceImportedCoins(
+          merged.values.toList(),
+        );
+      } else {
+        savedCount = await _databaseHelper.replaceImportedCoins(result.coins);
+
+        await _databaseHelper.replaceStorageLocations(
+          result.storageLocations
+              .map(
+                (location) => <String, Object?>{
+                  'brand': location.brand,
+                  'color': location.color,
+                  'number': location.number,
+                  'title': location.title,
+                  'year': location.year,
+                  'notes': location.notes,
+                },
+              )
+              .toList(),
+        );
+      }
+
+      final savedStorageCount =
+          importMode == 'replace' ? result.storageLocations.length : 0;
+
+      await _loadSeries();
+
+      if (!mounted) return;
+
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(
+            importMode == 'merge'
+                ? 'Coin Collection Merged'
+                : 'Coin Collection Replaced',
+          ),
+          content: Text(
+            importMode == 'merge'
+                ? 'Saved $savedCount coin entries.\n'
+                    'New workbook entries added: $addedCount\n'
+                    'Existing matching entries preserved: $preservedCount\n\n'
+                    'Existing storage locations were left unchanged.'
+                : 'Saved $savedCount coin entries.\n'
+                    'Storage locations: $savedStorageCount',
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Done'),
+            ),
+          ],
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not import spreadsheet: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isImporting = false);
+      }
+    }
+  }
+
+  Future<void> _openSeries(String seriesName) async {
+    if (seriesName.toLowerCase().contains('morgan')) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => SeriesDetailScreen(seriesName: seriesName),
+        ),
+      );
+
+      await _loadSeries();
+      return;
+    }
+
     await Navigator.push(
       context,
       MaterialPageRoute(
-       builder: (context) => SeriesDetailScreen(
-  seriesName: seriesName,
-),
+        builder: (context) => CoinsScreen(initialSeries: seriesName),
       ),
     );
 
     await _loadSeries();
-    return;
   }
-
-  await Navigator.push(
-    context,
-    MaterialPageRoute(
-      builder: (context) => CoinsScreen(
-        initialSeries: seriesName,
-      ),
-    ),
-  );
-
-  await _loadSeries();
-}
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Coin Series'),
-  actions: [
-  IconButton(
-    tooltip: 'Need List',
-    onPressed: () {
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => const NeedListScreen(),
+        leadingWidth: 90,
+        leading: TextButton.icon(
+          onPressed: () => Navigator.of(context).pop(),
+          icon: const Icon(Icons.arrow_back),
+          label: const Text('Back'),
         ),
-      );
-    },
-    icon: const Icon(Icons.checklist_rounded),
-  ),
-  IconButton(
-    tooltip: 'Refresh',
-    onPressed: _isLoading ? null : _loadSeries,
-    icon: const Icon(Icons.refresh),
+        title: const Text('Coin Series'),
+        actions: [
+          IconButton(
+            tooltip: 'Import Coin Workbook',
+            onPressed: (_isLoading || _isImporting) ? null : _importSpreadsheet,
+            icon: _isImporting
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.upload_file_outlined),
+          ),
+          IconButton(
+            tooltip: 'Need List',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const NeedListScreen()),
+              );
+            },
+            icon: const Icon(Icons.checklist_rounded),
+          ),
+          IconButton(
+            tooltip: 'Refresh',
+            onPressed: _isLoading ? null : _loadSeries,
+            icon: const Icon(Icons.refresh),
           ),
         ],
       ),
@@ -184,9 +358,7 @@ Future<void> _openSeries(String seriesName) async {
 
   Widget _buildBody() {
     if (_isLoading) {
-      return const Center(
-        child: CircularProgressIndicator(),
-      );
+      return const Center(child: CircularProgressIndicator());
     }
 
     if (_errorMessage != null) {
@@ -208,9 +380,9 @@ Future<void> _openSeries(String seriesName) async {
       children: [
         Text(
           'United States Coin Series',
-          style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-                fontWeight: FontWeight.w800,
-              ),
+          style: Theme.of(
+            context,
+          ).textTheme.headlineLarge?.copyWith(fontWeight: FontWeight.w800),
         ),
         const SizedBox(height: 8),
         Text(
@@ -274,9 +446,9 @@ Future<void> _openSeries(String seriesName) async {
             Expanded(
               child: Text(
                 'Coin series',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
               ),
             ),
             Text('${visibleSeries.length} shown'),
@@ -288,9 +460,7 @@ Future<void> _openSeries(String seriesName) async {
             child: Padding(
               padding: EdgeInsets.all(28),
               child: Center(
-                child: Text(
-                  'No coin series match the current filters.',
-                ),
+                child: Text('No coin series match the current filters.'),
               ),
             ),
           )
@@ -299,8 +469,7 @@ Future<void> _openSeries(String seriesName) async {
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             itemCount: visibleSeries.length,
-            gridDelegate:
-                const SliverGridDelegateWithMaxCrossAxisExtent(
+            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
               maxCrossAxisExtent: 420,
               mainAxisSpacing: 18,
               crossAxisSpacing: 18,

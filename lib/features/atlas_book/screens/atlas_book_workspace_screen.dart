@@ -30,6 +30,17 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
   bool _loadingPeople = true;
   List<String> _connectedPhotoPaths = [];
   Set<String> _selectedPhotoPaths = <String>{};
+  Set<String> _favoritePhotoPaths = <String>{};
+  List<_AtlasGatherItem> _connectedStories = [];
+  List<_AtlasGatherItem> _connectedDocuments = [];
+  List<_AtlasGatherItem> _connectedCollectibles = [];
+  Set<String> _selectedStoryKeys = <String>{};
+  Set<String> _selectedDocumentKeys = <String>{};
+  Set<String> _favoriteStoryKeys = <String>{};
+  Set<String> _favoriteDocumentKeys = <String>{};
+  Set<String> _selectedCollectibleKeys = <String>{};
+  Set<String> _favoriteCollectibleKeys = <String>{};
+  String _materialFilter = 'All';
   bool _loadingConnectedPhotos = false;
   List<AtlasBookPage> _bookPages = [];
   bool _loadingPages = true;
@@ -39,6 +50,8 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
     super.initState();
     _loadSelectedPeople();
     _loadSavedBookPhotos();
+    _loadAtlasBookPhotoFavorites();
+    _loadSavedNonPhotoMaterials();
     _loadBookPages();
   }
 
@@ -100,6 +113,7 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
     await _repository.replaceBookPeople(bookId, selectedIds);
 
     await _loadSelectedPeople();
+    await _gatherConnectedPhotos(silent: true);
   }
 
   Future<void> _chooseFamilyBranch() async {
@@ -137,6 +151,7 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
 
     await _repository.replaceBookPeople(bookId, selectedIds);
     await _loadSelectedPeople();
+    await _gatherConnectedPhotos(silent: true);
 
     if (!mounted) return;
 
@@ -235,6 +250,7 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
 
     await _repository.replaceBookPeople(bookId, selectedIds);
     await _loadSelectedPeople();
+    await _gatherConnectedPhotos(silent: true);
 
     if (!mounted) return;
 
@@ -310,50 +326,359 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
     });
   }
 
-  Future<void> _saveBookPhotos() async {
+  Future<void> _loadSavedNonPhotoMaterials() async {
     final bookId = widget.book.id;
     if (bookId == null) return;
-
-    await _repository.replaceBookPhotos(bookId, _selectedPhotoPaths);
-
+    final stories = await _repository.getBookMaterialKeys(bookId, itemType: 'story');
+    final documents = await _repository.getBookMaterialKeys(bookId, itemType: 'document');
+    final collectibles = await _repository.getBookMaterialKeys(bookId, itemType: 'collectible');
     if (!mounted) return;
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          '${_selectedPhotoPaths.length} '
-          '${_selectedPhotoPaths.length == 1 ? 'photo' : 'photos'} saved to this book.',
-        ),
-      ),
-    );
+    setState(() {
+      _selectedStoryKeys = stories.toSet();
+      _selectedDocumentKeys = documents.toSet();
+      _selectedCollectibleKeys = collectibles.toSet();
+    });
   }
 
-  Future<void> _gatherConnectedPhotos() async {
-    final personIds = _selectedPeople
-        .where((person) => person.id != null)
-        .map((person) => person.id!)
-        .toSet();
+  Future<void> _saveBookMaterials() async {
+    final bookId = widget.book.id;
+    if (bookId == null) return;
+    await _repository.replaceBookPhotos(bookId, _selectedPhotoPaths);
+    await _repository.replaceBookMaterials(bookId, itemType: 'story', itemKeys: _selectedStoryKeys);
+    await _repository.replaceBookMaterials(bookId, itemType: 'document', itemKeys: _selectedDocumentKeys);
+    await _repository.replaceBookMaterials(bookId, itemType: 'collectible', itemKeys: _selectedCollectibleKeys);
+    if (!mounted) return;
+    final total = _selectedPhotoPaths.length + _selectedStoryKeys.length + _selectedDocumentKeys.length + _selectedCollectibleKeys.length;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$total selected ${total == 1 ? 'item' : 'items'} saved to this book.')));
+  }
 
-    if (personIds.isEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Choose at least one person for this book first.'),
-        ),
-      );
-      return;
+  Future<void> _setAtlasMaterialFavorite(String type, String key, bool favorite) async {
+    var favoriteType = type;
+    var favoriteKey = key;
+    if (type == 'collectible') {
+      final separator = key.indexOf(':');
+      if (separator > 0 && separator < key.length - 1) {
+        favoriteType = key.substring(0, separator);
+        favoriteKey = key.substring(separator + 1);
+      }
+    }
+    await _databaseHelper.setAtlasBookFavorite(itemType: favoriteType, itemKey: favoriteKey, favorite: favorite);
+    if (!mounted) return;
+    setState(() {
+      final target = type == 'story'
+          ? _favoriteStoryKeys
+          : type == 'document'
+              ? _favoriteDocumentKeys
+              : type == 'collectible'
+                  ? _favoriteCollectibleKeys
+                  : _favoritePhotoPaths;
+      favorite ? target.add(key) : target.remove(key);
+    });
+  }
+  Future<void> _loadAtlasBookPhotoFavorites() async {
+    final favorites = await _databaseHelper.getAtlasBookFavoriteKeys(
+      itemType: 'photo',
+    );
+    if (!mounted) return;
+    setState(() => _favoritePhotoPaths = favorites);
+  }
+
+  Future<List<String>> _findConnectedPhotosForPeople(
+    Iterable<int> personIds,
+  ) async {
+    final ids = personIds.toSet();
+    if (ids.isEmpty) return const [];
+
+    final paths = <String>{
+      ...await _databaseHelper.getPhotoPathsForFamilyPeople(ids),
+    };
+
+    final aliasesByFamily = await _databaseHelper
+        .getPhotoAliasesGroupedByFamilyPerson();
+    final legacyLinks = await _databaseHelper.getPhotoPersonFamilyTreeLinks();
+
+    final aliasNames = <String>{};
+    for (final id in ids) {
+      aliasNames.addAll(aliasesByFamily[id] ?? const <String>[]);
+    }
+    for (final entry in legacyLinks.entries) {
+      if (ids.contains(entry.value)) {
+        aliasNames.add(entry.key);
+      }
     }
 
+    final aliasKeys = aliasNames
+        .map((name) => name.trim().toLowerCase())
+        .where((name) => name.isNotEmpty)
+        .toSet();
+
+    if (aliasKeys.isNotEmpty) {
+      final catalog = await _databaseHelper.getAllPhotoCatalogMetadata();
+      for (final record in catalog) {
+        if (record.people.any(
+          (name) => aliasKeys.contains(name.trim().toLowerCase()),
+        )) {
+          paths.add(record.filePath);
+        }
+      }
+
+      final faces = await _databaseHelper.getConfirmedFaces();
+      for (final face in faces) {
+        if (aliasKeys.contains(face.personName.trim().toLowerCase())) {
+          paths.add(face.photoFilePath);
+        }
+      }
+    }
+
+    // A person's Family Tree profile photo is also valid book material.
+    for (final person in _selectedPeople) {
+      final id = person.id;
+      if (id == null || !ids.contains(id)) continue;
+      final profilePath = person.profilePhotoPath.trim();
+      if (profilePath.isNotEmpty) {
+        paths.add(profilePath);
+      }
+    }
+
+    final existing =
+        paths
+            .map((path) => path.trim())
+            .where((path) => path.isNotEmpty && File(path).existsSync())
+            .toSet()
+            .toList()
+          ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+    return existing;
+  }
+
+  Future<List<String>> _findConnectedPhotosForPerson(int personId) {
+    return _findConnectedPhotosForPeople([personId]);
+  }
+
+  Future<void> _gatherConnectedPhotos({bool silent = false}) async {
+    final personIds = _selectedPeople.where((person) => person.id != null).map((person) => person.id!).toSet();
+    if (personIds.isEmpty) {
+      if (!mounted) return;
+      if (!silent) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Choose at least one person for this book first.')));
+      return;
+    }
     setState(() => _loadingConnectedPhotos = true);
+    final paths = await _findConnectedPhotosForPeople(personIds);
+    final storyKeys = await _databaseHelper.getItemKeysForFamilyPeople(personIds: personIds, itemType: 'story');
+    final documentKeys = await _databaseHelper.getItemKeysForFamilyPeople(personIds: personIds, itemType: 'document');
+    final postcardKeys = await _databaseHelper.getItemKeysForFamilyPeople(personIds: personIds, itemType: 'postcard');
+    final sportsCardKeys = await _databaseHelper.getItemKeysForFamilyPeople(personIds: personIds, itemType: 'sports_card');
+    final customItemKeys = await _databaseHelper.getItemKeysForFamilyPeople(personIds: personIds, itemType: 'custom_collection_item');
+    final antiqueKeys = await _databaseHelper.getItemKeysForFamilyPeople(personIds: personIds, itemType: 'antique');
+    final valuableKeys = await _databaseHelper.getItemKeysForFamilyPeople(personIds: personIds, itemType: 'valuable');
+    final db = await _databaseHelper.database;
+    final stories = <_AtlasGatherItem>[];
+    final storyIds = storyKeys.map(int.tryParse).whereType<int>().toList();
+    if (storyIds.isNotEmpty) {
+      final marks = List.filled(storyIds.length, '?').join(',');
+      final rows = await db.rawQuery('SELECT id, title, story_text, date_text, place FROM heritage_stories WHERE id IN ($marks)', storyIds);
+      for (final row in rows) {
+        final id = (row['id'] as num).toInt().toString();
+        final detail = [row['date_text'] as String? ?? '', row['place'] as String? ?? ''].where((v) => v.trim().isNotEmpty).join(' • ');
+        stories.add(_AtlasGatherItem(
+          type: 'story',
+          key: id,
+          title: row['title'] as String? ?? 'Untitled Story',
+          subtitle: detail,
+          body: row['story_text'] as String? ?? '',
+        ));
+      }
+    }
+    final documents = documentKeys.map((path) => _AtlasGatherItem(type: 'document', key: path, title: File(path).uri.pathSegments.isEmpty ? path : File(path).uri.pathSegments.last, subtitle: path)).toList();
 
-    final paths = await _databaseHelper.getPhotoPathsForFamilyPeople(personIds);
+    final collectibles = <_AtlasGatherItem>[];
 
+    final postcardIds = postcardKeys.map(int.tryParse).whereType<int>().toList();
+    if (postcardIds.isNotEmpty) {
+      final marks = List.filled(postcardIds.length, '?').join(',');
+      final rows = await db.rawQuery(
+        'SELECT id, title, year, front_image_path FROM postcards WHERE id IN ($marks)',
+        postcardIds,
+      );
+      for (final row in rows) {
+        final id = (row['id'] as num).toInt().toString();
+        final title = (row['title'] as String? ?? '').trim();
+        final year = (row['year'] as String? ?? '').trim();
+        collectibles.add(_AtlasGatherItem(
+          type: 'collectible',
+          key: 'postcard:$id',
+          title: title.isEmpty ? 'Postcard #$id' : title,
+          subtitle: year.isEmpty ? 'Postcard' : 'Postcard • $year',
+          imagePath: row['front_image_path'] as String? ?? '',
+        ));
+      }
+    }
+
+    final sportsCardIds = sportsCardKeys.map(int.tryParse).whereType<int>().toList();
+    if (sportsCardIds.isNotEmpty) {
+      final marks = List.filled(sportsCardIds.length, '?').join(',');
+      final rows = await db.rawQuery('''
+        SELECT c.id, c.player, c.year, c.brand, c.card_number,
+               c.team, COALESCE(u.image_path, '') AS image_path
+        FROM sports_card_catalog c
+        LEFT JOIN sports_card_collection u ON u.catalog_id = c.id
+        WHERE c.id IN ($marks)
+      ''', sportsCardIds);
+      for (final row in rows) {
+        final id = (row['id'] as num).toInt().toString();
+        final player = (row['player'] as String? ?? '').trim();
+        final details = <String>[
+          (row['year'] as String? ?? '').trim(),
+          (row['brand'] as String? ?? '').trim(),
+          (row['card_number'] as String? ?? '').trim().isEmpty
+              ? ''
+              : '#${(row['card_number'] as String).trim()}',
+          (row['team'] as String? ?? '').trim(),
+        ].where((value) => value.isNotEmpty).join(' • ');
+        collectibles.add(_AtlasGatherItem(
+          type: 'collectible',
+          key: 'sports_card:$id',
+          title: player.isEmpty ? 'Sports Card #$id' : player,
+          subtitle: details.isEmpty ? 'Sports Card' : details,
+          imagePath: row['image_path'] as String? ?? '',
+        ));
+      }
+    }
+
+    final customItemIds = customItemKeys.map(int.tryParse).whereType<int>().toList();
+    if (customItemIds.isNotEmpty) {
+      final marks = List.filled(customItemIds.length, '?').join(',');
+      final rows = await db.rawQuery('''
+        SELECT i.id, i.values_json, i.photo_paths_json, c.name AS collection_name
+        FROM custom_collection_items i
+        LEFT JOIN custom_collections c ON c.id = i.collection_id
+        WHERE i.id IN ($marks)
+      ''', customItemIds);
+      for (final row in rows) {
+        final id = (row['id'] as num).toInt().toString();
+        final collectionName = (row['collection_name'] as String? ?? 'Collection').trim();
+        var title = 'Collection Item #$id';
+        try {
+          final values = jsonDecode(row['values_json'] as String? ?? '{}');
+          if (values is Map) {
+            for (final preferredKey in const ['Title', 'title', 'Name', 'name', 'Item', 'item']) {
+              final value = values[preferredKey]?.toString().trim() ?? '';
+              if (value.isNotEmpty) {
+                title = value;
+                break;
+              }
+            }
+            if (title == 'Collection Item #$id') {
+              for (final value in values.values) {
+                final text = value?.toString().trim() ?? '';
+                if (text.isNotEmpty) {
+                  title = text;
+                  break;
+                }
+              }
+            }
+          }
+        } catch (_) {}
+        var imagePath = '';
+        try {
+          final photos = jsonDecode(row['photo_paths_json'] as String? ?? '[]');
+          if (photos is List && photos.isNotEmpty) {
+            imagePath = photos.first?.toString() ?? '';
+          }
+        } catch (_) {}
+        collectibles.add(_AtlasGatherItem(
+          type: 'collectible',
+          key: 'custom_collection_item:$id',
+          title: title,
+          subtitle: collectionName.isEmpty ? 'Collection Item' : collectionName,
+          imagePath: imagePath,
+        ));
+      }
+    }
+
+    final antiqueIds = antiqueKeys.map(int.tryParse).whereType<int>().toList();
+    if (antiqueIds.isNotEmpty) {
+      final marks = List.filled(antiqueIds.length, '?').join(',');
+      final rows = await db.rawQuery('''
+        SELECT a.id, a.title, a.year,
+               COALESCE((
+                 SELECT ai.image_path
+                 FROM antique_images ai
+                 WHERE ai.antique_id = a.id
+                 ORDER BY ai.sort_order ASC, ai.id ASC
+                 LIMIT 1
+               ), '') AS image_path
+        FROM antiques a
+        WHERE a.id IN ($marks)
+      ''', antiqueIds);
+      for (final row in rows) {
+        final id = (row['id'] as num).toInt().toString();
+        final title = (row['title'] as String? ?? '').trim();
+        final year = (row['year'] as String? ?? '').trim();
+        collectibles.add(_AtlasGatherItem(
+          type: 'collectible',
+          key: 'antique:$id',
+          title: title.isEmpty ? 'Antique #$id' : title,
+          subtitle: year.isEmpty ? 'Antique' : 'Antique • $year',
+          imagePath: row['image_path'] as String? ?? '',
+        ));
+      }
+    }
+
+    final valuableIds = valuableKeys.map(int.tryParse).whereType<int>().toList();
+    if (valuableIds.isNotEmpty) {
+      final marks = List.filled(valuableIds.length, '?').join(',');
+      final rows = await db.rawQuery('''
+        SELECT v.id, v.title, v.year,
+               COALESCE((
+                 SELECT vi.image_path
+                 FROM valuable_images vi
+                 WHERE vi.valuable_id = v.id
+                 ORDER BY vi.sort_order ASC, vi.id ASC
+                 LIMIT 1
+               ), '') AS image_path
+        FROM valuables v
+        WHERE v.id IN ($marks)
+      ''', valuableIds);
+      for (final row in rows) {
+        final id = (row['id'] as num).toInt().toString();
+        final title = (row['title'] as String? ?? '').trim();
+        final year = (row['year'] as String? ?? '').trim();
+        collectibles.add(_AtlasGatherItem(
+          type: 'collectible',
+          key: 'valuable:$id',
+          title: title.isEmpty ? 'Valuable #$id' : title,
+          subtitle: year.isEmpty ? 'Valuable' : 'Valuable • $year',
+          imagePath: row['image_path'] as String? ?? '',
+        ));
+      }
+    }
+
+    final photoFav = await _databaseHelper.getAtlasBookFavoriteKeys(itemType: 'photo');
+    final storyFav = await _databaseHelper.getAtlasBookFavoriteKeys(itemType: 'story');
+    final docFav = await _databaseHelper.getAtlasBookFavoriteKeys(itemType: 'document');
+    final postcardFav = await _databaseHelper.getAtlasBookFavoriteKeys(itemType: 'postcard');
+    final sportsCardFav = await _databaseHelper.getAtlasBookFavoriteKeys(itemType: 'sports_card');
+    final customItemFav = await _databaseHelper.getAtlasBookFavoriteKeys(itemType: 'custom_collection_item');
+    final antiqueFav = await _databaseHelper.getAtlasBookFavoriteKeys(itemType: 'antique');
+    final valuableFav = await _databaseHelper.getAtlasBookFavoriteKeys(itemType: 'valuable');
+    final collectibleFav = <String>{
+      ...postcardFav.map((key) => 'postcard:$key'),
+      ...sportsCardFav.map((key) => 'sports_card:$key'),
+      ...customItemFav.map((key) => 'custom_collection_item:$key'),
+      ...antiqueFav.map((key) => 'antique:$key'),
+      ...valuableFav.map((key) => 'valuable:$key'),
+    };
     if (!mounted) return;
-
     setState(() {
-      _connectedPhotoPaths = paths
-          .where((path) => path.isNotEmpty && File(path).existsSync())
-          .toList();
+      _connectedPhotoPaths = paths;
+      _connectedStories = stories..sort((a,b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+      _connectedDocuments = documents..sort((a,b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+      _connectedCollectibles = collectibles..sort((a,b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+      _favoritePhotoPaths = photoFav;
+      _favoriteStoryKeys = storyFav;
+      _favoriteDocumentKeys = docFav;
+      _favoriteCollectibleKeys = collectibleFav;
       _loadingConnectedPhotos = false;
     });
   }
@@ -374,13 +699,511 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
     });
   }
 
+  Future<void> _openSmartBookBuilder() async {
+    final bookId = widget.book.id;
+    if (bookId == null) return;
+
+    if (_selectedPeople.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Choose people for this book before building suggestions.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    _showSmartBuilderProgress('Finding the best pages for your book...');
+
+    try {
+      // Reload Step 2's persisted photo links immediately before building.
+      // This makes the Atlas Book repository the source of truth instead of
+      // relying on possibly stale in-memory selection state.
+      final savedPhotoPaths = await _repository.getBookPhotoPaths(bookId);
+      final selectedPersonIds = _selectedPeople
+          .where((person) => person.id != null)
+          .map((person) => person.id!)
+          .toSet();
+      final connectedPhotoPaths = await _findConnectedPhotosForPeople(
+        selectedPersonIds,
+      );
+
+      // Starter Book is intentionally curated: connected material is only a
+      // browsing pool. Smart Builder uses material the user actually selected.
+      final builderPhotoPaths = <String>{
+        ...savedPhotoPaths,
+        ..._selectedPhotoPaths,
+      }.where((path) => path.trim().isNotEmpty).toSet();
+
+      if (mounted) {
+        setState(() {
+          _connectedPhotoPaths = connectedPhotoPaths;
+          _selectedPhotoPaths = builderPhotoPaths;
+        });
+      }
+
+      await _loadSavedNonPhotoMaterials();
+      await _gatherConnectedPhotos(silent: true);
+
+      final suggestions = await _buildSmartBookSuggestions(
+        builderPhotoPaths: builderPhotoPaths,
+      );
+
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+
+      final chosen = await showDialog<Set<String>>(
+        context: context,
+        builder: (_) => _SmartBookBuilderDialog(suggestions: suggestions),
+      );
+
+      if (chosen == null || chosen.isEmpty) return;
+
+      final selected = suggestions.where((s) => chosen.contains(s.id)).toList();
+
+      _showSmartBuilderProgress(
+        'Building ${selected.length} '
+        '${selected.length == 1 ? 'page' : 'pages'}...',
+      );
+
+      final nextSortOrder = await _repository.getNextBookPageSortOrder(bookId);
+      final now = DateTime.now();
+      final pages = <AtlasBookPage>[];
+
+      for (var index = 0; index < selected.length; index++) {
+        final suggestion = selected[index];
+        var heroPhotoPath = '';
+
+        if (suggestion.pageType == 'person_profile' &&
+            suggestion.personId != null) {
+          FamilyPerson? person;
+          for (final candidate in _selectedPeople) {
+            if (candidate.id == suggestion.personId) {
+              person = candidate;
+              break;
+            }
+          }
+
+          final profilePath = person?.profilePhotoPath ?? '';
+          if (profilePath.isNotEmpty && File(profilePath).existsSync()) {
+            heroPhotoPath = profilePath;
+          } else if (suggestion.personId != null) {
+            final personPhotos = await _findConnectedPhotosForPerson(
+              suggestion.personId!,
+            );
+            if (personPhotos.isNotEmpty) {
+              heroPhotoPath = personPhotos.first;
+            }
+          }
+        }
+
+        if ((suggestion.pageType == 'cover_page' ||
+                suggestion.pageType == 'heirloom_feature') &&
+            suggestion.photoPaths.isNotEmpty) {
+          heroPhotoPath = suggestion.photoPaths.first;
+        }
+
+        final isMaterialPage = suggestion.pageType == 'story_page' ||
+            suggestion.pageType == 'document_page' ||
+            suggestion.pageType == 'heirloom_feature';
+
+        pages.add(
+          AtlasBookPage(
+            bookId: bookId,
+            pageType: suggestion.pageType,
+            personId: suggestion.personId,
+            relatedPersonId: suggestion.relatedPersonId,
+            heroPhotoPath: heroPhotoPath,
+            generationCount: suggestion.generationCount,
+            collagePhotoPathsJson: suggestion.pageType == 'collage'
+                ? jsonEncode(suggestion.photoPaths)
+                : '[]',
+            collageLayoutKey: suggestion.pageType == 'collage'
+                ? 'balanced_grid'
+                : '',
+            collageLayoutSeed: 0,
+            collageTitle: suggestion.pageType == 'collage'
+                ? suggestion.title
+                : suggestion.pageType == 'cover_page'
+                    ? widget.book.title
+                    : isMaterialPage
+                        ? suggestion.title
+                        : '',
+            collageSubtitle: suggestion.pageType == 'cover_page'
+                ? widget.book.subtitle
+                : isMaterialPage
+                    ? suggestion.subtitle
+                    : '',
+            collagePhotoLayoutJson: isMaterialPage
+                ? jsonEncode({
+                    'itemType': suggestion.materialType,
+                    'itemKey': suggestion.materialKey,
+                    'body': suggestion.materialBody,
+                    'designKey': suggestion.pageType == 'heirloom_feature'
+                        ? 'feature'
+                        : suggestion.pageType == 'story_page'
+                            ? 'narrative'
+                            : 'classic',
+                    'paperKey': 'ivory',
+                  })
+                : '',
+            sortOrder: nextSortOrder + index,
+            createdAt: now,
+            updatedAt: now,
+          ),
+        );
+      }
+
+      await _repository.insertBookPages(pages);
+      await _loadBookPages();
+
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${pages.length} '
+            '${pages.length == 1 ? 'suggested page' : 'suggested pages'} '
+            'added. You can edit, reorder, or delete any of them.',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+
+      // Close the progress dialog if it is still open.
+      Navigator.of(context, rootNavigator: true).pop();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Smart Book Builder could not finish: $error')),
+      );
+    }
+  }
+
+  void _showSmartBuilderProgress(String message) {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          content: Row(
+            children: [
+              const SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(strokeWidth: 3),
+              ),
+              const SizedBox(width: 18),
+              Expanded(
+                child: Text(
+                  message,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<List<_SmartBookSuggestion>> _buildSmartBookSuggestions({
+    required Set<String> builderPhotoPaths,
+  }) async {
+    final suggestions = <_SmartBookSuggestion>[];
+    final existingKeys = _bookPages.map(_smartPageKey).toSet();
+
+    final people = [..._selectedPeople]
+      ..sort(
+        (a, b) =>
+            a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase()),
+      );
+
+    final hasCoverPage = _bookPages.any((page) => page.pageType == 'cover_page');
+    if (!hasCoverPage) {
+      final coverPhotos = builderPhotoPaths
+          .map((path) => path.trim())
+          .where((path) => path.isNotEmpty && File(path).existsSync())
+          .take(1)
+          .toList();
+      suggestions.add(
+        _SmartBookSuggestion(
+          id: 'cover_page:starter',
+          pageType: 'cover_page',
+          title: widget.book.title,
+          subtitle: 'Cover / Title Page',
+          description: coverPhotos.isEmpty
+              ? 'Start the book with its title and subtitle.'
+              : 'Start the book with its title, subtitle, and a selected photo.',
+          icon: Icons.menu_book_outlined,
+          photoPaths: coverPhotos,
+          recommended: true,
+        ),
+      );
+    }
+
+    // Person profiles require no additional database lookups.
+    for (final person in people) {
+      final id = person.id;
+      if (id == null) continue;
+
+      final key = 'person_profile:$id';
+      if (existingKeys.contains(key)) continue;
+
+      suggestions.add(
+        _SmartBookSuggestion(
+          id: key,
+          pageType: 'person_profile',
+          title: person.displayName,
+          subtitle: 'Person Profile',
+          description: person.lifeSpan.isEmpty
+              ? 'Introduce ${person.displayName} with a profile page.'
+              : '${person.lifeSpan} • profile page',
+          icon: Icons.person_outline,
+          personId: id,
+          recommended: true,
+        ),
+      );
+    }
+
+    // Keep the relationship work bounded. We only need one fan chart and a
+    // useful starter set of family-group pages; the user can add more later.
+    var fanChartAdded = false;
+    var familyGroupSuggestions = 0;
+    const maxFamilyGroupSuggestions = 12;
+
+    for (final person in people) {
+      final id = person.id;
+      if (id == null) continue;
+
+      if (!fanChartAdded) {
+        final parents = await _databaseHelper.getFamilyParents(id);
+        if (parents.isNotEmpty) {
+          final key = 'ancestry_fan_chart:$id';
+          if (!existingKeys.contains(key)) {
+            suggestions.add(
+              _SmartBookSuggestion(
+                id: key,
+                pageType: 'ancestry_fan_chart',
+                title: 'Ancestry of ${person.displayName}',
+                subtitle: 'Ancestry Fan Chart',
+                description:
+                    'Show this family line visually across up to 4 generations.',
+                icon: Icons.hub_outlined,
+                personId: id,
+                generationCount: 4,
+                recommended: widget.book.scope != AtlasBookScope.people,
+              ),
+            );
+          }
+          fanChartAdded = true;
+        }
+      }
+
+      if (familyGroupSuggestions >= maxFamilyGroupSuggestions) {
+        if (fanChartAdded) break;
+        continue;
+      }
+
+      final spouses = await _databaseHelper.getFamilySpouses(id);
+      final children = await _databaseHelper.getFamilyChildren(id);
+
+      if (spouses.isEmpty && children.isEmpty) continue;
+
+      final spouse = spouses.isEmpty ? null : spouses.first;
+      final spouseId = spouse?.id;
+
+      final key = 'family_group_sheet:$id:${spouseId ?? 0}';
+      final reverseKey = spouseId == null
+          ? ''
+          : 'family_group_sheet:$spouseId:$id';
+
+      final alreadySuggested = suggestions.any(
+        (suggestion) =>
+            suggestion.id == key ||
+            (reverseKey.isNotEmpty && suggestion.id == reverseKey),
+      );
+
+      if (existingKeys.contains(key) ||
+          (reverseKey.isNotEmpty && existingKeys.contains(reverseKey)) ||
+          alreadySuggested) {
+        continue;
+      }
+
+      suggestions.add(
+        _SmartBookSuggestion(
+          id: key,
+          pageType: 'family_group_sheet',
+          title: spouse == null
+              ? '${person.displayName} Family'
+              : '${person.displayName} & ${spouse.displayName}',
+          subtitle: 'Family Group Sheet',
+          description: children.isEmpty
+              ? 'Summarize this family relationship.'
+              : '${children.length} '
+                    '${children.length == 1 ? 'child' : 'children'} '
+                    'connected in the tree.',
+          icon: Icons.family_restroom_outlined,
+          personId: id,
+          relatedPersonId: spouseId,
+          recommended: true,
+        ),
+      );
+
+      familyGroupSuggestions++;
+    }
+
+
+    _AtlasGatherItem? selectedItem(
+      List<_AtlasGatherItem> items,
+      String key,
+    ) {
+      for (final item in items) {
+        if (item.key == key) return item;
+      }
+      return null;
+    }
+
+    for (final key in _selectedStoryKeys) {
+      final item = selectedItem(_connectedStories, key);
+      if (item == null) continue;
+      final suggestionId = 'story_page:story:$key';
+      if (existingKeys.contains(suggestionId)) continue;
+      suggestions.add(
+        _SmartBookSuggestion(
+          id: suggestionId,
+          pageType: 'story_page',
+          title: item.title,
+          subtitle: item.subtitle.isEmpty ? 'Family Story' : item.subtitle,
+          description: 'Feature this selected family story as a narrative page.',
+          icon: Icons.auto_stories_outlined,
+          materialType: 'story',
+          materialKey: key,
+          materialBody: item.body,
+          recommended: true,
+        ),
+      );
+    }
+
+    for (final key in _selectedDocumentKeys) {
+      final item = selectedItem(_connectedDocuments, key);
+      if (item == null) continue;
+      final suggestionId = 'document_page:document:$key';
+      if (existingKeys.contains(suggestionId)) continue;
+      suggestions.add(
+        _SmartBookSuggestion(
+          id: suggestionId,
+          pageType: 'document_page',
+          title: item.title,
+          subtitle: 'Archive Document',
+          description: 'Give this selected document its own archival feature page.',
+          icon: Icons.description_outlined,
+          materialType: 'document',
+          materialKey: key,
+          materialBody: item.subtitle,
+          recommended: true,
+        ),
+      );
+    }
+
+    for (final key in _selectedCollectibleKeys) {
+      final item = selectedItem(_connectedCollectibles, key);
+      if (item == null) continue;
+      final suggestionId = 'heirloom_feature:collectible:$key';
+      if (existingKeys.contains(suggestionId)) continue;
+      final imagePath = item.imagePath.trim();
+      suggestions.add(
+        _SmartBookSuggestion(
+          id: suggestionId,
+          pageType: 'heirloom_feature',
+          title: item.title,
+          subtitle: item.subtitle.isEmpty ? 'Heirloom Feature' : item.subtitle,
+          description: 'Feature this selected heirloom or collection item in the book.',
+          icon: Icons.museum_outlined,
+          photoPaths: imagePath.isNotEmpty && File(imagePath).existsSync()
+              ? [imagePath]
+              : const [],
+          materialType: 'collectible',
+          materialKey: key,
+          materialBody: item.subtitle,
+          recommended: true,
+        ),
+      );
+    }
+
+    final photos = builderPhotoPaths
+        .map((path) => path.trim())
+        .where((path) => path.isNotEmpty)
+        .toList();
+
+    // Step 2 photos should always be available to Smart Builder as material.
+    // Do not suppress them just because an older/failed collage page already
+    // stored the same paths; the user may not actually have a usable photo page.
+    if (photos.isNotEmpty) {
+      final collagePhotos = photos.take(8).toList();
+      final photoWord = collagePhotos.length == 1 ? 'photo' : 'photos';
+
+      suggestions.add(
+        _SmartBookSuggestion(
+          id: 'collage:selected:${collagePhotos.join('|').hashCode}',
+          pageType: 'collage',
+          title: 'Family Photo Collage',
+          subtitle: 'Photo Collage',
+          description:
+              '${collagePhotos.length} saved $photoWord from Step 2 will be '
+              'used on this page.',
+          icon: Icons.grid_view_outlined,
+          photoPaths: collagePhotos,
+          recommended: true,
+        ),
+      );
+    }
+
+    return suggestions;
+  }
+
+  String _smartPageKey(AtlasBookPage page) {
+    switch (page.pageType) {
+      case 'person_profile':
+        return 'person_profile:${page.personId ?? 0}';
+      case 'ancestry_fan_chart':
+        return 'ancestry_fan_chart:${page.personId ?? 0}';
+      case 'family_group_sheet':
+        return 'family_group_sheet:${page.personId ?? 0}:'
+            '${page.relatedPersonId ?? 0}';
+      case 'collage':
+        return 'collage:${page.id ?? 0}';
+      case 'story_page':
+      case 'document_page':
+      case 'heirloom_feature':
+        try {
+          final data = jsonDecode(page.collagePhotoLayoutJson);
+          if (data is Map) {
+            final itemType = data['itemType']?.toString() ?? '';
+            final itemKey = data['itemKey']?.toString() ?? '';
+            if (itemType.isNotEmpty && itemKey.isNotEmpty) {
+              return '${page.pageType}:$itemType:$itemKey';
+            }
+          }
+        } catch (_) {}
+        return '${page.pageType}:${page.id ?? 0}';
+      default:
+        return '${page.pageType}:${page.id ?? 0}';
+    }
+  }
+
   Future<void> _addPage() async {
     final pageType = await showDialog<String>(
       context: context,
       builder: (_) => const _AddPageTypeDialog(),
     );
 
-    if (pageType == 'person_profile') {
+    if (pageType == 'cover_page') {
+      await _createCoverPage();
+    } else if (pageType == 'person_profile') {
       await _createPersonProfilePage();
     } else if (pageType == 'ancestry_fan_chart') {
       await _createAncestryFanChartPage();
@@ -389,6 +1212,42 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
     } else if (pageType == 'collage') {
       await _createCollagePage();
     }
+  }
+
+  Future<void> _createCoverPage() async {
+    final bookId = widget.book.id;
+    if (bookId == null) return;
+
+    final result = await showDialog<_CoverPageResult>(
+      context: context,
+      builder: (_) => _CoverPageDialog(
+        initialTitle: widget.book.title,
+        initialSubtitle: widget.book.subtitle,
+        photoPaths: _selectedPhotoPaths
+            .where((path) => path.isNotEmpty && File(path).existsSync())
+            .toList(),
+      ),
+    );
+    if (result == null) return;
+
+    final now = DateTime.now();
+    await _repository.insertBookPage(
+      AtlasBookPage(
+        bookId: bookId,
+        pageType: 'cover_page',
+        heroPhotoPath: result.photoPath ?? '',
+        collageTitle: result.title,
+        collageSubtitle: result.subtitle,
+        sortOrder: await _repository.getNextBookPageSortOrder(bookId),
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    await _loadBookPages();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Cover / Title Page saved to this book.')),
+    );
   }
 
   Future<void> _createCollagePage() async {
@@ -686,7 +1545,14 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
     final pageId = page.id;
     if (pageId == null) return;
 
-    if (page.pageType != 'collage' && _selectedPeople.isEmpty) {
+    final isMaterialPage = page.pageType == 'story_page' ||
+        page.pageType == 'document_page' ||
+        page.pageType == 'heirloom_feature';
+
+    if (page.pageType != 'collage' &&
+        page.pageType != 'cover_page' &&
+        !isMaterialPage &&
+        _selectedPeople.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Choose people for this book before editing pages.'),
@@ -697,7 +1563,89 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
 
     final now = DateTime.now();
 
-    if (page.pageType == 'collage') {
+    if (isMaterialPage) {
+      var body = '';
+      var designKey = 'classic';
+      var paperKey = 'ivory';
+      try {
+        final data = jsonDecode(page.collagePhotoLayoutJson);
+        if (data is Map) {
+          body = data['body']?.toString() ?? '';
+          designKey = data['designKey']?.toString() ?? 'classic';
+          paperKey = data['paperKey']?.toString() ?? 'ivory';
+        }
+      } catch (_) {}
+
+      final result = await showDialog<_MaterialPageEditResult>(
+        context: context,
+        builder: (_) => _MaterialPageEditDialog(
+          initialTitle: page.collageTitle,
+          initialSubtitle: page.collageSubtitle,
+          initialBody: body,
+          initialDesignKey: designKey,
+          initialPaperKey: paperKey,
+        ),
+      );
+      if (result == null) return;
+
+      Map<String, dynamic> metadata = {};
+      try {
+        final decoded = jsonDecode(page.collagePhotoLayoutJson);
+        if (decoded is Map) {
+          metadata = decoded.map((key, value) => MapEntry(key.toString(), value));
+        }
+      } catch (_) {}
+      metadata['body'] = result.body;
+      metadata['designKey'] = result.designKey;
+      metadata['paperKey'] = result.paperKey;
+
+      await _repository.updateBookPage(
+        AtlasBookPage(
+          id: pageId,
+          bookId: page.bookId,
+          pageType: page.pageType,
+          personId: page.personId,
+          relatedPersonId: page.relatedPersonId,
+          heroPhotoPath: page.heroPhotoPath,
+          generationCount: page.generationCount,
+          collagePhotoPathsJson: page.collagePhotoPathsJson,
+          collageLayoutKey: page.collageLayoutKey,
+          collageLayoutSeed: page.collageLayoutSeed,
+          collageTitle: result.title,
+          collageSubtitle: result.subtitle,
+          collagePhotoLayoutJson: jsonEncode(metadata),
+          sortOrder: page.sortOrder,
+          createdAt: page.createdAt,
+          updatedAt: now,
+        ),
+      );
+    } else if (page.pageType == 'cover_page') {
+      final result = await showDialog<_CoverPageResult>(
+        context: context,
+        builder: (_) => _CoverPageDialog(
+          initialTitle: page.collageTitle.isEmpty ? widget.book.title : page.collageTitle,
+          initialSubtitle: page.collageSubtitle,
+          initialPhotoPath: page.heroPhotoPath,
+          photoPaths: _selectedPhotoPaths
+              .where((path) => path.isNotEmpty && File(path).existsSync())
+              .toList(),
+        ),
+      );
+      if (result == null) return;
+      await _repository.updateBookPage(
+        AtlasBookPage(
+          id: pageId,
+          bookId: page.bookId,
+          pageType: page.pageType,
+          heroPhotoPath: result.photoPath ?? '',
+          collageTitle: result.title,
+          collageSubtitle: result.subtitle,
+          sortOrder: page.sortOrder,
+          createdAt: page.createdAt,
+          updatedAt: now,
+        ),
+      );
+    } else if (page.pageType == 'collage') {
       final availablePhotos = _selectedPhotoPaths
           .where((path) => path.isNotEmpty && File(path).existsSync())
           .toList();
@@ -908,6 +1856,24 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
   }
 
   Future<void> _previewSavedPage(AtlasBookPage page) async {
+    if (page.pageType == 'cover_page') {
+      await showDialog<void>(
+        context: context,
+        builder: (_) => _SavedCoverPagePreviewDialog(page: page),
+      );
+      return;
+    }
+
+    if (page.pageType == 'story_page' ||
+        page.pageType == 'document_page' ||
+        page.pageType == 'heirloom_feature') {
+      await showDialog<void>(
+        context: context,
+        builder: (_) => _SavedMaterialPagePreviewDialog(page: page),
+      );
+      return;
+    }
+
     if (page.pageType == 'collage') {
       List<String> photoPaths = [];
 
@@ -999,6 +1965,18 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
     final previewPages = <_BookPreviewPageData>[];
 
     for (final page in _bookPages) {
+      if (page.pageType == 'cover_page') {
+        previewPages.add(_BookPreviewPageData(page: page));
+        continue;
+      }
+
+      if (page.pageType == 'story_page' ||
+          page.pageType == 'document_page' ||
+          page.pageType == 'heirloom_feature') {
+        previewPages.add(_BookPreviewPageData(page: page));
+        continue;
+      }
+
       if (page.pageType == 'collage') {
         List<String> photoPaths = [];
 
@@ -1069,7 +2047,18 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
     final book = widget.book;
 
     return Scaffold(
-      appBar: AppBar(title: Text(book.title)),
+      backgroundColor: Colors.transparent,
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF071A2B).withValues(alpha: 0.54),
+        surfaceTintColor: Colors.transparent,
+        title: Text(
+          book.title,
+          style: const TextStyle(
+            color: Color(0xFFF3E9D1),
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(32),
         child: Center(
@@ -1078,29 +2067,160 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  book.title,
-                  style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-                    fontWeight: FontWeight.w800,
+                Container(
+                  width: double.infinity,
+                  clipBehavior: Clip.antiAlias,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF071A2B).withValues(alpha: 0.72),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: const Color(0xFFC9A65A).withValues(alpha: 0.46),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.24),
+                        blurRadius: 24,
+                        offset: const Offset(0, 12),
+                      ),
+                    ],
+                  ),
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: FractionallySizedBox(
+                            widthFactor: 0.55,
+                            child: Opacity(
+                              opacity: 0.46,
+                              child: Image.asset(
+                                'assets/branding/heirloom_atlas_beta_heritage_atmosphere.png',
+                                fit: BoxFit.cover,
+                                alignment: Alignment.bottomRight,
+                                filterQuality: FilterQuality.high,
+                                errorBuilder: (_, _, _) =>
+                                    const SizedBox.shrink(),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const Positioned.fill(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.centerLeft,
+                              end: Alignment.centerRight,
+                              colors: [
+                                Color(0xFC071A2B),
+                                Color(0xE9071A2B),
+                                Color(0x9A071A2B),
+                                Color(0x30071A2B),
+                              ],
+                              stops: [0.0, 0.43, 0.72, 1.0],
+                            ),
+                          ),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(24, 20, 22, 20),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 52,
+                              height: 52,
+                              decoration: BoxDecoration(
+                                color: const Color(
+                                  0xFF103451,
+                                ).withValues(alpha: 0.86),
+                                borderRadius: BorderRadius.circular(15),
+                                border: Border.all(
+                                  color: const Color(
+                                    0xFFC9A65A,
+                                  ).withValues(alpha: 0.34),
+                                ),
+                              ),
+                              child: Icon(
+                                book.scope.icon,
+                                color: const Color(0xFFC9A65A),
+                                size: 29,
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    book.title,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .headlineLarge
+                                        ?.copyWith(
+                                          color: const Color(0xFFF3E9D1),
+                                          fontWeight: FontWeight.w900,
+                                        ),
+                                  ),
+                                  if (book.subtitle.isNotEmpty) ...[
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      book.subtitle,
+                                      style: AtlasBookTheme.subtitle(context),
+                                    ),
+                                  ],
+                                  const SizedBox(height: 7),
+                                  Text(
+                                    'Shape the people, photographs, and memories into a book your family can keep.',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodyMedium
+                                        ?.copyWith(
+                                          color: const Color(
+                                            0xFFF3E9D1,
+                                          ).withValues(alpha: 0.86),
+                                        ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 14),
+                            Chip(
+                              avatar: Icon(book.scope.icon, size: 18),
+                              label: Text(book.scope.label),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                if (book.subtitle.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  Text(book.subtitle, style: AtlasBookTheme.subtitle(context)),
-                ],
-                const SizedBox(height: 12),
-                Chip(
-                  avatar: Icon(book.scope.icon, size: 18),
-                  label: Text(book.scope.label),
-                ),
-                const SizedBox(height: 32),
-                Text(
-                  'Build Your Book',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+                const SizedBox(height: 26),
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.history_edu_outlined,
+                      color: Color(0xFFC9A65A),
+                      size: 22,
+                    ),
+                    const SizedBox(width: 9),
+                    Text(
+                      'Build Your Book',
+                      style: Theme.of(context).textTheme.headlineSmall
+                          ?.copyWith(
+                            color: const Color(0xFFF3E9D1),
+                            fontWeight: FontWeight.w800,
+                          ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 18),
+                _BookProgressOverview(
+                  peopleCount: _selectedPeople.length,
+                  photoCount: _selectedPhotoPaths.length,
+                  pageCount: _bookPages.length,
+                  readyToPreview: _bookPages.isNotEmpty,
+                ),
+                const SizedBox(height: 14),
                 _WorkspaceStep(
                   number: '1',
                   title: _selectionTitle(book.scope),
@@ -1154,37 +2274,68 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
                       'items connected to the people in this book.',
                   icon: Icons.collections_bookmark_outlined,
                   onTap: _gatherConnectedPhotos,
-                  actionLabel: 'Find Connected Photos',
+                  actionLabel: 'Gather Material',
                 ),
                 if (_loadingConnectedPhotos ||
-                    _connectedPhotoPaths.isNotEmpty) ...[
+                    _connectedPhotoPaths.isNotEmpty ||
+                    _connectedStories.isNotEmpty ||
+                    _connectedDocuments.isNotEmpty ||
+                    _connectedCollectibles.isNotEmpty) ...[
                   const SizedBox(height: 12),
-                  _ConnectedPhotosPanel(
+                  _GatherMaterialPanel(
                     loading: _loadingConnectedPhotos,
                     photoPaths: _connectedPhotoPaths,
+                    stories: _connectedStories,
+                    documents: _connectedDocuments,
+                    collectibles: _connectedCollectibles,
                     selectedPhotoPaths: _selectedPhotoPaths,
-                    onSelectionChanged: (path, selected) {
+                    selectedStoryKeys: _selectedStoryKeys,
+                    selectedDocumentKeys: _selectedDocumentKeys,
+                    selectedCollectibleKeys: _selectedCollectibleKeys,
+                    favoritePhotoPaths: _favoritePhotoPaths,
+                    favoriteStoryKeys: _favoriteStoryKeys,
+                    favoriteDocumentKeys: _favoriteDocumentKeys,
+                    favoriteCollectibleKeys: _favoriteCollectibleKeys,
+                    filter: _materialFilter,
+                    onFilterChanged: (value) => setState(() => _materialFilter = value),
+                    onSelectionChanged: (type, key, selected) {
                       setState(() {
-                        if (selected) {
-                          _selectedPhotoPaths.add(path);
-                        } else {
-                          _selectedPhotoPaths.remove(path);
-                        }
+                        final target = type == 'story'
+                          ? _selectedStoryKeys
+                          : type == 'document'
+                              ? _selectedDocumentKeys
+                              : type == 'collectible'
+                                  ? _selectedCollectibleKeys
+                                  : _selectedPhotoPaths;
+                        selected ? target.add(key) : target.remove(key);
                       });
                     },
-                    onSave: _saveBookPhotos,
-                  ),
+                    onFavoriteChanged: _setAtlasMaterialFavorite,
+                    onSave: _saveBookMaterials,
+                  )
                 ],
                 const SizedBox(height: 12),
                 _WorkspaceStep(
                   number: '3',
                   title: 'Build the story',
                   description:
-                      'Turn the people and material you selected into actual '
-                      'Atlas Book pages.',
-                  icon: Icons.menu_book_outlined,
-                  onTap: _addPage,
-                  actionLabel: 'Add Page',
+                      'Let Heirloom Atlas suggest a starter book from the '
+                      'people, relationships, and material you selected — or '
+                      'continue adding pages manually.',
+                  icon: Icons.auto_awesome_outlined,
+                  onTap: _openSmartBookBuilder,
+                  actionLabel: 'Build Starter Book',
+                ),
+                const SizedBox(height: 12),
+                _SmartBookBuilderPanel(
+                  peopleCount: _selectedPeople.length,
+                  photoCount: _selectedPhotoPaths.length,
+                  storyCount: _selectedStoryKeys.length,
+                  documentCount: _selectedDocumentKeys.length,
+                  collectibleCount: _selectedCollectibleKeys.length,
+                  pageCount: _bookPages.length,
+                  onBuild: _openSmartBookBuilder,
+                  onAddPage: _addPage,
                 ),
                 const SizedBox(height: 12),
                 _BookPagesPanel(
@@ -1238,6 +2389,404 @@ class _AtlasBookWorkspaceScreenState extends State<AtlasBookWorkspaceScreen> {
       case AtlasBookScope.generations:
         return 'Choose which generations you want represented in the book.';
     }
+  }
+}
+
+class _BookProgressOverview extends StatelessWidget {
+  final int peopleCount;
+  final int photoCount;
+  final int pageCount;
+  final bool readyToPreview;
+
+  const _BookProgressOverview({
+    required this.peopleCount,
+    required this.photoCount,
+    required this.pageCount,
+    required this.readyToPreview,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final completed = <bool>[
+      peopleCount > 0,
+      photoCount > 0,
+      pageCount > 0,
+      readyToPreview,
+    ].where((value) => value).length;
+    final progress = completed / 4;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: const Color(0xFF071A2B).withValues(alpha: 0.46),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: const Color(0xFFC9A65A).withValues(alpha: 0.28),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.auto_stories_outlined,
+                color: Color(0xFFC9A65A),
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  'Book Progress',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: const Color(0xFFF3E9D1),
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+              Text(
+                '${(progress * 100).round()}%',
+                style: const TextStyle(
+                  color: Color(0xFFF3E9D1),
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          LinearProgressIndicator(value: progress),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _ProgressChip(
+                icon: Icons.people_outline,
+                label: '$peopleCount ${peopleCount == 1 ? 'person' : 'people'}',
+                complete: peopleCount > 0,
+              ),
+              _ProgressChip(
+                icon: Icons.photo_library_outlined,
+                label: '$photoCount saved ${photoCount == 1 ? 'photo' : 'photos'}',
+                complete: photoCount > 0,
+              ),
+              _ProgressChip(
+                icon: Icons.menu_book_outlined,
+                label: '$pageCount ${pageCount == 1 ? 'page' : 'pages'}',
+                complete: pageCount > 0,
+              ),
+              _ProgressChip(
+                icon: Icons.preview_outlined,
+                label: readyToPreview ? 'Ready to preview' : 'Preview not ready',
+                complete: readyToPreview,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProgressChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool complete;
+
+  const _ProgressChip({
+    required this.icon,
+    required this.label,
+    required this.complete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Chip(
+      avatar: Icon(
+        complete ? Icons.check_circle_outline : icon,
+        size: 17,
+        color: complete ? const Color(0xFFC9A65A) : null,
+      ),
+      label: Text(label),
+      visualDensity: VisualDensity.compact,
+    );
+  }
+}
+
+class _SmartBookSuggestion {
+  final String id, pageType, title, subtitle, description;
+  final IconData icon;
+  final int? personId, relatedPersonId;
+  final int generationCount;
+  final List<String> photoPaths;
+  final String materialType;
+  final String materialKey;
+  final String materialBody;
+  final bool recommended;
+  const _SmartBookSuggestion({
+    required this.id,
+    required this.pageType,
+    required this.title,
+    required this.subtitle,
+    required this.description,
+    required this.icon,
+    this.personId,
+    this.relatedPersonId,
+    this.generationCount = 3,
+    this.photoPaths = const [],
+    this.materialType = '',
+    this.materialKey = '',
+    this.materialBody = '',
+    this.recommended = false,
+  });
+}
+
+class _SmartBookBuilderDialog extends StatefulWidget {
+  final List<_SmartBookSuggestion> suggestions;
+  const _SmartBookBuilderDialog({required this.suggestions});
+  @override
+  State<_SmartBookBuilderDialog> createState() =>
+      _SmartBookBuilderDialogState();
+}
+
+class _SmartBookBuilderDialogState extends State<_SmartBookBuilderDialog> {
+  late Set<String> _selectedIds;
+  @override
+  void initState() {
+    super.initState();
+    _selectedIds = widget.suggestions
+        .where((s) => s.recommended)
+        .map((s) => s.id)
+        .toSet();
+    if (_selectedIds.isEmpty && widget.suggestions.isNotEmpty) {
+      _selectedIds.add(widget.suggestions.first.id);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      child: SizedBox(
+        width: 820,
+        height: 720,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(22, 18, 12, 12),
+              child: Row(
+                children: [
+                  const Icon(Icons.auto_awesome_outlined, size: 30),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Build Starter Book',
+                          style: Theme.of(context).textTheme.titleLarge
+                              ?.copyWith(fontWeight: FontWeight.w900),
+                        ),
+                        const SizedBox(height: 3),
+                        const Text(
+                          'Create an editable first draft from the people and material '
+                          'you selected. Nothing here is permanent—you can edit, reorder, '
+                          'add, or remove pages afterward.',
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: widget.suggestions.isEmpty
+                  ? const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(32),
+                        child: Text(
+                          'No new page suggestions are available right now. Try adding people, relationships, or saved photos.',
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: widget.suggestions.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 8),
+                      itemBuilder: (context, index) {
+                        final s = widget.suggestions[index];
+                        return Card(
+                          child: CheckboxListTile(
+                            value: _selectedIds.contains(s.id),
+                            onChanged: (v) => setState(
+                              () => v == true
+                                  ? _selectedIds.add(s.id)
+                                  : _selectedIds.remove(s.id),
+                            ),
+                            secondary: CircleAvatar(child: Icon(s.icon)),
+                            title: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    s.title,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                                if (s.recommended)
+                                  const Chip(
+                                    visualDensity: VisualDensity.compact,
+                                    label: Text('Recommended'),
+                                  ),
+                              ],
+                            ),
+                            subtitle: Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text('${s.subtitle}\n${s.description}'),
+                            ),
+                            isThreeLine: true,
+                            controlAffinity: ListTileControlAffinity.trailing,
+                          ),
+                        );
+                      },
+                    ),
+            ),
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  TextButton(
+                    onPressed: widget.suggestions.isEmpty
+                        ? null
+                        : () => setState(
+                            () => _selectedIds = widget.suggestions
+                                .map((s) => s.id)
+                                .toSet(),
+                          ),
+                    child: const Text('Select All'),
+                  ),
+                  TextButton(
+                    onPressed: _selectedIds.isEmpty
+                        ? null
+                        : () => setState(_selectedIds.clear),
+                    child: const Text('Clear'),
+                  ),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancel'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.icon(
+                    onPressed: _selectedIds.isEmpty
+                        ? null
+                        : () => Navigator.pop(context, _selectedIds),
+                    icon: const Icon(Icons.auto_awesome),
+                    label: Text(
+                      'Add ${_selectedIds.length} ${_selectedIds.length == 1 ? 'Page' : 'Pages'}',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SmartBookBuilderPanel extends StatelessWidget {
+  final int peopleCount;
+  final int photoCount;
+  final int storyCount;
+  final int documentCount;
+  final int collectibleCount;
+  final int pageCount;
+  final VoidCallback onBuild, onAddPage;
+  const _SmartBookBuilderPanel({
+    required this.peopleCount,
+    required this.photoCount,
+    required this.storyCount,
+    required this.documentCount,
+    required this.collectibleCount,
+    required this.pageCount,
+    required this.onBuild,
+    required this.onAddPage,
+  });
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: const Color(0xFF0B2742).withValues(alpha: 0.54),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(
+          color: const Color(0xFFC9A65A).withValues(alpha: 0.44),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(22),
+        child: Row(
+          children: [
+            const Icon(
+              Icons.auto_awesome_outlined,
+              size: 38,
+              color: Color(0xFFC9A65A),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Smart Book Builder',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: const Color(0xFFF3E9D1),
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 5),
+                  Text(
+                    '$peopleCount ${peopleCount == 1 ? 'person' : 'people'} • '
+                    '${photoCount + storyCount + documentCount + collectibleCount} selected '
+                    '${photoCount + storyCount + documentCount + collectibleCount == 1 ? 'item' : 'items'} • '
+                    '$pageCount existing ${pageCount == 1 ? 'page' : 'pages'}',
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '$photoCount photos • $storyCount stories • '
+                    '$documentCount documents • $collectibleCount collectibles',
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Build an editable first draft from the people and material you deliberately selected.',
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 16),
+            OutlinedButton.icon(
+              onPressed: onAddPage,
+              icon: const Icon(Icons.add),
+              label: const Text('Add Manually'),
+            ),
+            const SizedBox(width: 8),
+            FilledButton.icon(
+              onPressed: peopleCount == 0 ? null : onBuild,
+              icon: const Icon(Icons.auto_awesome),
+              label: const Text('Build Starter Book'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -2015,167 +3564,276 @@ class _SelectedPeoplePanel extends StatelessWidget {
   }
 }
 
-class _ConnectedPhotosPanel extends StatelessWidget {
+class _AtlasGatherItem {
+  final String type;
+  final String key;
+  final String title;
+  final String subtitle;
+  final String imagePath;
+  final String body;
+  const _AtlasGatherItem({
+    required this.type,
+    required this.key,
+    required this.title,
+    this.subtitle = '',
+    this.imagePath = '',
+    this.body = '',
+  });
+}
+
+class _GatherMaterialPanel extends StatelessWidget {
   final bool loading;
   final List<String> photoPaths;
-  final Set<String> selectedPhotoPaths;
-  final void Function(String path, bool selected) onSelectionChanged;
+  final List<_AtlasGatherItem> stories;
+  final List<_AtlasGatherItem> documents;
+  final List<_AtlasGatherItem> collectibles;
+  final Set<String> selectedPhotoPaths, selectedStoryKeys, selectedDocumentKeys, selectedCollectibleKeys;
+  final Set<String> favoritePhotoPaths, favoriteStoryKeys, favoriteDocumentKeys, favoriteCollectibleKeys;
+  final String filter;
+  final ValueChanged<String> onFilterChanged;
+  final void Function(String type, String key, bool selected) onSelectionChanged;
+  final void Function(String type, String key, bool favorite) onFavoriteChanged;
   final VoidCallback onSave;
-
-  const _ConnectedPhotosPanel({
-    required this.loading,
-    required this.photoPaths,
-    required this.selectedPhotoPaths,
-    required this.onSelectionChanged,
-    required this.onSave,
-  });
+  const _GatherMaterialPanel({required this.loading, required this.photoPaths, required this.stories, required this.documents, required this.collectibles, required this.selectedPhotoPaths, required this.selectedStoryKeys, required this.selectedDocumentKeys, required this.selectedCollectibleKeys, required this.favoritePhotoPaths, required this.favoriteStoryKeys, required this.favoriteDocumentKeys, required this.favoriteCollectibleKeys, required this.filter, required this.onFilterChanged, required this.onSelectionChanged, required this.onFavoriteChanged, required this.onSave});
 
   @override
   Widget build(BuildContext context) {
-    if (loading) {
-      return const Card(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Center(child: CircularProgressIndicator()),
-        ),
-      );
-    }
+    if (loading) return const Card(child: Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator())));
+    // The normal material views stay scoped to the people selected for this
+    // book. Favorites is different: photo favorites are global Atlas Book
+    // favorites, so include every starred photo that still exists on disk.
+    final photoSourcePaths = filter == 'Favorites'
+        ? <String>{
+            ...photoPaths,
+            ...favoritePhotoPaths.where((path) =>
+                path.trim().isNotEmpty && File(path).existsSync()),
+          }.toList()
+        : photoPaths;
 
-    final selectedCount = photoPaths.where(selectedPhotoPaths.contains).length;
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(22),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+    final all = <_AtlasGatherItem>[
+      ...photoSourcePaths.map((p) => _AtlasGatherItem(type: 'photo', key: p, title: File(p).uri.pathSegments.isEmpty ? p : File(p).uri.pathSegments.last)),
+      ...stories, ...documents, ...collectibles,
+    ];
+    bool favorite(_AtlasGatherItem i) => i.type == 'photo'
+        ? favoritePhotoPaths.contains(i.key)
+        : i.type == 'story'
+            ? favoriteStoryKeys.contains(i.key)
+            : i.type == 'document'
+                ? favoriteDocumentKeys.contains(i.key)
+                : favoriteCollectibleKeys.contains(i.key);
+    bool selected(_AtlasGatherItem i) => i.type == 'photo'
+        ? selectedPhotoPaths.contains(i.key)
+        : i.type == 'story'
+            ? selectedStoryKeys.contains(i.key)
+            : i.type == 'document'
+                ? selectedDocumentKeys.contains(i.key)
+                : selectedCollectibleKeys.contains(i.key);
+    final visible = all.where((i) => switch(filter) { 'Favorites' => favorite(i), 'Photos' => i.type == 'photo', 'Stories' => i.type == 'story', 'Documents' => i.type == 'document', 'Collectibles' => i.type == 'collectible', _ => true }).toList()
+      ..sort((a,b) { final f=(favorite(b)?1:0).compareTo(favorite(a)?1:0); return f != 0 ? f : a.title.toLowerCase().compareTo(b.title.toLowerCase()); });
+    final selectedCount = all.where(selected).length;
+    final favoriteCount = all.where(favorite).length;
+    final filters = ['All','Favorites','Photos','Stories','Documents','Collectibles'];
+    return Card(child: Padding(padding: const EdgeInsets.all(22), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children:[Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children:[Text('Gather Material', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)), const SizedBox(height:4), Text('$selectedCount selected • $favoriteCount Atlas favorites • ${all.length} connected items', style: AtlasBookTheme.subtitle(context))])), if(all.isNotEmpty) FilledButton.icon(onPressed:onSave, icon:const Icon(Icons.bookmark_add_outlined), label:const Text('Save Selected Material'))]),
+      const SizedBox(height:10), const Text('Connected items are suggestions. Select only what belongs in this book. A star marks an Atlas Favorite globally; the checkbox selects it only for this book.'),
+      const SizedBox(height:16), Wrap(spacing:8, runSpacing:8, children:filters.map((v)=>FilterChip(selected:filter==v,label:Text(v),avatar:v=='Favorites'?const Icon(Icons.star_outline,size:18):null,onSelected:(_)=>onFilterChanged(v))).toList()), const SizedBox(height:16),
+      if(visible.isEmpty) Text(filter=='Favorites' ? 'No Atlas favorites found yet.' : 'No connected ${filter == 'All' ? 'material' : filter.toLowerCase()} found for these people.')
+      else GridView.builder(shrinkWrap:true, physics:const NeverScrollableScrollPhysics(), gridDelegate:const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount:4,crossAxisSpacing:12,mainAxisSpacing:12,childAspectRatio:.92), itemCount:visible.length, itemBuilder:(context,index){
+        final item=visible[index], isSelected=selected(item), isFavorite=favorite(item);
+        return Card(clipBehavior:Clip.antiAlias, child:InkWell(onTap:()=>onSelectionChanged(item.type,item.key,!isSelected), child:Stack(fit:StackFit.expand, children:[
+          if(item.type=='photo')
+            Image.file(File(item.key),fit:BoxFit.cover,errorBuilder:(_,_,_)=>const Center(child:Icon(Icons.broken_image_outlined)))
+          else if(item.imagePath.isNotEmpty && File(item.imagePath).existsSync())
+            Stack(
+              fit: StackFit.expand,
               children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '${photoPaths.length} Connected '
-                        '${photoPaths.length == 1 ? 'Photo' : 'Photos'} Found',
-                        style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w800),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '$selectedCount selected for this book',
-                        style: AtlasBookTheme.subtitle(context),
-                      ),
-                    ],
-                  ),
-                ),
-                if (photoPaths.isNotEmpty)
-                  FilledButton.icon(
-                    onPressed: onSave,
-                    icon: const Icon(Icons.save_outlined),
-                    label: const Text('Save Book Photos'),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Connected photos are suggestions. Check only the photos you '
-              'want to include in this Atlas Book.',
-            ),
-            const SizedBox(height: 16),
-            if (photoPaths.isEmpty)
-              const Text(
-                'No linked photos were found yet. Link photos to these people '
-                'from the Photos section, then search again.',
-              )
-            else
-              GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 4,
-                  crossAxisSpacing: 12,
-                  mainAxisSpacing: 12,
-                  childAspectRatio: 1,
-                ),
-                itemCount: photoPaths.length,
-                itemBuilder: (context, index) {
-                  final path = photoPaths[index];
-                  final selected = selectedPhotoPaths.contains(path);
-
-                  return Card(
-                    clipBehavior: Clip.antiAlias,
-                    child: InkWell(
-                      onTap: () => onSelectionChanged(path, !selected),
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          Image.file(
-                            File(path),
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, _, _) => const ColoredBox(
-                              color: Color(0x11000000),
-                              child: Center(
-                                child: Icon(Icons.broken_image_outlined),
-                              ),
-                            ),
+                Image.file(File(item.imagePath), fit: BoxFit.cover),
+                Align(
+                  alignment: Alignment.bottomCenter,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    color: Theme.of(context).colorScheme.surface.withValues(alpha: .88),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          item.title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        if (item.subtitle.isNotEmpty)
+                          Text(
+                            item.subtitle,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.bodySmall,
                           ),
-                          Positioned(
-                            top: 8,
-                            right: 8,
-                            child: Material(
-                              color: Theme.of(context).colorScheme.surface,
-                              shape: const CircleBorder(),
-                              elevation: 2,
-                              child: Checkbox(
-                                value: selected,
-                                onChanged: (value) =>
-                                    onSelectionChanged(path, value ?? false),
-                              ),
-                            ),
-                          ),
-                          if (selected)
-                            Positioned.fill(
-                              child: IgnorePointer(
-                                child: DecoratedBox(
-                                  decoration: BoxDecoration(
-                                    border: Border.all(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.primary,
-                                      width: 4,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          Positioned(
-                            left: 0,
-                            right: 0,
-                            bottom: 0,
-                            child: Container(
-                              padding: const EdgeInsets.all(8),
-                              color: Colors.black54,
-                              child: Text(
-                                path.split(Platform.pathSeparator).last,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 11,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
+                      ],
                     ),
-                  );
-                },
-              ),
-          ],
+                  ),
+                ),
+              ],
+            )
+          else Container(padding:const EdgeInsets.fromLTRB(14,48,14,14), child:Column(mainAxisAlignment:MainAxisAlignment.center, children:[Icon(item.type=='story'?Icons.auto_stories_outlined:item.type=='collectible'?Icons.inventory_2_outlined:Icons.description_outlined,size:42),const SizedBox(height:10),Text(item.title,maxLines:3,overflow:TextOverflow.ellipsis,textAlign:TextAlign.center,style:const TextStyle(fontWeight:FontWeight.w700)),if(item.subtitle.isNotEmpty)...[const SizedBox(height:6),Text(item.subtitle,maxLines:2,overflow:TextOverflow.ellipsis,textAlign:TextAlign.center,style:Theme.of(context).textTheme.bodySmall)]])),
+          Positioned(top:8,left:8,child:Material(color:Theme.of(context).colorScheme.surface,shape:const CircleBorder(),elevation:2,child:IconButton(tooltip:isFavorite?'Remove Atlas favorite':'Favorite for Atlas Book',visualDensity:VisualDensity.compact,icon:Icon(isFavorite?Icons.star:Icons.star_outline),onPressed:()=>onFavoriteChanged(item.type,item.key,!isFavorite)))),
+          Positioned(top:8,right:8,child:Material(color:Theme.of(context).colorScheme.surface,shape:const CircleBorder(),elevation:2,child:Checkbox(value:isSelected,onChanged:(v)=>onSelectionChanged(item.type,item.key,v??false)))),
+          if(isSelected) Positioned.fill(child:IgnorePointer(child:DecoratedBox(decoration:BoxDecoration(border:Border.all(color:Theme.of(context).colorScheme.primary,width:4)))))
+        ])));
+      })
+    ])));
+  }
+}
+
+class _CoverPageResult {
+  final String title;
+  final String subtitle;
+  final String? photoPath;
+  const _CoverPageResult({required this.title, required this.subtitle, this.photoPath});
+}
+
+class _CoverPageDialog extends StatefulWidget {
+  final String initialTitle;
+  final String initialSubtitle;
+  final String initialPhotoPath;
+  final List<String> photoPaths;
+  const _CoverPageDialog({
+    required this.initialTitle,
+    required this.initialSubtitle,
+    required this.photoPaths,
+    this.initialPhotoPath = '',
+  });
+  @override
+  State<_CoverPageDialog> createState() => _CoverPageDialogState();
+}
+
+class _CoverPageDialogState extends State<_CoverPageDialog> {
+  late final TextEditingController _titleController;
+  late final TextEditingController _subtitleController;
+  String? _photoPath;
+  @override
+  void initState() {
+    super.initState();
+    _titleController = TextEditingController(text: widget.initialTitle);
+    _subtitleController = TextEditingController(text: widget.initialSubtitle);
+    _photoPath = widget.initialPhotoPath.isEmpty ? null : widget.initialPhotoPath;
+  }
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _subtitleController.dispose();
+    super.dispose();
+  }
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Cover / Title Page'),
+      content: SizedBox(
+        width: 680,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(controller: _titleController, decoration: const InputDecoration(labelText: 'Book title')),
+              const SizedBox(height: 12),
+              TextField(controller: _subtitleController, decoration: const InputDecoration(labelText: 'Subtitle (optional)')),
+              if (widget.photoPaths.isNotEmpty) ...[
+                const SizedBox(height: 18),
+                const Text('Cover photo (optional)', style: TextStyle(fontWeight: FontWeight.w800)),
+                const SizedBox(height: 10),
+                SizedBox(
+                  height: 110,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: widget.photoPaths.length,
+                    separatorBuilder: (_, _) => const SizedBox(width: 8),
+                    itemBuilder: (_, index) {
+                      final path = widget.photoPaths[index];
+                      final selected = path == _photoPath;
+                      return InkWell(
+                        onTap: () => setState(() => _photoPath = selected ? null : path),
+                        child: Container(
+                          width: 110,
+                          decoration: BoxDecoration(
+                            border: Border.all(color: selected ? const Color(0xFFC9A65A) : Colors.transparent, width: 3),
+                          ),
+                          child: Image.file(File(path), fit: BoxFit.cover),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () {
+            final title = _titleController.text.trim();
+            if (title.isEmpty) return;
+            Navigator.pop(context, _CoverPageResult(title: title, subtitle: _subtitleController.text.trim(), photoPath: _photoPath));
+          },
+          child: const Text('Save Page'),
+        ),
+      ],
+    );
+  }
+}
+
+class _CoverPagePreview extends StatelessWidget {
+  final AtlasBookPage page;
+  const _CoverPagePreview({required this.page});
+  @override
+  Widget build(BuildContext context) {
+    final hasPhoto = page.heroPhotoPath.isNotEmpty && File(page.heroPhotoPath).existsSync();
+    return Container(
+      decoration: AtlasBookTheme.pageDecoration,
+      padding: const EdgeInsets.all(54),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          if (hasPhoto) ...[
+            Container(
+              constraints: const BoxConstraints(maxWidth: 520, maxHeight: 360),
+              decoration: BoxDecoration(border: Border.all(color: const Color(0xFF8A6A2F), width: 2)),
+              child: Image.file(File(page.heroPhotoPath), fit: BoxFit.contain),
+            ),
+            const SizedBox(height: 36),
+          ],
+          Text(
+            page.collageTitle.isEmpty ? 'Atlas Book' : page.collageTitle,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 42, fontWeight: FontWeight.w800, color: Color(0xFF3B2D1C)),
+          ),
+          if (page.collageSubtitle.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            Text(page.collageSubtitle, textAlign: TextAlign.center, style: const TextStyle(fontSize: 22, fontStyle: FontStyle.italic, color: Color(0xFF6A5131))),
+          ],
+          const SizedBox(height: 28),
+          Container(width: 120, height: 1, color: const Color(0xFFB08A45)),
+          const SizedBox(height: 12),
+          const Text('HEIRLOOM ATLAS', style: TextStyle(letterSpacing: 3, fontSize: 11, color: Color(0xFF8A6A2F))),
+        ],
+      ),
+    );
+  }
+}
+
+class _SavedCoverPagePreviewDialog extends StatelessWidget {
+  final AtlasBookPage page;
+  const _SavedCoverPagePreviewDialog({required this.page});
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      insetPadding: const EdgeInsets.all(24),
+      child: SizedBox(width: 900, height: 760, child: _CoverPagePreview(page: page)),
     );
   }
 }
@@ -2185,106 +3843,199 @@ class _AddPageTypeDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Add Page'),
-      content: SizedBox(
-        width: 680,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.person_outline, size: 34),
-              title: const Text(
-                'Person Profile',
-                style: TextStyle(fontWeight: FontWeight.w800),
+    const templates = <_PageTemplateChoice>[
+      _PageTemplateChoice(
+        value: 'cover_page',
+        title: 'Cover / Title Page',
+        description: 'Create the opening page with a title, subtitle, and optional family photo.',
+        icon: Icons.auto_stories_outlined,
+        available: true,
+      ),
+      _PageTemplateChoice(
+        value: 'person_profile',
+        title: 'Person Profile',
+        description: 'Featured person, portrait, dates, birthplace, and biography.',
+        icon: Icons.person_outline,
+        available: true,
+      ),
+      _PageTemplateChoice(
+        value: 'family_group_sheet',
+        title: 'Family Group Sheet',
+        description: 'Couple, parents, children, and core family details.',
+        icon: Icons.family_restroom_outlined,
+        available: true,
+      ),
+      _PageTemplateChoice(
+        value: 'ancestry_fan_chart',
+        title: 'Ancestry Fan Chart',
+        description: 'A visual ancestry chart generated from your Family Tree.',
+        icon: Icons.hub_outlined,
+        available: true,
+      ),
+      _PageTemplateChoice(
+        value: 'collage',
+        title: 'Photo Collage',
+        description: 'Arrange several saved photos into a heritage album page.',
+        icon: Icons.grid_view_outlined,
+        available: true,
+      ),
+      _PageTemplateChoice(
+        value: 'photo_story',
+        title: 'Photo Story',
+        description: 'Photos with captions and a short family narrative.',
+        icon: Icons.photo_library_outlined,
+        available: false,
+      ),
+      _PageTemplateChoice(
+        value: 'timeline',
+        title: 'Timeline',
+        description: 'Chronological family events and milestones.',
+        icon: Icons.timeline_outlined,
+        available: false,
+      ),
+      _PageTemplateChoice(
+        value: 'heirloom_spotlight',
+        title: 'Heirloom Spotlight',
+        description: 'Feature a keepsake, its history, and the people connected to it.',
+        icon: Icons.inventory_2_outlined,
+        available: false,
+      ),
+    ];
+
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 820, maxHeight: 720),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 22, 24, 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.library_books_outlined, size: 30),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Add a Book Page',
+                          style: Theme.of(context).textTheme.headlineSmall
+                              ?.copyWith(fontWeight: FontWeight.w900),
+                        ),
+                        const SizedBox(height: 3),
+                        const Text(
+                          'Choose a page template. Every page stays editable after you add it.',
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Close',
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
               ),
-              subtitle: const Text(
-                'Featured person, photo, dates, birthplace, and biography.',
+              const SizedBox(height: 18),
+              Flexible(
+                child: GridView.builder(
+                  shrinkWrap: true,
+                  itemCount: templates.length,
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 2,
+                    mainAxisExtent: 132,
+                    crossAxisSpacing: 12,
+                    mainAxisSpacing: 12,
+                  ),
+                  itemBuilder: (context, index) {
+                    final template = templates[index];
+                    return InkWell(
+                      borderRadius: BorderRadius.circular(14),
+                      onTap: template.available
+                          ? () => Navigator.pop(context, template.value)
+                          : null,
+                      child: Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: template.available
+                              ? const Color(0xFF0B2742).withValues(alpha: 0.54)
+                              : Colors.black.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: template.available
+                                ? const Color(0xFFC9A65A).withValues(alpha: 0.40)
+                                : Theme.of(context).dividerColor,
+                          ),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            CircleAvatar(
+                              radius: 23,
+                              child: Icon(template.icon),
+                            ),
+                            const SizedBox(width: 13),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          template.title,
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.w900,
+                                          ),
+                                        ),
+                                      ),
+                                      if (!template.available)
+                                        const Chip(
+                                          visualDensity: VisualDensity.compact,
+                                          label: Text('Coming later'),
+                                        ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 5),
+                                  Text(
+                                    template.description,
+                                    maxLines: 3,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
               ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.pop(context, 'person_profile'),
-            ),
-            const Divider(),
-            ListTile(
-              leading: const Icon(Icons.hub_outlined, size: 34),
-              title: const Text(
-                'Ancestry Fan Chart',
-                style: TextStyle(fontWeight: FontWeight.w800),
-              ),
-              subtitle: const Text(
-                'A semicircular ancestry chart built from your Family Tree.',
-              ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.pop(context, 'ancestry_fan_chart'),
-            ),
-            const SizedBox(height: 10),
-            ListTile(
-              leading: const Icon(Icons.family_restroom_outlined, size: 34),
-              title: const Text(
-                'Family Group Sheet',
-                style: TextStyle(fontWeight: FontWeight.w800),
-              ),
-              subtitle: const Text(
-                'A classic family page with couple, parents, and children.',
-              ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.pop(context, 'family_group_sheet'),
-            ),
-            const SizedBox(height: 10),
-            ListTile(
-              leading: const Icon(Icons.grid_view_outlined, size: 34),
-              title: const Text(
-                'Collage',
-                style: TextStyle(fontWeight: FontWeight.w800),
-              ),
-              subtitle: const Text(
-                'Arrange several saved photos into a themed heritage page.',
-              ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.pop(context, 'collage'),
-            ),
-            const ListTile(
-              enabled: false,
-              leading: Icon(Icons.photo_library_outlined, size: 34),
-              title: Text(
-                'Photo Story',
-                style: TextStyle(fontWeight: FontWeight.w800),
-              ),
-              subtitle: Text(
-                'Photos with captions and narrative — coming later.',
-              ),
-            ),
-            const ListTile(
-              enabled: false,
-              leading: Icon(Icons.timeline_outlined, size: 34),
-              title: Text(
-                'Timeline',
-                style: TextStyle(fontWeight: FontWeight.w800),
-              ),
-              subtitle: Text('Chronological family events — coming later.'),
-            ),
-            const ListTile(
-              enabled: false,
-              leading: Icon(Icons.inventory_2_outlined, size: 34),
-              title: Text(
-                'Heirloom Spotlight',
-                style: TextStyle(fontWeight: FontWeight.w800),
-              ),
-              subtitle: Text(
-                'Feature a keepsake and its story — coming later.',
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-      ],
     );
   }
+}
+
+class _PageTemplateChoice {
+  final String value;
+  final String title;
+  final String description;
+  final IconData icon;
+  final bool available;
+
+  const _PageTemplateChoice({
+    required this.value,
+    required this.title,
+    required this.description,
+    required this.icon,
+    required this.available,
+  });
 }
 
 class _BookPagesPanel extends StatelessWidget {
@@ -2387,25 +4138,73 @@ class _BookPagesPanel extends StatelessWidget {
             ...List.generate(pages.length, (index) {
               final page = pages[index];
               final person = _personFor(page.personId);
+              final isCover = page.pageType == 'cover_page';
               final isFanChart = page.pageType == 'ancestry_fan_chart';
               final isFamilyGroup = page.pageType == 'family_group_sheet';
               final isCollage = page.pageType == 'collage';
+              final isStory = page.pageType == 'story_page';
+              final isDocument = page.pageType == 'document_page';
+              final isHeirloom = page.pageType == 'heirloom_feature';
 
               return Card(
                 child: ListTile(
                   onTap: () => onPreview(page),
-                  leading: Icon(
-                    isFanChart
-                        ? Icons.hub_outlined
-                        : isFamilyGroup
-                        ? Icons.family_restroom_outlined
-                        : isCollage
-                        ? Icons.grid_view_outlined
-                        : Icons.description_outlined,
+                  leading: SizedBox(
+                    width: 58,
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 28,
+                          height: 28,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: const Color(0xFFC9A65A)
+                                  .withValues(alpha: 0.55),
+                            ),
+                          ),
+                          child: Text(
+                            '${index + 1}',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w900,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 7),
+                        Icon(
+                          isCover
+                              ? Icons.auto_stories_outlined
+                              : isFanChart
+                              ? Icons.hub_outlined
+                              : isFamilyGroup
+                              ? Icons.family_restroom_outlined
+                              : isCollage
+                              ? Icons.grid_view_outlined
+                              : isStory
+                              ? Icons.auto_stories_outlined
+                              : isHeirloom
+                              ? Icons.museum_outlined
+                              : Icons.description_outlined,
+                          size: 21,
+                        ),
+                      ],
+                    ),
                   ),
                   title: Text(
-                    isCollage
+                    isCover
+                        ? (page.collageTitle.isEmpty ? 'Cover / Title Page' : page.collageTitle)
+                        : isCollage
                         ? 'Photo Collage'
+                        : isStory || isDocument || isHeirloom
+                        ? (page.collageTitle.isEmpty
+                            ? (isStory
+                                ? 'Story Page'
+                                : isDocument
+                                    ? 'Document Page'
+                                    : 'Heirloom Feature')
+                            : page.collageTitle)
                         : person?.displayName ??
                               (isFanChart
                                   ? 'Ancestry Fan Chart'
@@ -2415,8 +4214,16 @@ class _BookPagesPanel extends StatelessWidget {
                     style: const TextStyle(fontWeight: FontWeight.w800),
                   ),
                   subtitle: Text(
-                    isCollage
+                    isCover
+                        ? 'Cover / Title Page'
+                        : isCollage
                         ? 'Collage • ${_collagePhotoCount(page)} photos'
+                        : isStory
+                        ? 'Story Page'
+                        : isDocument
+                        ? 'Document / Archive Page'
+                        : isHeirloom
+                        ? 'Heirloom / Collection Feature'
                         : isFanChart
                         ? 'Ancestry Fan Chart • ${page.generationCount} generations'
                         : isFamilyGroup
@@ -2474,7 +4281,7 @@ class _HeritageDivider extends StatelessWidget {
         Icon(
           Icons.local_florist_outlined,
           size: 18,
-          color: AtlasBookTheme.antiqueGold.withValues(alpha: 0.72),
+          color: AtlasBookTheme.antiqueGold.withValues(alpha: 0.50),
         ),
         const SizedBox(width: 12),
         const Expanded(
@@ -3021,6 +4828,381 @@ class _BookPreviewPageData {
   });
 }
 
+
+class _MaterialPageEditResult {
+  final String title;
+  final String subtitle;
+  final String body;
+  final String designKey;
+  final String paperKey;
+  const _MaterialPageEditResult({
+    required this.title,
+    required this.subtitle,
+    required this.body,
+    required this.designKey,
+    required this.paperKey,
+  });
+}
+
+class _MaterialPageEditDialog extends StatefulWidget {
+  final String initialTitle;
+  final String initialSubtitle;
+  final String initialBody;
+  final String initialDesignKey;
+  final String initialPaperKey;
+  const _MaterialPageEditDialog({
+    required this.initialTitle,
+    required this.initialSubtitle,
+    required this.initialBody,
+    this.initialDesignKey = 'classic',
+    this.initialPaperKey = 'ivory',
+  });
+
+  @override
+  State<_MaterialPageEditDialog> createState() => _MaterialPageEditDialogState();
+}
+
+class _MaterialPageEditDialogState extends State<_MaterialPageEditDialog> {
+  late final TextEditingController _titleController;
+  late final TextEditingController _subtitleController;
+  late final TextEditingController _bodyController;
+  late String _designKey;
+  late String _paperKey;
+
+  @override
+  void initState() {
+    super.initState();
+    _titleController = TextEditingController(text: widget.initialTitle);
+    _subtitleController = TextEditingController(text: widget.initialSubtitle);
+    _bodyController = TextEditingController(text: widget.initialBody);
+    _designKey = widget.initialDesignKey;
+    _paperKey = widget.initialPaperKey;
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _subtitleController.dispose();
+    _bodyController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Edit Book Page'),
+      content: SizedBox(
+        width: 640,
+        child: SingleChildScrollView(
+          child: Column(
+            children: [
+              TextField(
+                controller: _titleController,
+                decoration: const InputDecoration(labelText: 'Page title'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _subtitleController,
+                decoration: const InputDecoration(labelText: 'Subtitle'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _bodyController,
+                minLines: 6,
+                maxLines: 14,
+                decoration: const InputDecoration(
+                  labelText: 'Page text / caption',
+                  alignLabelWithHint: true,
+                ),
+              ),
+              const SizedBox(height: 20),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Page Design',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final option in const [
+                    ('classic', 'Classic'),
+                    ('feature', 'Photo Feature'),
+                    ('narrative', 'Narrative'),
+                  ])
+                    ChoiceChip(
+                      label: Text(option.$2),
+                      selected: _designKey == option.$1,
+                      onSelected: (_) => setState(() => _designKey = option.$1),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Paper',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final option in const [
+                    ('ivory', 'Warm Ivory'),
+                    ('parchment', 'Parchment'),
+                    ('clean', 'Clean'),
+                  ])
+                    ChoiceChip(
+                      label: Text(option.$2),
+                      selected: _paperKey == option.$1,
+                      onSelected: (_) => setState(() => _paperKey = option.$1),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(
+            context,
+            _MaterialPageEditResult(
+              title: _titleController.text.trim(),
+              subtitle: _subtitleController.text.trim(),
+              body: _bodyController.text.trim(),
+              designKey: _designKey,
+              paperKey: _paperKey,
+            ),
+          ),
+          child: const Text('Save Page'),
+        ),
+      ],
+    );
+  }
+}
+
+class _SavedMaterialPagePreviewDialog extends StatelessWidget {
+  final AtlasBookPage page;
+  const _SavedMaterialPagePreviewDialog({required this.page});
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      insetPadding: const EdgeInsets.all(28),
+      child: SizedBox(
+        width: 900,
+        height: 720,
+        child: _MaterialPagePreview(page: page),
+      ),
+    );
+  }
+}
+
+class _MaterialPagePreview extends StatelessWidget {
+  final AtlasBookPage page;
+  const _MaterialPagePreview({required this.page});
+
+  Map<String, dynamic> _metadata() {
+    try {
+      final data = jsonDecode(page.collagePhotoLayoutJson);
+      if (data is Map) {
+        return data.map((key, value) => MapEntry(key.toString(), value));
+      }
+    } catch (_) {}
+    return {};
+  }
+
+  String _kindLabel() {
+    if (page.pageType == 'story_page') return 'FAMILY STORY';
+    if (page.pageType == 'document_page') return 'ARCHIVE DOCUMENT';
+    return 'HEIRLOOM FEATURE';
+  }
+
+  IconData _kindIcon() {
+    if (page.pageType == 'story_page') return Icons.auto_stories_outlined;
+    if (page.pageType == 'document_page') return Icons.description_outlined;
+    return Icons.museum_outlined;
+  }
+
+  Color _paperColor(String paperKey) {
+    switch (paperKey) {
+      case 'parchment':
+        return const Color(0xFFF1E3BF);
+      case 'clean':
+        return const Color(0xFFF9F7F2);
+      default:
+        return const Color(0xFFF5EEDC);
+    }
+  }
+
+  Widget _textBlock(String body) {
+    return SingleChildScrollView(
+      child: Text(
+        body.isEmpty
+            ? (page.pageType == 'document_page'
+                ? 'This archival document is preserved as part of the family record.'
+                : 'Add text to tell the story behind this material.')
+            : body,
+        style: const TextStyle(
+          height: 1.6,
+          fontSize: 17,
+          color: Color(0xFF3D382F),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final metadata = _metadata();
+    final body = (metadata['body']?.toString() ?? '').trim();
+    final designKey = metadata['designKey']?.toString() ?? 'classic';
+    final paperKey = metadata['paperKey']?.toString() ?? 'ivory';
+    final imagePath = page.heroPhotoPath.trim();
+    final hasImage = imagePath.isNotEmpty && File(imagePath).existsSync();
+
+    final header = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(_kindIcon(), size: 22, color: const Color(0xFF8B6B2E)),
+            const SizedBox(width: 10),
+            Text(
+              _kindLabel(),
+              style: const TextStyle(
+                letterSpacing: 2.0,
+                fontWeight: FontWeight.w800,
+                color: Color(0xFF8B6B2E),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        Text(
+          page.collageTitle.isEmpty ? 'Untitled Page' : page.collageTitle,
+          style: const TextStyle(
+            fontSize: 34,
+            fontWeight: FontWeight.w900,
+            color: Color(0xFF2D2A24),
+          ),
+        ),
+        if (page.collageSubtitle.trim().isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text(
+            page.collageSubtitle,
+            style: const TextStyle(
+              fontSize: 17,
+              fontStyle: FontStyle.italic,
+              color: Color(0xFF675B49),
+            ),
+          ),
+        ],
+      ],
+    );
+
+    Widget content;
+    if (designKey == 'feature' && hasImage) {
+      content = Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            flex: 6,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: Image.file(File(imagePath), fit: BoxFit.contain),
+            ),
+          ),
+          const SizedBox(height: 22),
+          Expanded(flex: 3, child: _textBlock(body)),
+        ],
+      );
+    } else if (designKey == 'narrative') {
+      content = Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(flex: 6, child: _textBlock(body)),
+          if (hasImage) ...[
+            const SizedBox(width: 28),
+            Expanded(
+              flex: 4,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: Image.file(
+                  File(imagePath),
+                  fit: BoxFit.contain,
+                  alignment: Alignment.topCenter,
+                ),
+              ),
+            ),
+          ],
+        ],
+      );
+    } else {
+      content = hasImage
+          ? Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  flex: 5,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: Image.file(
+                      File(imagePath),
+                      fit: BoxFit.contain,
+                      alignment: Alignment.topCenter,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 30),
+                Expanded(flex: 4, child: _textBlock(body)),
+              ],
+            )
+          : _textBlock(body);
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        color: _paperColor(paperKey),
+        border: Border.all(color: const Color(0xFFC9A65A), width: 1.1),
+        boxShadow: const [
+          BoxShadow(
+            blurRadius: 12,
+            offset: Offset(0, 5),
+            color: Color(0x22000000),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.all(42),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          header,
+          const SizedBox(height: 24),
+          Container(height: 1, color: const Color(0xFFC9A65A)),
+          const SizedBox(height: 28),
+          Expanded(child: content),
+        ],
+      ),
+    );
+  }
+}
+
 class _WholeBookPreviewDialog extends StatefulWidget {
   final String bookTitle;
   final List<_BookPreviewPageData> pages;
@@ -3034,18 +5216,64 @@ class _WholeBookPreviewDialog extends StatefulWidget {
 
 class _WholeBookPreviewDialogState extends State<_WholeBookPreviewDialog> {
   int _pageIndex = 0;
+  bool _spreadMode = true;
+
+  bool get _coverIsFirst =>
+      widget.pages.isNotEmpty && widget.pages.first.page.pageType == 'cover_page';
+
+  List<int> _visibleIndices() {
+    if (!_spreadMode) return [_pageIndex];
+
+    if (_coverIsFirst && _pageIndex == 0) return [0];
+
+    var left = _pageIndex;
+    if (_coverIsFirst) {
+      if (left < 1) left = 1;
+      if ((left - 1).isOdd) left -= 1;
+    } else if (left.isOdd) {
+      left -= 1;
+    }
+
+    final result = <int>[left];
+    if (left + 1 < widget.pages.length) result.add(left + 1);
+    return result;
+  }
 
   void _previousPage() {
     if (_pageIndex <= 0) return;
-    setState(() => _pageIndex--);
+    if (!_spreadMode) {
+      setState(() => _pageIndex--);
+      return;
+    }
+    if (_coverIsFirst && _pageIndex <= 1) {
+      setState(() => _pageIndex = 0);
+      return;
+    }
+    setState(() => _pageIndex = (_pageIndex - 2).clamp(0, widget.pages.length - 1));
   }
 
   void _nextPage() {
     if (_pageIndex >= widget.pages.length - 1) return;
-    setState(() => _pageIndex++);
+    if (!_spreadMode) {
+      setState(() => _pageIndex++);
+      return;
+    }
+    if (_coverIsFirst && _pageIndex == 0) {
+      setState(() => _pageIndex = widget.pages.length > 1 ? 1 : 0);
+      return;
+    }
+    setState(() => _pageIndex = (_pageIndex + 2).clamp(0, widget.pages.length - 1));
   }
 
   Widget _buildPage(_BookPreviewPageData data) {
+    if (data.page.pageType == 'cover_page') {
+      return _CoverPagePreview(page: data.page);
+    }
+    if (data.page.pageType == 'story_page' ||
+        data.page.pageType == 'document_page' ||
+        data.page.pageType == 'heirloom_feature') {
+      return _MaterialPagePreview(page: data.page);
+    }
     if (data.page.pageType == 'collage') {
       return _CollagePagePreview(
         photoPaths: data.collagePhotoPaths ?? const [],
@@ -3056,53 +5284,63 @@ class _WholeBookPreviewDialogState extends State<_WholeBookPreviewDialog> {
         photoLayoutJson: data.page.collagePhotoLayoutJson,
       );
     }
-
     if (data.page.pageType == 'ancestry_fan_chart') {
       return _FanChartPagePreview(
         nodes: data.fanNodes ?? const [],
         generationCount: data.page.generationCount,
       );
     }
-
     if (data.page.pageType == 'family_group_sheet' &&
         data.familyGroupData != null) {
       return _FamilyGroupSheetPreview(data: data.familyGroupData!);
     }
-
     if (data.person != null) {
       final profilePath = data.person!.profilePhotoPath;
       final heroPath = data.page.heroPhotoPath;
       final imagePath = heroPath.isNotEmpty && File(heroPath).existsSync()
           ? heroPath
           : profilePath.isNotEmpty && File(profilePath).existsSync()
-          ? profilePath
-          : null;
-
-      return _PersonProfilePagePreview(
-        person: data.person!,
-        imagePath: imagePath,
-      );
+              ? profilePath
+              : null;
+      return _PersonProfilePagePreview(person: data.person!, imagePath: imagePath);
     }
-
     return Container(
       decoration: AtlasBookTheme.pageDecoration,
       child: const Center(child: Text('This page could not be previewed.')),
     );
   }
 
+  Widget _pageShell(int index) {
+    return Column(
+      children: [
+        Expanded(
+          child: AspectRatio(
+            aspectRatio: 8.5 / 11,
+            child: _buildPage(widget.pages[index]),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Page ${index + 1}',
+          style: Theme.of(context).textTheme.labelMedium,
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final page = widget.pages[_pageIndex];
+    final visible = _visibleIndices();
 
     return Dialog(
-      insetPadding: const EdgeInsets.all(24),
+      insetPadding: const EdgeInsets.all(18),
       child: SizedBox(
-        width: 1180,
-        height: 820,
+        width: 1460,
+        height: 900,
         child: Column(
           children: [
             Container(
-              padding: const EdgeInsets.fromLTRB(22, 14, 14, 14),
+              padding: const EdgeInsets.fromLTRB(22, 12, 14, 12),
               decoration: BoxDecoration(
                 border: Border(
                   bottom: BorderSide(color: Theme.of(context).dividerColor),
@@ -3120,11 +5358,25 @@ class _WholeBookPreviewDialogState extends State<_WholeBookPreviewDialog> {
                       ),
                     ),
                   ),
-                  Text(
-                    'Page ${_pageIndex + 1} of ${widget.pages.length}',
-                    style: Theme.of(context).textTheme.titleSmall,
+                  SegmentedButton<bool>(
+                    segments: const [
+                      ButtonSegment<bool>(
+                        value: false,
+                        icon: Icon(Icons.description_outlined),
+                        label: Text('Single Page'),
+                      ),
+                      ButtonSegment<bool>(
+                        value: true,
+                        icon: Icon(Icons.menu_book_outlined),
+                        label: Text('Two-Page Spread'),
+                      ),
+                    ],
+                    selected: {_spreadMode},
+                    onSelectionChanged: (selection) {
+                      setState(() => _spreadMode = selection.first);
+                    },
                   ),
-                  const SizedBox(width: 16),
+                  const SizedBox(width: 12),
                   IconButton(
                     tooltip: 'Close preview',
                     onPressed: () => Navigator.pop(context),
@@ -3136,38 +5388,122 @@ class _WholeBookPreviewDialogState extends State<_WholeBookPreviewDialog> {
             Expanded(
               child: Container(
                 color: Theme.of(context).colorScheme.surfaceContainerLowest,
-                padding: const EdgeInsets.all(26),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(
-                      maxWidth: 820,
-                      maxHeight: 690,
+                padding: const EdgeInsets.fromLTRB(24, 22, 24, 12),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Center(
+                        child: visible.length == 1
+                            ? ConstrainedBox(
+                                constraints: const BoxConstraints(
+                                  maxWidth: 720,
+                                  maxHeight: 700,
+                                ),
+                                child: _pageShell(visible.first),
+                              )
+                            : ConstrainedBox(
+                                constraints: const BoxConstraints(
+                                  maxWidth: 1200,
+                                  maxHeight: 700,
+                                ),
+                                child: Row(
+                                  children: [
+                                    Expanded(child: _pageShell(visible[0])),
+                                    Container(
+                                      width: 20,
+                                      margin: const EdgeInsets.symmetric(horizontal: 10),
+                                      decoration: const BoxDecoration(
+                                        gradient: LinearGradient(
+                                          colors: [
+                                            Color(0x05000000),
+                                            Color(0x25000000),
+                                            Color(0x05000000),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                    Expanded(child: _pageShell(visible[1])),
+                                  ],
+                                ),
+                              ),
+                      ),
                     ),
-                    child: AspectRatio(
-                      aspectRatio: 8.5 / 11,
-                      child: _buildPage(page),
-                    ),
-                  ),
+                  ],
                 ),
               ),
             ),
+            Container(
+              height: 106,
+              padding: const EdgeInsets.fromLTRB(18, 8, 18, 8),
+              decoration: BoxDecoration(
+                border: Border(
+                  top: BorderSide(color: Theme.of(context).dividerColor),
+                ),
+              ),
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: widget.pages.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 8),
+                itemBuilder: (context, index) {
+                  final selected = visible.contains(index);
+                  return InkWell(
+                    onTap: () => setState(() => _pageIndex = index),
+                    child: Container(
+                      width: 62,
+                      padding: const EdgeInsets.all(5),
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: selected
+                              ? const Color(0xFFC9A65A)
+                              : Theme.of(context).dividerColor,
+                          width: selected ? 2 : 1,
+                        ),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Column(
+                        children: [
+                          Expanded(
+                            child: Icon(
+                              widget.pages[index].page.pageType == 'cover_page'
+                                  ? Icons.menu_book_outlined
+                                  : widget.pages[index].page.pageType == 'story_page'
+                                      ? Icons.auto_stories_outlined
+                                      : widget.pages[index].page.pageType == 'heirloom_feature'
+                                          ? Icons.museum_outlined
+                                          : Icons.description_outlined,
+                              size: 28,
+                            ),
+                          ),
+                          Text(
+                            '${index + 1}',
+                            style: Theme.of(context).textTheme.labelSmall,
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(22, 12, 22, 16),
+              padding: const EdgeInsets.fromLTRB(22, 8, 22, 14),
               child: Row(
                 children: [
+                  Text(
+                    visible.length == 1
+                        ? 'Page ${visible.first + 1} of ${widget.pages.length}'
+                        : 'Pages ${visible.first + 1}–${visible.last + 1} of ${widget.pages.length}',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const Spacer(),
                   OutlinedButton.icon(
                     onPressed: _pageIndex == 0 ? null : _previousPage,
                     icon: const Icon(Icons.arrow_back),
                     label: const Text('Previous'),
                   ),
-                  const Spacer(),
-                  Text(
-                    '${_pageIndex + 1} / ${widget.pages.length}',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const Spacer(),
+                  const SizedBox(width: 10),
                   FilledButton.icon(
-                    onPressed: _pageIndex == widget.pages.length - 1
+                    onPressed: visible.last >= widget.pages.length - 1
                         ? null
                         : _nextPage,
                     icon: const Icon(Icons.arrow_forward),
@@ -3495,8 +5831,17 @@ class _FamilyGroupSheetPreview extends StatelessWidget {
     return parents.map((person) => person.displayName).join('  •  ');
   }
 
+  String _birthText(FamilyPerson person) {
+    final value = [
+      person.birthDate,
+      person.birthPlace,
+    ].where((item) => item.trim().isNotEmpty).join(' • ');
+
+    return value.isEmpty ? 'Not recorded' : value;
+  }
+
   Widget _portrait(BuildContext context, FamilyPerson person) {
-    final path = person.profilePhotoPath;
+    final path = person.profilePhotoPath.trim();
     final hasPhoto = path.isNotEmpty && File(path).existsSync();
 
     return Column(
@@ -3511,7 +5856,20 @@ class _FamilyGroupSheetPreview extends StatelessWidget {
           ),
           child: ClipOval(
             child: hasPhoto
-                ? Image.file(File(path), fit: BoxFit.cover)
+                ? Image.file(
+                    File(path),
+                    fit: BoxFit.cover,
+                    width: 96,
+                    height: 96,
+                    errorBuilder: (_, _, _) => Container(
+                      color: AtlasBookTheme.ivoryLight,
+                      child: const Icon(
+                        Icons.person_outline,
+                        size: 48,
+                        color: AtlasBookTheme.warmBrown,
+                      ),
+                    ),
+                  )
                 : Container(
                     color: AtlasBookTheme.ivoryLight,
                     child: const Icon(
@@ -3537,6 +5895,55 @@ class _FamilyGroupSheetPreview extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+
+  Widget _personDetails(
+    BuildContext context,
+    FamilyPerson person,
+    List<FamilyPerson> parents,
+  ) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+      decoration: BoxDecoration(
+        color: AtlasBookTheme.ivoryLight.withValues(alpha: 0.42),
+        border: Border.all(
+          color: AtlasBookTheme.antiqueGoldSoft.withValues(alpha: 0.65),
+        ),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            person.displayName,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: AtlasBookTheme.sectionTitle(context).copyWith(fontSize: 14),
+          ),
+          const SizedBox(height: 9),
+          _personDetailLine(context, 'Birth', _birthText(person)),
+          const SizedBox(height: 7),
+          _personDetailLine(context, 'Parents', _parentsText(parents)),
+        ],
+      ),
+    );
+  }
+
+  Widget _personDetailLine(BuildContext context, String label, String value) {
+    return RichText(
+      text: TextSpan(
+        style: AtlasBookTheme.body(context).copyWith(fontSize: 12.5),
+        children: [
+          TextSpan(
+            text: '$label: ',
+            style: AtlasBookTheme.sectionTitle(
+              context,
+            ).copyWith(fontSize: 12.5),
+          ),
+          TextSpan(text: value),
+        ],
+      ),
     );
   }
 
@@ -3595,46 +6002,38 @@ class _FamilyGroupSheetPreview extends StatelessWidget {
                 ),
               ],
             ),
-            const SizedBox(height: 26),
-            Table(
-              columnWidths: const {
-                0: FixedColumnWidth(125),
-                1: FlexColumnWidth(),
-              },
-              border: TableBorder(
-                horizontalInside: BorderSide(
-                  color: AtlasBookTheme.antiqueGoldSoft.withValues(alpha: 0.55),
-                ),
-              ),
+            const SizedBox(height: 22),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _detailRow(
-                  context,
-                  'Birth',
-                  [
-                    data.primary.birthDate,
-                    data.primary.birthPlace,
-                  ].where((value) => value.trim().isNotEmpty).join(' • '),
-                ),
-                _detailRow(
-                  context,
-                  'Parents',
-                  _parentsText(data.primaryParents),
-                ),
-                if (spouse != null)
-                  _detailRow(
+                Expanded(
+                  child: _personDetails(
                     context,
-                    'Spouse birth',
-                    [
-                      spouse.birthDate,
-                      spouse.birthPlace,
-                    ].where((value) => value.trim().isNotEmpty).join(' • '),
+                    data.primary,
+                    data.primaryParents,
                   ),
-                if (spouse != null)
-                  _detailRow(
-                    context,
-                    'Spouse parents',
-                    _parentsText(data.spouseParents),
-                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: spouse == null
+                      ? Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                              color: AtlasBookTheme.antiqueGoldSoft.withValues(
+                                alpha: 0.45,
+                              ),
+                            ),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            'No spouse selected',
+                            textAlign: TextAlign.center,
+                            style: AtlasBookTheme.subtitle(context),
+                          ),
+                        )
+                      : _personDetails(context, spouse, data.spouseParents),
+                ),
               ],
             ),
             const SizedBox(height: 26),
@@ -3702,27 +6101,6 @@ class _FamilyGroupSheetPreview extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
-
-  TableRow _detailRow(BuildContext context, String label, String value) {
-    return TableRow(
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-          child: Text(
-            label,
-            style: AtlasBookTheme.sectionTitle(context).copyWith(fontSize: 13),
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-          child: Text(
-            value.trim().isEmpty ? 'Not recorded' : value,
-            style: AtlasBookTheme.body(context).copyWith(fontSize: 13),
-          ),
-        ),
-      ],
     );
   }
 }

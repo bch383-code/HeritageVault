@@ -94,9 +94,17 @@ class PhotoMetadataWriter {
       args.add('-XMP-iptcCore:Location=${metadata.location.trim()}');
     }
 
-    // Approximate Date is intentionally NOT written to DateTimeOriginal.
-    // That field may contain a real camera/original date and must not be
-    // overwritten by an estimated archival date.
+    // Only an explicitly Exact catalog date is portable as a capture date.
+    // Approximate/year-only/decade/unknown values remain catalog-only so we
+    // never replace a real camera date with an estimate.
+    final storedDate = metadata.approximateDate.trim();
+    final exactDate = _exifDateFromExactCatalogValue(storedDate);
+    if (exactDate != null) {
+      args.add('-EXIF:DateTimeOriginal=$exactDate');
+      args.add('-EXIF:CreateDate=$exactDate');
+      args.add('-XMP-exif:DateTimeOriginal=$exactDate');
+    }
+
     args.add(filePath);
 
     try {
@@ -122,6 +130,51 @@ class PhotoMetadataWriter {
         message: 'Could not run ExifTool: $error',
       );
     }
+  }
+
+  static String? _exifDateFromExactCatalogValue(String value) {
+    final clean = value.trim();
+    if (clean.isEmpty ||
+        clean.toLowerCase() == 'unknown' ||
+        clean.startsWith('c. ') ||
+        RegExp(r'^\d{4}s$').hasMatch(clean) ||
+        RegExp(r'^\d{4}$').hasMatch(clean)) {
+      return null;
+    }
+
+    // Accept the unambiguous exact format used by the photo editor.
+    final match = RegExp(
+      r'^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$',
+    ).firstMatch(clean);
+    if (match == null) return null;
+
+    final year = int.tryParse(match.group(1)!);
+    final month = int.tryParse(match.group(2)!);
+    final day = int.tryParse(match.group(3)!);
+    if (year == null || month == null || day == null) return null;
+
+    final hour = int.tryParse(match.group(4) ?? '00') ?? 0;
+    final minute = int.tryParse(match.group(5) ?? '00') ?? 0;
+    final second = int.tryParse(match.group(6) ?? '00') ?? 0;
+
+    try {
+      final parsed = DateTime(year, month, day, hour, minute, second);
+      if (parsed.year != year ||
+          parsed.month != month ||
+          parsed.day != day ||
+          parsed.hour != hour ||
+          parsed.minute != minute ||
+          parsed.second != second) {
+        return null;
+      }
+    } catch (_) {
+      return null;
+    }
+
+    String two(int number) => number.toString().padLeft(2, '0');
+    return '${year.toString().padLeft(4, '0')}:'
+        '${two(month)}:${two(day)} '
+        '${two(hour)}:${two(minute)}:${two(second)}';
   }
 
   static Future<String> _createBackup(File source) async {
@@ -154,23 +207,32 @@ class PhotoMetadataWriter {
   }
 
   static Future<String?> _findExifTool() async {
-    const directWindowsPath = r'C:\ExifTool\exiftool.exe';
+    final candidates = <String>[];
 
-    final directFile = File(directWindowsPath);
-    if (await directFile.exists()) {
-      try {
-        final result = await Process.run(directWindowsPath, [
-          '-ver',
-        ], runInShell: false);
-        if (result.exitCode == 0) return directWindowsPath;
-      } catch (_) {}
+    // Installed/release build: ExifTool is bundled beside the Heirloom Atlas
+    // executable under tools\exiftool.
+    if (Platform.isWindows) {
+      final executableDirectory = File(Platform.resolvedExecutable).parent.path;
+      candidates.add(
+        path.join(executableDirectory, 'tools', 'exiftool', 'exiftool.exe'),
+      );
+
+      // Development fallback.
+      candidates.add(r'C:\ExifTool\exiftool.exe');
     }
 
-    const candidates = ['exiftool.exe', 'exiftool'];
+    // Final fallback: allow a system-installed ExifTool from PATH.
+    candidates.addAll(['exiftool.exe', 'exiftool']);
 
     for (final candidate in candidates) {
       try {
-        final result = await Process.run(candidate, ['-ver'], runInShell: true);
+        if (path.isAbsolute(candidate) && !await File(candidate).exists()) {
+          continue;
+        }
+
+        final result = await Process.run(candidate, [
+          '-ver',
+        ], runInShell: !path.isAbsolute(candidate));
         if (result.exitCode == 0) return candidate;
       } catch (_) {}
     }

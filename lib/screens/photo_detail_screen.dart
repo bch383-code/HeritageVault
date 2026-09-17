@@ -9,6 +9,7 @@ import '../models/photo_catalog_metadata.dart';
 import '../models/vault_photo.dart';
 import '../services/photo_metadata_reader.dart';
 import '../services/photo_metadata_writer.dart';
+import '../services/sync_service.dart';
 
 class PhotoDetailScreen extends StatefulWidget {
   final List<VaultPhoto> photos;
@@ -26,14 +27,17 @@ class PhotoDetailScreen extends StatefulWidget {
 
 class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
   final DatabaseHelper _databaseHelper = DatabaseHelper.instance;
+  final SyncService _syncService = SyncService();
 
   final TextEditingController _dateController = TextEditingController();
   final TextEditingController _locationController = TextEditingController();
   final TextEditingController _descriptionController = TextEditingController();
+  final TextEditingController _backWritingController = TextEditingController();
   final TextEditingController _notesController = TextEditingController();
 
   late int _index;
   PhotoMetadata? _embeddedMetadata;
+  PhotoCatalogMetadata? _loadedCatalogMetadata;
 
   List<String> _people = [];
   List<String> _tags = [];
@@ -42,11 +46,11 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
   List<String> _knownLocations = [];
   List<FamilyPerson> _linkedFamilyPeople = [];
   List<DetectedFaceRecord> _confirmedFaces = [];
+  Map<String, int> _photoPersonAliases = <String, int>{};
 
   String _dateType = 'Approximate';
   bool _loading = true;
   bool _saving = false;
-  bool _writingToPhoto = false;
   String? _error;
 
   VaultPhoto get _photo => widget.photos[_index];
@@ -64,6 +68,7 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
     _dateController.dispose();
     _locationController.dispose();
     _descriptionController.dispose();
+    _backWritingController.dispose();
     _notesController.dispose();
     super.dispose();
   }
@@ -109,6 +114,7 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
         _databaseHelper.getPhotoCatalogMetadata(_photo.filePath),
         _databaseHelper.getFamilyPeopleForPhoto(_photo.filePath),
         _databaseHelper.getFacesForPhotoPaths([_photo.filePath]),
+        _databaseHelper.getPhotoPersonAliases(),
       ]);
 
       final embedded = results[0] as PhotoMetadata;
@@ -117,9 +123,11 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
       final faces = (results[3] as List<DetectedFaceRecord>)
           .where((face) => face.confirmed && face.personName.trim().isNotEmpty)
           .toList();
+      final aliases = results[4] as Map<String, int>;
 
       if (!mounted) return;
 
+      _loadedCatalogMetadata = catalog;
       _people = [...catalog.people];
       _tags = [...catalog.tags];
 
@@ -129,12 +137,14 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
 
       _locationController.text = catalog.location;
       _descriptionController.text = catalog.description;
+      _backWritingController.text = catalog.backWriting;
       _notesController.text = catalog.notes;
 
       setState(() {
         _embeddedMetadata = embedded;
         _linkedFamilyPeople = linkedFamilyPeople;
         _confirmedFaces = faces;
+        _photoPersonAliases = aliases;
         _loading = false;
       });
     } catch (error) {
@@ -185,15 +195,79 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
       approximateDate: _storedDate(),
       location: _locationController.text.trim(),
       description: _descriptionController.text.trim(),
+      backWriting: _backWritingController.text.trim(),
       notes: _notesController.text.trim(),
     );
+  }
+
+  List<String> _changedMetadataFields(PhotoCatalogMetadata metadata) {
+    final loaded = _loadedCatalogMetadata;
+    if (loaded == null) return const ['Photo details'];
+
+    final changed = <String>[];
+    if (loaded.people.join('\u001f') != metadata.people.join('\u001f')) {
+      changed.add('People');
+    }
+    if (loaded.tags.join('\u001f') != metadata.tags.join('\u001f')) {
+      changed.add('Tags');
+    }
+    if (loaded.approximateDate.trim() != metadata.approximateDate.trim()) {
+      changed.add('Date');
+    }
+    if (loaded.location.trim() != metadata.location.trim()) {
+      changed.add('Location');
+    }
+    if (loaded.description.trim() != metadata.description.trim()) {
+      changed.add('Description');
+    }
+    if (loaded.backWriting.trim() != metadata.backWriting.trim()) {
+      changed.add('Back writing');
+    }
+    if (loaded.notes.trim() != metadata.notes.trim()) changed.add('Notes');
+    return changed;
+  }
+
+  Future<bool> _saveCatalogMetadataWithSync(
+    PhotoCatalogMetadata metadata,
+  ) async {
+    final changedFields = _changedMetadataFields(metadata);
+    final changed = changedFields.isNotEmpty;
+    await _databaseHelper.savePhotoCatalogMetadata(metadata);
+
+    if (changed) {
+      await _syncService.recordLocalChange(
+        entityType: 'photo',
+        localKey: metadata.filePath,
+        operation: 'update',
+        changedFields: changedFields,
+      );
+
+      _loadedCatalogMetadata = metadata;
+    }
+    return changed;
   }
 
   Future<void> _save({bool showMessage = true}) async {
     setState(() => _saving = true);
     try {
       final metadata = _currentCatalogMetadata();
-      await _databaseHelper.savePhotoCatalogMetadata(metadata);
+      final changedFields = _changedMetadataFields(metadata);
+      await _saveCatalogMetadataWithSync(metadata);
+
+      PhotoMetadataWriteResult? writeResult;
+      if (changedFields.any(_isPortableMetadataField)) {
+        writeResult = await PhotoMetadataWriter.write(
+          filePath: _photo.filePath,
+          metadata: metadata,
+        );
+
+        if (writeResult.success) {
+          final refreshed = await PhotoMetadataReader.read(_photo.filePath);
+          if (mounted) {
+            setState(() => _embeddedMetadata = refreshed);
+          }
+        }
+      }
 
       for (final person in metadata.people) {
         if (!_knownPeople.contains(person)) _knownPeople.add(person);
@@ -208,18 +282,34 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
 
       if (!mounted) return;
       if (showMessage) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Heirloom Atlas metadata saved.')),
-        );
+        final portableChanged = changedFields.any(_isPortableMetadataField);
+        final message = !portableChanged
+            ? 'Photo details saved.'
+            : writeResult?.success == true
+            ? 'Photo details saved and written to the original file.'
+            : 'Photo details saved to Heirloom Atlas. The original file could not be updated.';
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(message)));
       }
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not save metadata: $error')),
+        SnackBar(content: Text('Could not save photo details: $error')),
       );
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  bool _isPortableMetadataField(String field) {
+    return const {
+      'People',
+      'Tags',
+      'Date',
+      'Location',
+      'Description',
+    }.contains(field);
   }
 
   Future<void> _move(int direction) async {
@@ -232,195 +322,6 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
 
     setState(() => _index = next);
     await _loadPhoto();
-  }
-
-  Future<void> _writeToPhoto() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Write metadata to original photo?'),
-        content: const Text(
-          'Heirloom Atlas will create a backup first, then write Description, '
-          'Tags, People-as-keywords, and Location into the original image. '
-          'Archival Date and Notes remain in Heirloom Atlas only.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Write Metadata'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed != true) return;
-
-    setState(() => _writingToPhoto = true);
-    try {
-      final metadata = _currentCatalogMetadata();
-      await _databaseHelper.savePhotoCatalogMetadata(metadata);
-
-      final result = await PhotoMetadataWriter.write(
-        filePath: _photo.filePath,
-        metadata: metadata,
-      );
-
-      if (!mounted) return;
-
-      if (result.success) {
-        final refreshed = await PhotoMetadataReader.read(_photo.filePath);
-        if (!mounted) return;
-        setState(() => _embeddedMetadata = refreshed);
-
-        final expectedDescription = metadata.description.trim();
-        final descriptionVerified =
-            expectedDescription.isEmpty ||
-            refreshed.description.trim() == expectedDescription;
-
-        final expectedKeywords = <String>{
-          ...metadata.tags
-              .map((tag) => tag.trim())
-              .where((tag) => tag.isNotEmpty),
-          ...metadata.people
-              .map((person) => person.trim())
-              .where((person) => person.isNotEmpty)
-              .map((person) => 'Person: $person'),
-        };
-
-        final actualKeywords = refreshed.tags
-            .map((tag) => tag.trim())
-            .where((tag) => tag.isNotEmpty)
-            .toSet();
-
-        final tagsVerified = metadata.tags
-            .map((tag) => tag.trim())
-            .where((tag) => tag.isNotEmpty)
-            .every(actualKeywords.contains);
-
-        final peopleVerified = metadata.people
-            .map((person) => person.trim())
-            .where((person) => person.isNotEmpty)
-            .map((person) => 'Person: $person')
-            .every(actualKeywords.contains);
-
-        final unexpectedKeywords =
-            actualKeywords.difference(expectedKeywords).toList()..sort();
-
-        final expectedLocation = metadata.location.trim();
-        final actualLocation = (refreshed.technical['XMP Location'] ?? '')
-            .trim();
-        final locationVerified =
-            expectedLocation.isEmpty || actualLocation == expectedLocation;
-
-        final failures = <String>[
-          if (!descriptionVerified) 'Description',
-          if (!tagsVerified) 'Tags / keywords',
-          if (!peopleVerified) 'People',
-          if (!locationVerified) 'Location',
-        ];
-
-        await showDialog<void>(
-          context: context,
-          builder: (dialogContext) => AlertDialog(
-            title: Text(
-              failures.isEmpty
-                  ? 'Metadata write verified'
-                  : 'Metadata write needs review',
-            ),
-            content: SizedBox(
-              width: 560,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _verificationRow(result.backupPath != null, 'Backup created'),
-                  _verificationRow(
-                    descriptionVerified,
-                    expectedDescription.isEmpty
-                        ? 'Description — nothing to write'
-                        : 'Description verified',
-                  ),
-                  _verificationRow(
-                    tagsVerified,
-                    metadata.tags.isEmpty
-                        ? 'Tags — nothing to write'
-                        : 'Tags verified',
-                  ),
-                  _verificationRow(
-                    peopleVerified,
-                    metadata.people.isEmpty
-                        ? 'People — nothing to write'
-                        : 'People verified',
-                  ),
-                  _verificationRow(
-                    locationVerified,
-                    expectedLocation.isEmpty
-                        ? 'Location — nothing to write'
-                        : locationVerified
-                        ? 'Location verified'
-                        : 'Location could not be verified',
-                  ),
-                  _verificationRow(
-                    true,
-                    'Original capture date was not changed',
-                  ),
-                  if (unexpectedKeywords.isNotEmpty) ...[
-                    const SizedBox(height: 12),
-                    Text(
-                      'Other embedded keywords still present: '
-                      '${unexpectedKeywords.join(', ')}',
-                    ),
-                  ],
-                  if (failures.isNotEmpty) ...[
-                    const SizedBox(height: 14),
-                    Text(
-                      'Could not verify: ${failures.join(', ')}. '
-                      'The backup was kept so the original can be restored.',
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                  ],
-                  if (result.backupPath != null) ...[
-                    const SizedBox(height: 14),
-                    const Text(
-                      'Backup:',
-                      style: TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                    const SizedBox(height: 4),
-                    SelectableText(result.backupPath!),
-                  ],
-                ],
-              ),
-            ),
-            actions: [
-              FilledButton(
-                onPressed: () => Navigator.pop(dialogContext),
-                child: const Text('Done'),
-              ),
-            ],
-          ),
-        );
-      } else {
-        await showDialog<void>(
-          context: context,
-          builder: (dialogContext) => AlertDialog(
-            title: const Text('Metadata was not written'),
-            content: SelectableText(result.message),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(dialogContext),
-                child: const Text('Close'),
-              ),
-            ],
-          ),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _writingToPhoto = false);
-    }
   }
 
   Future<void> _changeFacePerson(DetectedFaceRecord face) async {
@@ -564,7 +465,7 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
 
     if (!stillHasPerson) {
       _people.remove(face.personName);
-      await _databaseHelper.savePhotoCatalogMetadata(_currentCatalogMetadata());
+      await _saveCatalogMetadataWithSync(_currentCatalogMetadata());
     }
 
     if (!mounted) return;
@@ -626,6 +527,145 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
     );
   }
 
+  Future<void> _matchPhotoNamesToFamilyTree() async {
+    final photoNames = <String>{
+      ..._people.map((name) => name.trim()).where((name) => name.isNotEmpty),
+      ..._confirmedFaces
+          .map((face) => face.personName.trim())
+          .where((name) => name.isNotEmpty),
+    }.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+    if (photoNames.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('There are no photo names to match yet.')),
+      );
+      return;
+    }
+
+    if (_linkedFamilyPeople.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Link the Family Tree people in this photo first, then match '
+            'their everyday photo names.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final linkedById = <int, FamilyPerson>{
+      for (final person in _linkedFamilyPeople)
+        if (person.id != null) person.id!: person,
+    };
+
+    final selections = <String, int?>{
+      for (final name in photoNames) name: _photoPersonAliases[name],
+    };
+
+    final save = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: const Text('Match Photo Names to Family Tree'),
+            content: SizedBox(
+              width: 680,
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Choose who each everyday photo name refers to. '
+                      'Heirloom Atlas will remember the alias and show the '
+                      'person only once.',
+                    ),
+                    const SizedBox(height: 18),
+                    for (final name in photoNames) ...[
+                      Text(
+                        name,
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      const SizedBox(height: 6),
+                      DropdownButtonFormField<int?>(
+                        initialValue: selections[name],
+                        isExpanded: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Family Tree person',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: [
+                          const DropdownMenuItem<int?>(
+                            value: null,
+                            child: Text('Not matched'),
+                          ),
+                          ...linkedById.entries.map(
+                            (entry) => DropdownMenuItem<int?>(
+                              value: entry.key,
+                              child: Text(entry.value.displayName),
+                            ),
+                          ),
+                        ],
+                        onChanged: (value) {
+                          setDialogState(() => selections[name] = value);
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton.icon(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                icon: const Icon(Icons.link),
+                label: const Text('Save Matches'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    if (save != true) return;
+
+    for (final name in photoNames) {
+      final selectedId = selections[name];
+      final existingId = _photoPersonAliases[name];
+
+      if (selectedId == null) {
+        if (existingId != null) {
+          await _databaseHelper.removePhotoPersonAlias(name);
+        }
+      } else {
+        await _databaseHelper.setPhotoPersonAlias(
+          aliasName: name,
+          familyPersonId: selectedId,
+        );
+      }
+    }
+
+    final aliases = await _databaseHelper.getPhotoPersonAliases();
+    if (!mounted) return;
+
+    setState(() {
+      _photoPersonAliases = aliases;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Photo names matched. Linked aliases now count as one person.',
+        ),
+      ),
+    );
+  }
+
   void _addPerson(String value) {
     final item = value.trim();
     if (item.isEmpty || _people.contains(item)) return;
@@ -643,34 +683,7 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
     final file = File(_photo.filePath);
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_photo.fileName),
-        actions: [
-          IconButton(
-            tooltip: 'Save to Vault',
-            onPressed: _saving || _loading ? null : () => _save(),
-            icon: _saving
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.save_outlined),
-          ),
-          IconButton(
-            tooltip: 'Write Metadata to Photo',
-            onPressed: _loading || _writingToPhoto ? null : _writeToPhoto,
-            icon: _writingToPhoto
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.edit_note_outlined),
-          ),
-          const SizedBox(width: 4),
-        ],
-      ),
+      appBar: AppBar(title: Text(_photo.fileName), actions: []),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
@@ -742,53 +755,56 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
                     padding: const EdgeInsets.all(22),
                     children: [
                       Text(
-                        'Photo Details',
+                        'Tell the Story of This Photo',
                         style: Theme.of(context).textTheme.headlineSmall
                             ?.copyWith(fontWeight: FontWeight.w800),
                       ),
-                      const SizedBox(height: 18),
-                      _ConfirmedFacesCard(
-                        faces: _confirmedFaces,
-                        onChangePerson: _changeFacePerson,
-                        onUnidentify: _markFaceUnidentified,
+                      const SizedBox(height: 6),
+                      Text(
+                        'Answer what you know. Heirloom Atlas keeps the '
+                        'cataloging details organized behind the scenes.',
+                        style: Theme.of(context).textTheme.bodyMedium,
                       ),
-                      const SizedBox(height: 18),
-                      _FamilyTreeLinksCard(
-                        people: _linkedFamilyPeople,
-                        onEdit: _chooseFamilyTreePeople,
+                      const SizedBox(height: 22),
+
+                      Text(
+                        'Who is in this photo?',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w800),
                       ),
-                      const SizedBox(height: 18),
-                      _ChipEditor(
-                        label: 'People / metadata keywords',
-                        hint: 'Add a person',
-                        values: _people,
+                      const SizedBox(height: 10),
+                      _PeopleIdentityCard(
+                        people: _people,
                         suggestions: _knownPeople,
-                        onAdd: _addPerson,
-                        onRemove: (value) =>
+                        familyPeople: _linkedFamilyPeople,
+                        faces: _confirmedFaces,
+                        aliases: _photoPersonAliases,
+                        onAddPerson: _addPerson,
+                        onRemovePerson: (value) =>
                             setState(() => _people.remove(value)),
+                        onEditFamilyLinks: _chooseFamilyTreePeople,
+                        onMatchNames: _matchPhotoNamesToFamilyTree,
+                        onChangeFacePerson: _changeFacePerson,
+                        onUnidentifyFace: _markFaceUnidentified,
                       ),
-                      const SizedBox(height: 18),
-                      _ChipEditor(
-                        label: 'Tags',
-                        hint: 'Add a tag',
-                        values: _tags,
-                        suggestions: _knownTags,
-                        onAdd: _addTag,
-                        onRemove: (value) =>
-                            setState(() => _tags.remove(value)),
+
+                      const SizedBox(height: 24),
+                      Text(
+                        'When was it taken?',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w800),
                       ),
-                      const SizedBox(height: 18),
+                      const SizedBox(height: 10),
                       LayoutBuilder(
                         builder: (context, constraints) {
                           final stackFields = constraints.maxWidth < 430;
-
                           final typeField = SizedBox(
                             width: stackFields ? constraints.maxWidth : 145,
                             child: DropdownButtonFormField<String>(
                               initialValue: _dateType,
                               isExpanded: true,
                               decoration: const InputDecoration(
-                                labelText: 'Date type',
+                                labelText: 'How certain?',
                                 border: OutlineInputBorder(),
                               ),
                               items:
@@ -816,12 +832,11 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
                               },
                             ),
                           );
-
                           final dateField = TextField(
                             controller: _dateController,
                             enabled: _dateType != 'Unknown',
                             decoration: InputDecoration(
-                              labelText: 'Archival date',
+                              labelText: 'Date',
                               hintText: _dateType == 'Decade'
                                   ? '1950'
                                   : _dateType == 'Year only'
@@ -830,7 +845,6 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
                               border: const OutlineInputBorder(),
                             ),
                           );
-
                           if (stackFields) {
                             return Column(
                               children: [
@@ -840,7 +854,6 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
                               ],
                             );
                           }
-
                           return Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
@@ -851,18 +864,21 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
                           );
                         },
                       ),
-                      const SizedBox(height: 14),
+
+                      const SizedBox(height: 24),
+                      Text(
+                        'Where was it taken?',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                      const SizedBox(height: 10),
                       Autocomplete<String>(
                         initialValue: TextEditingValue(
                           text: _locationController.text,
                         ),
                         optionsBuilder: (value) {
                           final query = value.text.trim().toLowerCase();
-
-                          if (query.isEmpty) {
-                            return _knownLocations;
-                          }
-
+                          if (query.isEmpty) return _knownLocations;
                           return _knownLocations.where(
                             (item) => item.toLowerCase().contains(query),
                           );
@@ -882,84 +898,141 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
                                 controller: controller,
                                 focusNode: focusNode,
                                 decoration: const InputDecoration(
-                                  labelText: 'Location',
                                   hintText: 'Rome, New York',
                                   border: OutlineInputBorder(),
                                 ),
                               );
                             },
                       ),
-                      const SizedBox(height: 14),
+
+                      const SizedBox(height: 24),
+                      Text(
+                        "What's happening?",
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                      const SizedBox(height: 10),
                       TextField(
                         controller: _descriptionController,
                         maxLines: 4,
                         decoration: const InputDecoration(
-                          labelText: 'Description',
+                          hintText:
+                              'Describe the people, event, place, or story shown here.',
                           border: OutlineInputBorder(),
                         ),
                       ),
-                      const SizedBox(height: 14),
+
+                      const SizedBox(height: 24),
+                      Text(
+                        'Tags / Keywords',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                      const SizedBox(height: 10),
+                      _ChipEditor(
+                        label: 'Organize this photo',
+                        hint: 'Add a tag',
+                        values: _tags,
+                        suggestions: _knownTags,
+                        onAdd: _addTag,
+                        onRemove: (value) =>
+                            setState(() => _tags.remove(value)),
+                      ),
+
+                      const SizedBox(height: 24),
+                      Text(
+                        "What's written on the back?",
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'Transcribe handwriting, captions, dates, names, '
+                        'studio marks, or other writing exactly as you see it.',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 10),
                       TextField(
-                        controller: _notesController,
+                        controller: _backWritingController,
                         maxLines: 4,
                         decoration: const InputDecoration(
-                          labelText: 'Heirloom Atlas Notes',
+                          hintText: 'Example: “Grandma Rita, summer 1952”',
                           border: OutlineInputBorder(),
                         ),
                       ),
-                      const SizedBox(height: 26),
-                      const Divider(),
-                      const SizedBox(height: 10),
-                      Text(
-                        'Embedded Photo Metadata',
-                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w800,
+
+                      const SizedBox(height: 24),
+                      ExpansionTile(
+                        tilePadding: EdgeInsets.zero,
+                        childrenPadding: const EdgeInsets.only(bottom: 12),
+                        title: const Text(
+                          'More details',
+                          style: TextStyle(fontWeight: FontWeight.w800),
                         ),
-                      ),
-                      const SizedBox(height: 10),
-                      if (_embeddedMetadata != null) ...[
-                        _embeddedRow('Date', _embeddedMetadata!.dateTaken),
-                        _embeddedRow(
-                          'Description',
-                          _embeddedMetadata!.description,
+                        subtitle: const Text(
+                          'Private notes and embedded file metadata',
                         ),
-                        if (_embeddedMetadata!.tags.isNotEmpty) ...[
-                          const Text(
-                            'Embedded Tags',
-                            style: TextStyle(fontWeight: FontWeight.w800),
+                        children: [
+                          TextField(
+                            controller: _notesController,
+                            maxLines: 4,
+                            decoration: const InputDecoration(
+                              labelText: 'Heirloom Atlas Notes',
+                              hintText:
+                                  'Research notes, uncertainties, or reminders.',
+                              border: OutlineInputBorder(),
+                            ),
                           ),
-                          const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 6,
-                            runSpacing: 6,
-                            children: _embeddedMetadata!.tags
-                                .map((tag) => Chip(label: Text(tag)))
-                                .toList(),
+                          const SizedBox(height: 22),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              'Embedded Photo Metadata',
+                              style: Theme.of(context).textTheme.titleMedium
+                                  ?.copyWith(fontWeight: FontWeight.w800),
+                            ),
                           ),
+                          const SizedBox(height: 10),
+                          if (_embeddedMetadata != null) ...[
+                            _embeddedRow('Date', _embeddedMetadata!.dateTaken),
+                            _embeddedRow(
+                              'Description',
+                              _embeddedMetadata!.description,
+                            ),
+                            if (_embeddedMetadata!.tags.isNotEmpty) ...[
+                              const Align(
+                                alignment: Alignment.centerLeft,
+                                child: Text(
+                                  'Embedded Tags',
+                                  style: TextStyle(fontWeight: FontWeight.w800),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: Wrap(
+                                  spacing: 6,
+                                  runSpacing: 6,
+                                  children: _embeddedMetadata!.tags
+                                      .map((tag) => Chip(label: Text(tag)))
+                                      .toList(),
+                                ),
+                              ),
+                            ],
+                          ],
                         ],
-                      ],
+                      ),
+                      const SizedBox(height: 20),
+                      FilledButton.icon(
+                        onPressed: _saving || _loading ? null : () => _save(),
+                        icon: const Icon(Icons.save_outlined),
+                        label: const Text('Save'),
+                      ),
                     ],
                   ),
                 ),
               ],
             ),
-    );
-  }
-
-  Widget _verificationRow(bool success, String label) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(
-            success ? Icons.check_circle_outline : Icons.warning_amber_outlined,
-            size: 20,
-          ),
-          const SizedBox(width: 8),
-          Expanded(child: Text(label)),
-        ],
-      ),
     );
   }
 
@@ -979,19 +1052,115 @@ class _PhotoDetailScreenState extends State<PhotoDetailScreen> {
   }
 }
 
-class _ConfirmedFacesCard extends StatelessWidget {
-  final List<DetectedFaceRecord> faces;
-  final ValueChanged<DetectedFaceRecord> onChangePerson;
-  final ValueChanged<DetectedFaceRecord> onUnidentify;
+class _PersonIdentityLabel {
+  final String displayName;
+  final String canonicalName;
+  final bool linkedToTree;
+  final bool hasFace;
 
-  const _ConfirmedFacesCard({
+  const _PersonIdentityLabel({
+    required this.displayName,
+    required this.canonicalName,
+    required this.linkedToTree,
+    required this.hasFace,
+  });
+}
+
+class _PeopleIdentityCard extends StatelessWidget {
+  final List<String> people;
+  final List<String> suggestions;
+  final List<FamilyPerson> familyPeople;
+  final List<DetectedFaceRecord> faces;
+  final Map<String, int> aliases;
+  final ValueChanged<String> onAddPerson;
+  final ValueChanged<String> onRemovePerson;
+  final VoidCallback onEditFamilyLinks;
+  final VoidCallback onMatchNames;
+  final ValueChanged<DetectedFaceRecord> onChangeFacePerson;
+  final ValueChanged<DetectedFaceRecord> onUnidentifyFace;
+
+  const _PeopleIdentityCard({
+    required this.people,
+    required this.suggestions,
+    required this.familyPeople,
     required this.faces,
-    required this.onChangePerson,
-    required this.onUnidentify,
+    required this.aliases,
+    required this.onAddPerson,
+    required this.onRemovePerson,
+    required this.onEditFamilyLinks,
+    required this.onMatchNames,
+    required this.onChangeFacePerson,
+    required this.onUnidentifyFace,
   });
 
   @override
   Widget build(BuildContext context) {
+    final familyById = <int, FamilyPerson>{
+      for (final person in familyPeople)
+        if (person.id != null) person.id!: person,
+    };
+    final photoNames = <String>{
+      ...people.map((name) => name.trim()).where((name) => name.isNotEmpty),
+      ...faces
+          .map((face) => face.personName.trim())
+          .where((name) => name.isNotEmpty),
+    };
+
+    final matchedAliasesByFamily = <int, List<String>>{};
+    final unmatchedNames = <String>[];
+
+    for (final name in photoNames) {
+      final familyId = aliases[name];
+      if (familyId != null && familyById.containsKey(familyId)) {
+        matchedAliasesByFamily
+            .putIfAbsent(familyId, () => <String>[])
+            .add(name);
+      } else {
+        unmatchedNames.add(name);
+      }
+    }
+
+    final identityLabels = <_PersonIdentityLabel>[];
+
+    for (final entry in familyById.entries) {
+      final matched = matchedAliasesByFamily[entry.key] ?? const <String>[];
+      final display = matched.isNotEmpty
+          ? matched.first
+          : entry.value.displayName;
+      identityLabels.add(
+        _PersonIdentityLabel(
+          displayName: display,
+          canonicalName: entry.value.displayName,
+          linkedToTree: true,
+          hasFace: matched.any(
+            (alias) => faces.any(
+              (face) =>
+                  face.personName.trim().toLowerCase() == alias.toLowerCase(),
+            ),
+          ),
+        ),
+      );
+    }
+
+    for (final name in unmatchedNames) {
+      identityLabels.add(
+        _PersonIdentityLabel(
+          displayName: name,
+          canonicalName: '',
+          linkedToTree: false,
+          hasFace: faces.any(
+            (face) =>
+                face.personName.trim().toLowerCase() == name.toLowerCase(),
+          ),
+        ),
+      );
+    }
+
+    identityLabels.sort(
+      (a, b) =>
+          a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase()),
+    );
+
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -1001,35 +1170,122 @@ class _ConfirmedFacesCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                const Icon(Icons.face_retouching_natural_outlined),
+                const Icon(Icons.people_alt_outlined),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Faces in this Photo',
+                    identityLabels.isEmpty
+                        ? 'No people identified yet'
+                        : '${identityLabels.length} ${identityLabels.length == 1 ? 'person' : 'people'} identified',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                       fontWeight: FontWeight.w800,
                     ),
                   ),
                 ),
+                OutlinedButton.icon(
+                  onPressed: onMatchNames,
+                  icon: const Icon(Icons.link_outlined, size: 18),
+                  label: const Text('Match Names'),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: onEditFamilyLinks,
+                  icon: const Icon(Icons.account_tree_outlined, size: 18),
+                  label: const Text('Family Tree'),
+                ),
               ],
             ),
             const SizedBox(height: 8),
-            if (faces.isEmpty)
-              const Text('No confirmed faces in this photo.')
-            else
+            Text(
+              'Add a name once. Heirloom Atlas can also connect that person '
+              'to the Family Tree and recognized faces.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            if (identityLabels.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: identityLabels.map((identity) {
+                  final chip = Chip(
+                    avatar: Icon(
+                      identity.hasFace
+                          ? Icons.face_outlined
+                          : identity.linkedToTree
+                          ? Icons.account_tree_outlined
+                          : Icons.person_outline,
+                      size: 18,
+                    ),
+                    label: Text(identity.displayName),
+                  );
+
+                  if (identity.linkedToTree &&
+                      identity.canonicalName.isNotEmpty &&
+                      identity.canonicalName != identity.displayName) {
+                    return Tooltip(
+                      message: 'Family Tree: ${identity.canonicalName}',
+                      child: chip,
+                    );
+                  }
+                  return chip;
+                }).toList(),
+              ),
+            ],
+            const SizedBox(height: 14),
+            _ChipEditor(
+              label: 'Add or correct a person',
+              hint: 'Type a name',
+              values: people,
+              suggestions: suggestions,
+              onAdd: onAddPerson,
+              onRemove: onRemovePerson,
+            ),
+            if (familyPeople.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              Text(
+                'Family Tree',
+                style: Theme.of(
+                  context,
+                ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: familyPeople
+                    .map(
+                      (person) => Chip(
+                        avatar: const Icon(
+                          Icons.account_tree_outlined,
+                          size: 17,
+                        ),
+                        label: Text(
+                          person.lifeSpan.isEmpty
+                              ? person.displayName
+                              : '${person.displayName} • ${person.lifeSpan}',
+                        ),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
+            if (faces.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              Text(
+                'Recognized in this photo',
+                style: Theme.of(
+                  context,
+                ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 8),
               ...faces.map((face) {
                 final thumbnail = File(face.thumbnailPath);
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surfaceContainerLow,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
                   child: Row(
                     children: [
                       CircleAvatar(
-                        radius: 24,
+                        radius: 20,
                         backgroundImage: thumbnail.existsSync()
                             ? FileImage(thumbnail)
                             : null,
@@ -1041,97 +1297,21 @@ class _ConfirmedFacesCard extends StatelessWidget {
                       Expanded(
                         child: Text(
                           face.personName,
-                          style: const TextStyle(fontWeight: FontWeight.w800),
+                          style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
                       ),
-                      OutlinedButton.icon(
-                        onPressed: () => onChangePerson(face),
-                        icon: const Icon(Icons.edit_outlined, size: 17),
-                        label: const Text('Change Name'),
+                      TextButton(
+                        onPressed: () => onChangeFacePerson(face),
+                        child: const Text('Change'),
                       ),
-                      const SizedBox(width: 6),
-                      TextButton.icon(
-                        onPressed: () => onUnidentify(face),
-                        icon: const Icon(Icons.person_off_outlined, size: 17),
-                        label: const Text('Mark Unidentified'),
+                      TextButton(
+                        onPressed: () => onUnidentifyFace(face),
+                        child: const Text('Unidentify'),
                       ),
                     ],
                   ),
                 );
               }),
-            if (faces.isNotEmpty)
-              Text(
-                'Changing a name corrects this face only. Mark Unidentified '
-                'removes the identity and returns the face to the review queue.',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _FamilyTreeLinksCard extends StatelessWidget {
-  final List<FamilyPerson> people;
-  final VoidCallback onEdit;
-
-  const _FamilyTreeLinksCard({required this.people, required this.onEdit});
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.account_tree_outlined),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Family Tree Links',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                ),
-                OutlinedButton.icon(
-                  onPressed: onEdit,
-                  icon: const Icon(Icons.link),
-                  label: Text(people.isEmpty ? 'Link People' : 'Edit Links'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(
-              people.isEmpty
-                  ? 'Connect this photo to people in your Family Tree. '
-                        'Atlas Book will use these links to gather photos automatically.'
-                  : 'This photo is connected to ${people.length} '
-                        '${people.length == 1 ? 'person' : 'people'} in your Family Tree.',
-            ),
-            if (people.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: people
-                    .map(
-                      (person) => Chip(
-                        avatar: const Icon(Icons.person_outline, size: 18),
-                        label: Text(
-                          person.lifeSpan.isEmpty
-                              ? person.displayName
-                              : '${person.displayName} • ${person.lifeSpan}',
-                        ),
-                      ),
-                    )
-                    .toList(),
-              ),
             ],
           ],
         ),

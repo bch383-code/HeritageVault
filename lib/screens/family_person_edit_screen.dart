@@ -85,12 +85,11 @@ class _FamilyPersonEditScreenState extends State<FamilyPersonEditScreen> {
   }
 
   Future<void> _pickPhoto() async {
-    final result = await FilePicker.pickFiles(
+    final result = await FilePicker.pickFile(
       type: FileType.image,
-      allowMultiple: false,
     );
 
-    final pickedPath = result?.single.path;
+    final pickedPath = result?.path;
 
     if (pickedPath != null && mounted) {
       setState(() => _photoPath = pickedPath);

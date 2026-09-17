@@ -32,13 +32,17 @@ class _GedcomImportScreenState extends State<GedcomImportScreen> {
 
     try {
       final result = await FilePicker.pickFiles(
-        allowMultiple: false,
-        type: FileType.custom,
+          type: FileType.custom,
         allowedExtensions: const ['ged'],
       );
 
-      final filePath = result?.single.path;
-      if (filePath == null) {
+      if (result.isEmpty) {
+        if (mounted) setState(() => _busy = false);
+        return;
+      }
+
+      final filePath = result.single.path;
+      if (filePath == null || filePath.isEmpty) {
         if (mounted) setState(() => _busy = false);
         return;
       }

@@ -11,6 +11,8 @@ class CoinsScreen extends StatefulWidget {
   final String? initialCategory;
   final String? initialSeries;
   final String? initialSearchText;
+  final String? initialImagePath;
+  final VoidCallback? onInitialImageConsumed;
 
   const CoinsScreen({
     super.key,
@@ -18,6 +20,8 @@ class CoinsScreen extends StatefulWidget {
     this.initialCategory,
     this.initialSeries,
     this.initialSearchText,
+    this.initialImagePath,
+    this.onInitialImageConsumed,
   });
 
   @override
@@ -35,6 +39,7 @@ class _CoinsScreenState extends State<CoinsScreen> {
   String? _selectedSeries;
   bool _isLoading = true;
   Timer? _searchDebounce;
+  String? _pendingQuickCaptureImagePath;
 
   @override
   void initState() {
@@ -43,7 +48,19 @@ class _CoinsScreenState extends State<CoinsScreen> {
     _selectedCategory = widget.initialCategory;
     _selectedSeries = widget.initialSeries;
     _searchController.text = widget.initialSearchText ?? '';
+    _pendingQuickCaptureImagePath = widget.initialImagePath;
     _loadData();
+
+    if (_pendingQuickCaptureImagePath != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Quick Capture image ready. Select the matching coin.'),
+          ),
+        );
+      });
+    }
   }
 
   @override
@@ -98,14 +115,22 @@ class _CoinsScreenState extends State<CoinsScreen> {
   }
 
   Future<void> _openDetails(ImportedCoin coin) async {
+    final pendingImagePath = _pendingQuickCaptureImagePath;
     final updatedCoin = await Navigator.push<ImportedCoin>(
       context,
       MaterialPageRoute(
-        builder: (context) => CoinDetailScreen(coin: coin),
+        builder: (context) => CoinDetailScreen(
+          coin: coin,
+          initialImagePath: pendingImagePath,
+        ),
       ),
     );
 
     if (updatedCoin != null) {
+      if (_pendingQuickCaptureImagePath != null) {
+        _pendingQuickCaptureImagePath = null;
+        widget.onInitialImageConsumed?.call();
+      }
       await _loadData();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

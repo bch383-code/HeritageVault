@@ -7,14 +7,13 @@ import 'package:path_provider/path_provider.dart';
 
 import '../database/database_helper.dart';
 import '../models/postcard.dart';
+import '../models/family_person.dart';
+import 'family_person_screen.dart';
 
 class PostcardEditScreen extends StatefulWidget {
   final Postcard? postcard;
 
-  const PostcardEditScreen({
-    super.key,
-    this.postcard,
-  });
+  const PostcardEditScreen({super.key, this.postcard});
 
   @override
   State<PostcardEditScreen> createState() => _PostcardEditScreenState();
@@ -35,6 +34,8 @@ class _PostcardEditScreenState extends State<PostcardEditScreen> {
   String _frontImagePath = '';
   String _backImagePath = '';
   bool _isSaving = false;
+  List<FamilyPerson> _familyPeople = const [];
+  Set<int> _selectedFamilyPersonIds = <int>{};
 
   bool get _isEditing => widget.postcard?.id != null;
 
@@ -44,11 +45,13 @@ class _PostcardEditScreenState extends State<PostcardEditScreen> {
     final postcard = widget.postcard;
 
     _titleController = TextEditingController(text: postcard?.title ?? '');
-    _descriptionController =
-        TextEditingController(text: postcard?.description ?? '');
+    _descriptionController = TextEditingController(
+      text: postcard?.description ?? '',
+    );
     _yearController = TextEditingController(text: postcard?.year ?? '');
-    _acquiredFromController =
-        TextEditingController(text: postcard?.acquiredFrom ?? '');
+    _acquiredFromController = TextEditingController(
+      text: postcard?.acquiredFrom ?? '',
+    );
     _purchasePriceController = TextEditingController(
       text: postcard?.purchasePrice?.toStringAsFixed(2) ?? '',
     );
@@ -58,6 +61,213 @@ class _PostcardEditScreenState extends State<PostcardEditScreen> {
     _notesController = TextEditingController(text: postcard?.notes ?? '');
     _frontImagePath = postcard?.frontImagePath ?? '';
     _backImagePath = postcard?.backImagePath ?? '';
+    _loadFamilyConnections();
+  }
+
+  Future<void> _loadFamilyConnections() async {
+    final people = await _databaseHelper.getFamilyPeople();
+    final itemId = widget.postcard?.id;
+    final linked = itemId == null
+        ? <FamilyPerson>[]
+        : await _databaseHelper.getFamilyPeopleForItem(
+            itemType: 'postcard',
+            itemKey: itemId.toString(),
+          );
+
+    if (!mounted) return;
+    setState(() {
+      _familyPeople = people;
+      _selectedFamilyPersonIds = linked
+          .map((person) => person.id)
+          .whereType<int>()
+          .toSet();
+    });
+  }
+
+  Future<void> _chooseFamilyPeople() async {
+    if (_familyPeople.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Add people to the Family Tree first.')),
+      );
+      return;
+    }
+
+    final selected = <int>{..._selectedFamilyPersonIds};
+    var query = '';
+
+    final result = await showDialog<Set<int>>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final q = query.trim().toLowerCase();
+          final visible = _familyPeople.where((person) {
+            return q.isEmpty || person.displayName.toLowerCase().contains(q);
+          }).toList();
+
+          return Dialog(
+            child: SizedBox(
+              width: 700,
+              height: 650,
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 8, 10),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.account_tree_outlined),
+                        const SizedBox(width: 10),
+                        const Expanded(
+                          child: Text(
+                            'Family Connections',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(dialogContext),
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: TextField(
+                      autofocus: true,
+                      onChanged: (value) => setDialogState(() => query = value),
+                      decoration: const InputDecoration(
+                        hintText: 'Search Family Tree...',
+                        prefixIcon: Icon(Icons.search),
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: ListView(
+                      children: visible.map((person) {
+                        final id = person.id!;
+                        return CheckboxListTile(
+                          value: selected.contains(id),
+                          title: Text(person.displayName),
+                          secondary: const CircleAvatar(
+                            child: Icon(Icons.person_outline),
+                          ),
+                          onChanged: (checked) {
+                            setDialogState(() {
+                              if (checked ?? false) {
+                                selected.add(id);
+                              } else {
+                                selected.remove(id);
+                              }
+                            });
+                          },
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Row(
+                      children: [
+                        Text('${selected.length} connected'),
+                        const Spacer(),
+                        TextButton(
+                          onPressed: () => Navigator.pop(dialogContext),
+                          child: const Text('Cancel'),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton.icon(
+                          onPressed: () =>
+                              Navigator.pop(dialogContext, selected),
+                          icon: const Icon(Icons.check),
+                          label: const Text('Use People'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+
+    if (result == null || !mounted) return;
+    setState(() => _selectedFamilyPersonIds = result);
+  }
+
+  Future<void> _openFamilyPerson(FamilyPerson person) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => FamilyPersonScreen(person: person)),
+    );
+
+    await _loadFamilyConnections();
+  }
+
+  Widget _familyConnectionsSection() {
+    final selectedPeople = _familyPeople
+        .where(
+          (person) =>
+              person.id != null && _selectedFamilyPersonIds.contains(person.id),
+        )
+        .toList();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.account_tree_outlined),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text(
+                    'Family Connections',
+                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17),
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _chooseFamilyPeople,
+                  icon: const Icon(Icons.edit_outlined, size: 18),
+                  label: Text(
+                    selectedPeople.isEmpty ? 'Choose People' : 'Manage',
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Connect this postcard to the sender, recipient, owner, '
+              'or other family members who are part of its story.',
+            ),
+            if (selectedPeople.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: selectedPeople
+                    .map(
+                      (person) => ActionChip(
+                        avatar: const Icon(Icons.person_outline, size: 17),
+                        label: Text(person.displayName),
+                        tooltip: 'Open Family Tree person',
+                        onPressed: () => _openFamilyPerson(person),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -73,25 +283,19 @@ class _PostcardEditScreenState extends State<PostcardEditScreen> {
   }
 
   double? _parseMoney(String value) {
-    final cleaned = value
-        .replaceAll(r'$', '')
-        .replaceAll(',', '')
-        .trim();
-
+    final cleaned = value.replaceAll(r'$', '').replaceAll(',', '').trim();
     if (cleaned.isEmpty) return null;
     return double.tryParse(cleaned);
   }
 
   Future<String?> _pickAndCopyImage(String side) async {
-    final result = await FilePicker.pickFiles(
+    final result = await FilePicker.pickFile(
       type: FileType.image,
-      allowMultiple: false,
-      withData: false,
     );
 
-    if (result == null || result.isEmpty) return null;
+    if (result == null) return null;
 
-    final sourcePath = result.single.path;
+    final sourcePath = result.path;
     if (sourcePath == null || sourcePath.isEmpty) return null;
 
     final documentsDirectory = await getApplicationDocumentsDirectory();
@@ -131,6 +335,32 @@ class _PostcardEditScreenState extends State<PostcardEditScreen> {
     setState(() => _backImagePath = copiedPath);
   }
 
+  Future<void> _saveFamilyLinks(int itemId) async {
+    final existingPeople = await _databaseHelper.getFamilyPeopleForItem(
+      itemType: 'postcard',
+      itemKey: itemId.toString(),
+    );
+    final existingIds = existingPeople
+        .map((person) => person.id)
+        .whereType<int>()
+        .toSet();
+
+    for (final personId in existingIds.difference(_selectedFamilyPersonIds)) {
+      await _databaseHelper.unlinkFamilyPersonFromItem(
+        personId: personId,
+        itemType: 'postcard',
+        itemKey: itemId.toString(),
+      );
+    }
+    for (final personId in _selectedFamilyPersonIds.difference(existingIds)) {
+      await _databaseHelper.linkFamilyPersonToItem(
+        personId: personId,
+        itemType: 'postcard',
+        itemKey: itemId.toString(),
+      );
+    }
+  }
+
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -154,11 +384,15 @@ class _PostcardEditScreenState extends State<PostcardEditScreen> {
         reason: _isEditing ? 'before_postcard_update' : 'before_postcard_add',
       );
 
+      final int itemId;
       if (_isEditing) {
         await _databaseHelper.updatePostcard(postcard);
+        itemId = postcard.id!;
       } else {
-        await _databaseHelper.insertPostcard(postcard);
+        itemId = await _databaseHelper.insertPostcard(postcard);
       }
+
+      await _saveFamilyLinks(itemId);
 
       if (!mounted) return;
       Navigator.pop(context, true);
@@ -182,7 +416,7 @@ class _PostcardEditScreenState extends State<PostcardEditScreen> {
         title: const Text('Delete postcard?'),
         content: const Text(
           'This removes the postcard record from Heirloom Atlas. '
-          'The copied image files will be left in the Postcards image folder.',
+          'Copied image files will remain in the Postcards image folder.',
         ),
         actions: [
           TextButton(
@@ -224,20 +458,10 @@ class _PostcardEditScreenState extends State<PostcardEditScreen> {
             Expanded(
               child: Container(
                 width: double.infinity,
-                color: Theme.of(context)
-                    .colorScheme
-                    .surfaceContainerHighest,
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 child: exists
-                    ? Image.file(
-                        file,
-                        fit: BoxFit.contain,
-                      )
-                    : const Center(
-                        child: Icon(
-                          Icons.image_outlined,
-                          size: 64,
-                        ),
-                      ),
+                    ? Image.file(file, fit: BoxFit.contain)
+                    : const Center(child: Icon(Icons.image_outlined, size: 64)),
               ),
             ),
             Padding(
@@ -397,6 +621,8 @@ class _PostcardEditScreenState extends State<PostcardEditScreen> {
                     ],
                   ),
                   const SizedBox(height: 16),
+                  _familyConnectionsSection(),
+                  const SizedBox(height: 16),
                   TextFormField(
                     controller: _notesController,
                     maxLines: 4,
@@ -414,9 +640,7 @@ class _PostcardEditScreenState extends State<PostcardEditScreen> {
                           ? const SizedBox(
                               width: 18,
                               height: 18,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                              ),
+                              child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           : const Icon(Icons.save_outlined),
                       label: Text(_isSaving ? 'Saving...' : 'Save Postcard'),
@@ -431,4 +655,3 @@ class _PostcardEditScreenState extends State<PostcardEditScreen> {
     );
   }
 }
-

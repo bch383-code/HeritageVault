@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import '../database/database_helper.dart';
 import '../models/custom_collection.dart';
 import '../models/custom_collection_item.dart';
+import '../models/family_person.dart';
+import 'family_person_screen.dart';
 
 class CustomCollectionItemEditScreen extends StatefulWidget {
   final CustomCollection collection;
@@ -28,6 +30,8 @@ class _CustomCollectionItemEditScreenState
   List<String> _photoPaths = [];
   List<String> _documentPaths = [];
   bool _saving = false;
+  List<FamilyPerson> _familyPeople = const [];
+  Set<int> _selectedFamilyPersonIds = <int>{};
 
   @override
   void initState() {
@@ -41,13 +45,211 @@ class _CustomCollectionItemEditScreenState
         continue;
       }
 
-      _controllers[field] = TextEditingController(
-        text: values[field] ?? '',
-      );
+      _controllers[field] = TextEditingController(text: values[field] ?? '');
     }
 
     _photoPaths = [...?widget.item?.photoPaths];
     _documentPaths = [...?widget.item?.documentPaths];
+    _loadFamilyConnections();
+  }
+
+  Future<void> _loadFamilyConnections() async {
+    final people = await _databaseHelper.getFamilyPeople();
+    final itemId = widget.item?.id;
+    final linked = itemId == null
+        ? <FamilyPerson>[]
+        : await _databaseHelper.getFamilyPeopleForItem(
+            itemType: 'custom_collection_item',
+            itemKey: itemId.toString(),
+          );
+    if (!mounted) return;
+    setState(() {
+      _familyPeople = people;
+      _selectedFamilyPersonIds = linked
+          .map((p) => p.id)
+          .whereType<int>()
+          .toSet();
+    });
+  }
+
+  Future<void> _chooseFamilyPeople() async {
+    if (_familyPeople.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Add people to the Family Tree first.')),
+      );
+      return;
+    }
+    final selected = <int>{..._selectedFamilyPersonIds};
+    var query = '';
+    final result = await showDialog<Set<int>>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final q = query.trim().toLowerCase();
+          final visible = _familyPeople
+              .where(
+                (p) => q.isEmpty || p.displayName.toLowerCase().contains(q),
+              )
+              .toList();
+          return Dialog(
+            child: SizedBox(
+              width: 700,
+              height: 650,
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 8, 10),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.account_tree_outlined),
+                        const SizedBox(width: 10),
+                        const Expanded(
+                          child: Text(
+                            'Family Connections',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(dialogContext),
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: TextField(
+                      autofocus: true,
+                      onChanged: (value) => setDialogState(() => query = value),
+                      decoration: const InputDecoration(
+                        hintText: 'Search Family Tree...',
+                        prefixIcon: Icon(Icons.search),
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: ListView(
+                      children: visible.map((person) {
+                        final id = person.id!;
+                        return CheckboxListTile(
+                          value: selected.contains(id),
+                          title: Text(person.displayName),
+                          secondary: const CircleAvatar(
+                            child: Icon(Icons.person_outline),
+                          ),
+                          onChanged: (checked) {
+                            setDialogState(() {
+                              if (checked ?? false) {
+                                selected.add(id);
+                              } else {
+                                selected.remove(id);
+                              }
+                            });
+                          },
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Row(
+                      children: [
+                        Text('${selected.length} connected'),
+                        const Spacer(),
+                        TextButton(
+                          onPressed: () => Navigator.pop(dialogContext),
+                          child: const Text('Cancel'),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton.icon(
+                          onPressed: () =>
+                              Navigator.pop(dialogContext, selected),
+                          icon: const Icon(Icons.check),
+                          label: const Text('Use People'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() => _selectedFamilyPersonIds = result);
+  }
+
+  Future<void> _openFamilyPerson(FamilyPerson person) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => FamilyPersonScreen(person: person)),
+    );
+
+    await _loadFamilyConnections();
+  }
+
+  Widget _familyConnectionsSection() {
+    final selectedPeople = _familyPeople
+        .where((p) => p.id != null && _selectedFamilyPersonIds.contains(p.id))
+        .toList();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.account_tree_outlined),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text(
+                    'Family Connections',
+                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17),
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _chooseFamilyPeople,
+                  icon: const Icon(Icons.edit_outlined, size: 18),
+                  label: Text(
+                    selectedPeople.isEmpty ? 'Choose People' : 'Manage',
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Connect this item to the people who owned it, used it, made it, '
+              'inherited it, or are part of its story.',
+            ),
+            if (selectedPeople.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: selectedPeople
+                    .map(
+                      (p) => ActionChip(
+                        avatar: const Icon(Icons.person_outline, size: 17),
+                        label: Text(p.displayName),
+                        tooltip: 'Open Family Tree person',
+                        onPressed: () => _openFamilyPerson(p),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -60,11 +262,11 @@ class _CustomCollectionItemEditScreenState
 
   Future<void> _pickPhotos() async {
     final result = await FilePicker.pickFiles(
+      // Multiple photos are intentionally supported.
+      // ignore: deprecated_member_use
       allowMultiple: true,
       type: FileType.image,
     );
-
-    if (result == null) return;
 
     final paths = result
         .map((file) => file.path)
@@ -85,11 +287,11 @@ class _CustomCollectionItemEditScreenState
 
   Future<void> _pickDocuments() async {
     final result = await FilePicker.pickFiles(
+      // Multiple documents are intentionally supported.
+      // ignore: deprecated_member_use
       allowMultiple: true,
       type: FileType.any,
     );
-
-    if (result == null) return;
 
     final paths = result
         .map((file) => file.path)
@@ -112,9 +314,9 @@ class _CustomCollectionItemEditScreenState
     final title = _controllers[CustomCollectionField.title]?.text.trim() ?? '';
 
     if (title.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Title is required.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Title is required.')));
       return;
     }
 
@@ -122,9 +324,7 @@ class _CustomCollectionItemEditScreenState
 
     try {
       final now = DateTime.now().millisecondsSinceEpoch;
-      final preserved = <String, String>{
-        ...?widget.item?.values,
-      };
+      final preserved = <String, String>{...?widget.item?.values};
 
       for (final entry in _controllers.entries) {
         preserved[entry.key] = entry.value.text.trim();
@@ -136,24 +336,49 @@ class _CustomCollectionItemEditScreenState
         values: preserved,
         photoPaths: _photoPaths,
         documentPaths: _documentPaths,
-        createdAtMilliseconds:
-            widget.item?.createdAtMilliseconds ?? now,
+        createdAtMilliseconds: widget.item?.createdAtMilliseconds ?? now,
         updatedAtMilliseconds: now,
       );
 
+      final int itemId;
       if (widget.item == null) {
-        await _databaseHelper.insertCustomCollectionItem(item);
+        itemId = await _databaseHelper.insertCustomCollectionItem(item);
       } else {
         await _databaseHelper.updateCustomCollectionItem(item);
+        itemId = item.id!;
+      }
+
+      final existingPeople = await _databaseHelper.getFamilyPeopleForItem(
+        itemType: 'custom_collection_item',
+        itemKey: itemId.toString(),
+      );
+      final existingIds = existingPeople
+          .map((person) => person.id)
+          .whereType<int>()
+          .toSet();
+
+      for (final personId in existingIds.difference(_selectedFamilyPersonIds)) {
+        await _databaseHelper.unlinkFamilyPersonFromItem(
+          personId: personId,
+          itemType: 'custom_collection_item',
+          itemKey: itemId.toString(),
+        );
+      }
+      for (final personId in _selectedFamilyPersonIds.difference(existingIds)) {
+        await _databaseHelper.linkFamilyPersonToItem(
+          personId: personId,
+          itemType: 'custom_collection_item',
+          itemKey: itemId.toString(),
+        );
       }
 
       if (!mounted) return;
       Navigator.pop(context, true);
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not save item: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Could not save item: $error')));
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -196,7 +421,8 @@ class _CustomCollectionItemEditScreenState
                   _textField(field),
                 const SizedBox(height: 14),
               ],
-              const SizedBox(height: 10),
+              _familyConnectionsSection(),
+              const SizedBox(height: 18),
               FilledButton.icon(
                 onPressed: _saving ? null : _save,
                 icon: const Icon(Icons.save_outlined),
@@ -213,7 +439,8 @@ class _CustomCollectionItemEditScreenState
     final controller = _controllers[field]!;
     final label = CustomCollectionField.label(field);
 
-    final multiline = field == CustomCollectionField.description ||
+    final multiline =
+        field == CustomCollectionField.description ||
         field == CustomCollectionField.notes;
 
     TextInputType keyboardType = TextInputType.text;
@@ -290,4 +517,3 @@ class _CustomCollectionItemEditScreenState
     );
   }
 }
-

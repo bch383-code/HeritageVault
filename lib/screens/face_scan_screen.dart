@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../database/database_helper.dart';
 import '../models/vault_photo.dart';
 import '../services/face_recognition_service.dart';
-import 'face_review_screen.dart';
 
 class FaceScanScreen extends StatefulWidget {
   final List<VaultPhoto> photos;
@@ -52,21 +51,13 @@ class _FaceScanScreenState extends State<FaceScanScreen> {
         faces,
       );
 
-      final savedFaces = await _databaseHelper.getFacesForPhotoPaths(
-        widget.photos.map((photo) => photo.filePath).toList(),
-      );
-
       if (!mounted) return;
       setState(() => _running = false);
 
-      await Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (context) => FaceReviewScreen(
-            faces: savedFaces,
-          ),
-        ),
-      );
+      // The old FaceReviewScreen is the legacy grouping/removal workflow.
+      // Return to Photos instead; recognition review now lives in the newer
+      // Needs Identification / Known People workflow.
+      Navigator.of(context).pop(true);
     } catch (error) {
       if (!mounted) return;
       setState(() {

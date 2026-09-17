@@ -7,6 +7,7 @@ class PhotoCatalogMetadata {
   final String approximateDate;
   final String location;
   final String description;
+  final String backWriting;
   final String notes;
 
   const PhotoCatalogMetadata({
@@ -16,20 +17,20 @@ class PhotoCatalogMetadata {
     this.approximateDate = '',
     this.location = '',
     this.description = '',
+    this.backWriting = '',
     this.notes = '',
   });
 
-  Map<String, Object?> toMap() {
-    return {
-      'file_path': filePath,
-      'people_json': jsonEncode(people),
-      'tags_json': jsonEncode(tags),
-      'approximate_date': approximateDate,
-      'location': location,
-      'description': description,
-      'notes': notes,
-    };
-  }
+  Map<String, Object?> toMap() => {
+    'file_path': filePath,
+    'people_json': jsonEncode(people),
+    'tags_json': jsonEncode(tags),
+    'approximate_date': approximateDate,
+    'location': location,
+    'description': description,
+    'back_writing': backWriting,
+    'notes': notes,
+  };
 
   factory PhotoCatalogMetadata.fromMap(Map<String, Object?> map) {
     List<String> decodeList(Object? value) {
@@ -38,8 +39,8 @@ class PhotoCatalogMetadata {
         final decoded = jsonDecode(value.toString());
         if (decoded is List) {
           return decoded
-              .map((item) => item.toString().trim())
-              .where((item) => item.isNotEmpty)
+              .map((e) => e.toString().trim())
+              .where((e) => e.isNotEmpty)
               .toList();
         }
       } catch (_) {}
@@ -53,6 +54,7 @@ class PhotoCatalogMetadata {
       approximateDate: map['approximate_date'] as String? ?? '',
       location: map['location'] as String? ?? '',
       description: map['description'] as String? ?? '',
+      backWriting: map['back_writing'] as String? ?? '',
       notes: map['notes'] as String? ?? '',
     );
   }

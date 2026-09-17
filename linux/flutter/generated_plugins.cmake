@@ -5,6 +5,8 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   face_detection_tflite
   file_selector_linux
+  flutter_onnxruntime
+  heic_native
   url_launcher_linux
 )
 

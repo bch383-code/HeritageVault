@@ -1,6 +1,7 @@
+import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:file_picker/file_picker.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:spreadsheet_decoder/spreadsheet_decoder.dart';
 
 import '../models/imported_coin.dart';
@@ -72,18 +73,23 @@ class CoinImportResult {
 
 class CoinImportService {
   Future<CoinImportResult?> chooseAndReadWorkbook() async {
-    final pickedFile = await FilePicker.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['xlsx'],
-      allowMultiple: false,
-      withData: true,
+    const typeGroup = XTypeGroup(
+      label: 'Excel workbooks',
+      extensions: <String>['xlsx'],
     );
 
-    if (pickedFile.isEmpty) return null;
+    final XFile? selectedFile = await openFile(
+      acceptedTypeGroups: <XTypeGroup>[typeGroup],
+    );
 
-    final platformFile = pickedFile.single;
-    final Uint8List bytes = await platformFile.readAsBytes();
+    if (selectedFile == null) return null;
 
+    final filePath = selectedFile.path;
+    if (filePath.isEmpty) {
+      throw Exception('Could not access the selected workbook.');
+    }
+
+    final Uint8List bytes = await File(filePath).readAsBytes();
 
     final workbook = SpreadsheetDecoder.decodeBytes(bytes, update: false);
 
@@ -126,7 +132,7 @@ class CoinImportService {
       ..sort((a, b) => a.category.compareTo(b.category));
 
     return CoinImportResult(
-      fileName: platformFile.name,
+      fileName: selectedFile.name,
       sheetCount: workbook.tables.length,
       coins: coins,
       categories: categories,

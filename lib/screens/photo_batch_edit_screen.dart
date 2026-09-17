@@ -5,15 +5,13 @@ import 'package:flutter/material.dart';
 import '../database/database_helper.dart';
 import '../models/photo_catalog_metadata.dart';
 import '../models/vault_photo.dart';
+import '../services/sync_service.dart';
 import '../services/photo_metadata_writer.dart';
 
 class PhotoBatchEditScreen extends StatefulWidget {
   final List<VaultPhoto> photos;
 
-  const PhotoBatchEditScreen({
-    super.key,
-    required this.photos,
-  });
+  const PhotoBatchEditScreen({super.key, required this.photos});
 
   @override
   State<PhotoBatchEditScreen> createState() => _PhotoBatchEditScreenState();
@@ -21,6 +19,7 @@ class PhotoBatchEditScreen extends StatefulWidget {
 
 class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
   final DatabaseHelper _databaseHelper = DatabaseHelper.instance;
+  final SyncService _syncService = SyncService();
 
   final TextEditingController _peopleController = TextEditingController();
   final TextEditingController _tagsController = TextEditingController();
@@ -28,18 +27,14 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
   final TextEditingController _locationController = TextEditingController();
   final TextEditingController _descriptionController = TextEditingController();
 
-  bool _applyPeople = true;
-  bool _applyTags = true;
+  bool _applyPeople = false;
+  bool _applyTags = false;
   bool _applyDate = false;
   bool _applyLocation = false;
   bool _applyDescription = false;
 
   bool _saving = false;
-  bool _writeToOriginals = false;
   int _savedCount = 0;
-  int _writtenCount = 0;
-  int _writeErrorCount = 0;
-  final List<String> _writeErrors = <String>[];
   String _dateType = 'Approximate';
 
   @override
@@ -63,7 +58,6 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
 
   String _storedDate() {
     final value = _dateController.text.trim();
-
     switch (_dateType) {
       case 'Unknown':
         return 'Unknown';
@@ -78,7 +72,8 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
   }
 
   Future<void> _applyChanges() async {
-    final hasAnyField = _applyPeople ||
+    final hasAnyField =
+        _applyPeople ||
         _applyTags ||
         _applyDate ||
         _applyLocation ||
@@ -98,17 +93,11 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: Text('Update ${widget.photos.length} photos?'),
-        content: Text(
-          _writeToOriginals
-              ? 'People and Tags will be added to each photo without removing '
-                  'existing values. Enabled Date, Location, and Description '
-                  'fields will replace those Heirloom Atlas fields. Heritage '
-                  'Vault will then create a backup of each original image and '
-                  'write supported metadata to the selected OneDrive photos.'
-              : 'People and Tags will be added to each photo without removing '
-                  'existing values. Enabled Date, Location, and Description '
-                  'fields will replace those Heirloom Atlas fields. Original '
-                  'image files will not be modified.',
+        content: const Text(
+          'Only the checked fields will change. People and Tags are added '
+          'without removing existing values. Date, Location, and Description '
+          'replace those Heirloom Atlas fields. Portable metadata will also be '
+          'written to supported original image files.',
         ),
         actions: [
           TextButton(
@@ -128,125 +117,87 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
     setState(() {
       _saving = true;
       _savedCount = 0;
-      _writtenCount = 0;
-      _writeErrorCount = 0;
-      _writeErrors.clear();
     });
+
+    var originalWriteFailures = 0;
 
     try {
       for (final photo in widget.photos) {
-        final existing =
-            await _databaseHelper.getPhotoCatalogMetadata(photo.filePath);
+        final existing = await _databaseHelper.getPhotoCatalogMetadata(
+          photo.filePath,
+        );
 
-        final people = <String>{
-          ...existing.people,
-          if (_applyPeople) ...peopleToAdd,
-        }.toList();
-
-        final tags = <String>{
-          ...existing.tags,
-          if (_applyTags) ...tagsToAdd,
-        }.toList();
+        final changedFields = <String>[];
+        if (_applyPeople && peopleToAdd.isNotEmpty) changedFields.add('People');
+        if (_applyTags && tagsToAdd.isNotEmpty) changedFields.add('Tags');
+        if (_applyDate) changedFields.add('Date');
+        if (_applyLocation) changedFields.add('Location');
+        if (_applyDescription) changedFields.add('Description');
 
         final updated = PhotoCatalogMetadata(
           filePath: photo.filePath,
-          people: people,
-          tags: tags,
-          approximateDate:
-              _applyDate ? _storedDate() : existing.approximateDate,
+          people: <String>{
+            ...existing.people,
+            if (_applyPeople) ...peopleToAdd,
+          }.toList(),
+          tags: <String>{
+            ...existing.tags,
+            if (_applyTags) ...tagsToAdd,
+          }.toList(),
+          approximateDate: _applyDate
+              ? _storedDate()
+              : existing.approximateDate,
           location: _applyLocation
               ? _locationController.text.trim()
               : existing.location,
           description: _applyDescription
               ? _descriptionController.text.trim()
               : existing.description,
+          backWriting: existing.backWriting,
           notes: existing.notes,
         );
 
         await _databaseHelper.savePhotoCatalogMetadata(updated);
 
-        if (!mounted) return;
-        setState(() => _savedCount++);
+        if (changedFields.isNotEmpty) {
+          await _syncService.recordLocalChange(
+            entityType: 'photo',
+            localKey: updated.filePath,
+            operation: 'update',
+            changedFields: changedFields,
+          );
 
-        if (_writeToOriginals) {
-          final result = await PhotoMetadataWriter.write(
+          final writeResult = await PhotoMetadataWriter.write(
             filePath: photo.filePath,
             metadata: updated,
           );
-
-          if (!mounted) return;
-
-          if (result.success) {
-            setState(() => _writtenCount++);
-          } else {
-            setState(() {
-              _writeErrorCount++;
-              _writeErrors.add(
-                '${photo.fileName}: ${result.message}',
-              );
-            });
+          if (!writeResult.success) {
+            originalWriteFailures++;
           }
         }
+
+        if (!mounted) return;
+        setState(() => _savedCount++);
       }
 
       if (!mounted) return;
-
-      if (_writeToOriginals) {
-        await showDialog<void>(
-          context: context,
-          builder: (dialogContext) => AlertDialog(
-            title: const Text('Batch Metadata Complete'),
-            content: SizedBox(
-              width: 620,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Saved to Heirloom Atlas: $_savedCount'),
-                  Text('Written to original photos: $_writtenCount'),
-                  Text('Write errors: $_writeErrorCount'),
-                  if (_writeErrors.isNotEmpty) ...[
-                    const SizedBox(height: 14),
-                    const Text(
-                      'Errors',
-                      style: TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                    const SizedBox(height: 8),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxHeight: 220),
-                      child: ListView.builder(
-                        shrinkWrap: true,
-                        itemCount: _writeErrors.length,
-                        itemBuilder: (context, index) => Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: SelectableText(_writeErrors[index]),
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
+      if (originalWriteFailures > 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Updated $_savedCount photos. $originalWriteFailures original '
+              'file${originalWriteFailures == 1 ? '' : 's'} could not be updated.',
             ),
-            actions: [
-              FilledButton(
-                onPressed: () => Navigator.pop(dialogContext),
-                child: const Text('Done'),
-              ),
-            ],
+            duration: const Duration(seconds: 6),
           ),
         );
       }
-
-      if (!mounted) return;
       Navigator.pop(context, true);
     } catch (error) {
       if (!mounted) return;
-
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'Batch edit stopped after $_savedCount photos: $error',
-          ),
+          content: Text('Batch edit stopped after $_savedCount photos: $error'),
         ),
       );
     } finally {
@@ -277,10 +228,7 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
               subtitle: Text(subtitle),
               controlAffinity: ListTileControlAffinity.leading,
             ),
-            if (enabled) ...[
-              const SizedBox(height: 8),
-              child,
-            ],
+            if (enabled) ...[const SizedBox(height: 8), child],
           ],
         ),
       ),
@@ -305,8 +253,8 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                   Text(
                     'Selected Photos',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                   const SizedBox(height: 10),
                   for (final photo in widget.photos)
@@ -323,7 +271,9 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                                     fit: BoxFit.contain,
                                     cacheWidth: 150,
                                   )
-                                : const Icon(Icons.image_not_supported_outlined),
+                                : const Icon(
+                                    Icons.image_not_supported_outlined,
+                                  ),
                           ),
                           const SizedBox(width: 8),
                           Expanded(
@@ -349,41 +299,19 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                 Text(
                   'Apply Shared Metadata',
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
                 const SizedBox(height: 6),
                 const Text(
-                  'Only checked fields are changed. People and Tags are added '
-                  'to existing values instead of replacing them.',
+                  'Nothing changes unless you check a field. People and Tags '
+                  'are added to existing values; the other checked fields replace existing values.',
                 ),
                 const SizedBox(height: 18),
-                Card(
-                  child: SwitchListTile(
-                    value: _writeToOriginals,
-                    onChanged: _saving
-                        ? null
-                        : (value) {
-                            setState(() => _writeToOriginals = value);
-                          },
-                    title: const Text(
-                      'Also write metadata to original photos',
-                      style: TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                    subtitle: const Text(
-                      'Creates a Heirloom Atlas backup of each original first, '
-                      'then writes supported XMP metadata using ExifTool. '
-                      'Archival Date and Notes remain in Heirloom Atlas only.',
-                    ),
-                    secondary: const Icon(Icons.edit_note_outlined),
-                  ),
-                ),
-                const SizedBox(height: 8),
                 _fieldCard(
                   enabled: _applyPeople,
-                  onChanged: (value) {
-                    setState(() => _applyPeople = value ?? false);
-                  },
+                  onChanged: (value) =>
+                      setState(() => _applyPeople = value ?? false),
                   title: 'People',
                   subtitle: 'Add these people to every selected photo.',
                   child: TextField(
@@ -398,9 +326,8 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                 ),
                 _fieldCard(
                   enabled: _applyTags,
-                  onChanged: (value) {
-                    setState(() => _applyTags = value ?? false);
-                  },
+                  onChanged: (value) =>
+                      setState(() => _applyTags = value ?? false),
                   title: 'Tags',
                   subtitle: 'Add these tags without removing existing tags.',
                   child: TextField(
@@ -415,16 +342,13 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                 ),
                 _fieldCard(
                   enabled: _applyDate,
-                  onChanged: (value) {
-                    setState(() => _applyDate = value ?? false);
-                  },
-                  title: 'Archival Date',
-                  subtitle:
-                      'Replace the Heirloom Atlas archival date on all selected photos.',
+                  onChanged: (value) =>
+                      setState(() => _applyDate = value ?? false),
+                  title: 'Date',
+                  subtitle: 'Set the date the selected photos were taken.',
                   child: LayoutBuilder(
                     builder: (context, constraints) {
                       final narrow = constraints.maxWidth < 500;
-
                       final typeField = DropdownButtonFormField<String>(
                         initialValue: _dateType,
                         isExpanded: true,
@@ -432,20 +356,21 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                           labelText: 'Date type',
                           border: OutlineInputBorder(),
                         ),
-                        items: const [
-                          'Exact',
-                          'Approximate',
-                          'Year only',
-                          'Decade',
-                          'Unknown',
-                        ]
-                            .map(
-                              (value) => DropdownMenuItem(
-                                value: value,
-                                child: Text(value),
-                              ),
-                            )
-                            .toList(),
+                        items:
+                            const [
+                                  'Exact',
+                                  'Approximate',
+                                  'Year only',
+                                  'Decade',
+                                  'Unknown',
+                                ]
+                                .map(
+                                  (value) => DropdownMenuItem(
+                                    value: value,
+                                    child: Text(value),
+                                  ),
+                                )
+                                .toList(),
                         onChanged: _saving
                             ? null
                             : (value) {
@@ -454,7 +379,6 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                                 }
                               },
                       );
-
                       final dateField = TextField(
                         controller: _dateController,
                         enabled: !_saving && _dateType != 'Unknown',
@@ -464,7 +388,6 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                           border: OutlineInputBorder(),
                         ),
                       );
-
                       if (narrow) {
                         return Column(
                           children: [
@@ -474,7 +397,6 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                           ],
                         );
                       }
-
                       return Row(
                         children: [
                           SizedBox(width: 190, child: typeField),
@@ -487,12 +409,10 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                 ),
                 _fieldCard(
                   enabled: _applyLocation,
-                  onChanged: (value) {
-                    setState(() => _applyLocation = value ?? false);
-                  },
+                  onChanged: (value) =>
+                      setState(() => _applyLocation = value ?? false),
                   title: 'Location',
-                  subtitle:
-                      'Replace the Heirloom Atlas location on all selected photos.',
+                  subtitle: 'Replace the location on all selected photos.',
                   child: TextField(
                     controller: _locationController,
                     enabled: !_saving,
@@ -505,12 +425,10 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                 ),
                 _fieldCard(
                   enabled: _applyDescription,
-                  onChanged: (value) {
-                    setState(() => _applyDescription = value ?? false);
-                  },
+                  onChanged: (value) =>
+                      setState(() => _applyDescription = value ?? false),
                   title: 'Description',
-                  subtitle:
-                      'Replace the Heirloom Atlas description on all selected photos.',
+                  subtitle: 'Replace the description on all selected photos.',
                   child: TextField(
                     controller: _descriptionController,
                     enabled: !_saving,
@@ -536,10 +454,7 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                 Expanded(
                   child: Text(
                     _saving
-                        ? _writeToOriginals
-                            ? 'Vault $_savedCount/${widget.photos.length}  •  '
-                                'Written $_writtenCount  •  Errors $_writeErrorCount'
-                            : 'Updating $_savedCount of ${widget.photos.length}...'
+                        ? 'Updating $_savedCount of ${widget.photos.length}...'
                         : '${widget.photos.length} photos selected',
                     style: const TextStyle(fontWeight: FontWeight.w700),
                   ),
@@ -553,11 +468,7 @@ class _PhotoBatchEditScreenState extends State<PhotoBatchEditScreen> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.done_all),
-                  label: Text(
-                    _writeToOriginals
-                        ? 'Apply + Write to Photos'
-                        : 'Apply to Selected',
-                  ),
+                  label: const Text('Apply to Selected'),
                 ),
               ],
             ),

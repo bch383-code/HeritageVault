@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:exif/exif.dart';
+import 'package:path/path.dart' as path;
 import 'package:xml/xml.dart';
 
 class PhotoMetadata {
@@ -212,21 +213,34 @@ class PhotoMetadataReader {
   }
 
   static Future<String?> _findExifTool() async {
-    const directWindowsPath = r'C:\ExifTool\exiftool.exe';
+    final candidates = <String>[];
 
-    final directFile = File(directWindowsPath);
-    if (await directFile.exists()) {
-      try {
-        final result = await Process.run(directWindowsPath, [
-          '-ver',
-        ], runInShell: false);
-        if (result.exitCode == 0) return directWindowsPath;
-      } catch (_) {}
+    // Installed/release build: ExifTool is bundled beside the Heirloom Atlas
+    // executable under tools\exiftool.
+    if (Platform.isWindows) {
+      final executableDirectory = File(Platform.resolvedExecutable).parent.path;
+      candidates.add(
+        path.join(executableDirectory, 'tools', 'exiftool', 'exiftool.exe'),
+      );
+
+      // Development fallback.
+      candidates.add(r'C:\ExifTool\exiftool.exe');
     }
 
-    for (final candidate in ['exiftool.exe', 'exiftool']) {
+    // Final fallback: allow a system-installed ExifTool from PATH.
+    candidates.addAll(['exiftool.exe', 'exiftool']);
+
+    for (final candidate in candidates) {
       try {
-        final result = await Process.run(candidate, ['-ver'], runInShell: true);
+        if (path.isAbsolute(candidate) && !await File(candidate).exists()) {
+          continue;
+        }
+
+        final result = await Process.run(
+          candidate,
+          ['-ver'],
+          runInShell: !path.isAbsolute(candidate),
+        );
         if (result.exitCode == 0) return candidate;
       } catch (_) {}
     }

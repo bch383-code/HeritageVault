@@ -230,6 +230,62 @@ class FaceRecognitionService {
     return destination;
   }
 
+
+  /// Re-detect faces with the full mesh needed by the experimental SFace
+  /// recognizer. The caller owns the returned Face objects only; the detector
+  /// is disposed before this method returns.
+  Future<List<Face>> detectFacesWithMesh(Uint8List imageBytes) async {
+    final detector = await FaceDetector.create();
+    try {
+      return await detector.detectFacesFromBytes(
+        imageBytes,
+        mode: FaceDetectionMode.full,
+      );
+    } finally {
+      await detector.dispose();
+    }
+  }
+
+  /// Pick the freshly detected face that best corresponds to a face already
+  /// stored in the database. We compare bounding-box centers and size.
+  Face closestFaceToRecord(
+    List<Face> detectedFaces,
+    DetectedFaceRecord record,
+  ) {
+    if (detectedFaces.isEmpty) {
+      throw ArgumentError('detectedFaces cannot be empty');
+    }
+
+    final targetCx = record.left + record.width / 2.0;
+    final targetCy = record.top + record.height / 2.0;
+
+    Face best = detectedFaces.first;
+    var bestScore = double.infinity;
+
+    for (final face in detectedFaces) {
+      final box = face.boundingBox;
+      final left = box.topLeft.x.toDouble();
+      final top = box.topLeft.y.toDouble();
+      final width = box.width.toDouble();
+      final height = box.height.toDouble();
+      final cx = left + width / 2.0;
+      final cy = top + height / 2.0;
+
+      final centerDistance =
+          math.sqrt(math.pow(cx - targetCx, 2) + math.pow(cy - targetCy, 2));
+      final sizePenalty =
+          (width - record.width).abs() + (height - record.height).abs();
+      final score = centerDistance + sizePenalty * 0.25;
+
+      if (score < bestScore) {
+        bestScore = score;
+        best = face;
+      }
+    }
+
+    return best;
+  }
+
   static double cosineSimilarity(List<double> a, List<double> b) {
     if (a.isEmpty || a.length != b.length) return -1;
     var dot = 0.0;
@@ -242,6 +298,33 @@ class FaceRecognitionService {
     }
     if (aa == 0 || bb == 0) return -1;
     return dot / (math.sqrt(aa) * math.sqrt(bb));
+  }
+
+  /// Scores a candidate against several confirmed faces for one person.
+  ///
+  /// A single unusually similar photo should not dominate once we have
+  /// multiple confirmed examples. We therefore blend the best three matches.
+  /// With only one or two references, the available scores are re-weighted.
+  static double consensusSimilarity(
+    List<double> candidateEmbedding,
+    Iterable<DetectedFaceRecord> referenceFaces,
+  ) {
+    final scores = referenceFaces
+        .map((face) => cosineSimilarity(candidateEmbedding, face.embedding))
+        .where((score) => score >= 0)
+        .toList()
+      ..sort((a, b) => b.compareTo(a));
+
+    if (scores.isEmpty) return -1;
+    if (scores.length == 1) return scores[0];
+    if (scores.length == 2) return (scores[0] * 0.55) + (scores[1] * 0.45);
+
+    // Require broader agreement once we have several confirmed examples.
+    // This deliberately sacrifices some recall to reduce false positives.
+    final blended =
+        (scores[0] * 0.40) + (scores[1] * 0.35) + (scores[2] * 0.25);
+    final disagreementPenalty = (scores[0] - scores[2]) * 0.15;
+    return blended - disagreementPenalty;
   }
 
   static List<List<DetectedFaceRecord>> groupSimilarFaces(

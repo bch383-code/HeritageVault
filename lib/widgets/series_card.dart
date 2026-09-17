@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../reference/coin_series_reference.dart';
+import '../services/coin_image_pack_service.dart';
 
 class SeriesCard extends StatelessWidget {
   final String title;
@@ -66,23 +67,34 @@ class SeriesCard extends StatelessWidget {
     if (representativeImage != null) {
       imageWidget = representativeImage!;
     } else if (thumbnailAsset != null && thumbnailAsset.isNotEmpty) {
-      imageWidget = Padding(
-        padding: const EdgeInsets.all(10),
-        child: Image.asset(
-          thumbnailAsset,
-          fit: BoxFit.contain,
-          width: double.infinity,
-          height: double.infinity,
-          errorBuilder: (context, error, stackTrace) {
-            return Icon(
-              Icons.broken_image_outlined,
-              size: 52,
-              color: colors.primary,
-            );
-          },
-        ),
-      );
-    } else {
+  final coinImage =
+      CoinImagePackService.installedFileForAsset(thumbnailAsset);
+
+  if (coinImage != null) {
+    imageWidget = Padding(
+      padding: const EdgeInsets.all(10),
+      child: Image.file(
+        coinImage,
+        fit: BoxFit.contain,
+        width: double.infinity,
+        height: double.infinity,
+        errorBuilder: (context, error, stackTrace) {
+          return Icon(
+            Icons.monetization_on_outlined,
+            size: 58,
+            color: colors.primary,
+          );
+        },
+      ),
+    );
+  } else {
+    imageWidget = Icon(
+      Icons.monetization_on_outlined,
+      size: 58,
+      color: colors.primary,
+    );
+  }
+} else {
       imageWidget = Icon(
         Icons.monetization_on_outlined,
         size: 58,

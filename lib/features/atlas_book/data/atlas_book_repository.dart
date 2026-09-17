@@ -19,7 +19,7 @@ class AtlasBookRepository {
     _database = await databaseFactory.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 8,
+        version: 10,
         onCreate: (db, version) async {
           await db.execute('''
             CREATE TABLE atlas_books (
@@ -34,6 +34,7 @@ class AtlasBookRepository {
 
           await _createBookPeopleTable(db);
           await _createBookPhotosTable(db);
+          await _createBookMaterialsTable(db);
           await _createBookPagesTable(db);
         },
         onUpgrade: (db, oldVersion, newVersion) async {
@@ -73,6 +74,37 @@ class AtlasBookRepository {
               "ADD COLUMN collage_layout_key TEXT NOT NULL DEFAULT 'balanced'",
             );
           }
+          if (oldVersion < 9) {
+            await db.execute(
+              'ALTER TABLE atlas_book_pages '
+              "ADD COLUMN collage_title TEXT NOT NULL DEFAULT 'Family Memories'",
+            );
+            await db.execute(
+              'ALTER TABLE atlas_book_pages '
+              "ADD COLUMN collage_subtitle TEXT NOT NULL DEFAULT ''",
+            );
+            await db.execute(
+              'ALTER TABLE atlas_book_pages '
+              "ADD COLUMN collage_photo_layout_json TEXT NOT NULL DEFAULT '{}'",
+            );
+            await db.execute(
+              'ALTER TABLE atlas_book_pages '
+              'ADD COLUMN collage_layout_seed INTEGER NOT NULL DEFAULT 0',
+            );
+          }
+          if (oldVersion < 10) {
+            await _createBookMaterialsTable(db);
+            await db.execute('''
+              INSERT OR IGNORE INTO atlas_book_materials (
+                book_id,
+                item_type,
+                item_key,
+                added_at
+              )
+              SELECT book_id, 'photo', photo_file_path, added_at
+              FROM atlas_book_photos
+            ''');
+          }
         },
       ),
     );
@@ -107,6 +139,23 @@ class AtlasBookRepository {
     ''');
   }
 
+  static Future<void> _createBookMaterialsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS atlas_book_materials (
+        book_id INTEGER NOT NULL,
+        item_type TEXT NOT NULL,
+        item_key TEXT NOT NULL,
+        added_at TEXT NOT NULL,
+        PRIMARY KEY (book_id, item_type, item_key)
+      )
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS atlas_book_materials_book_index
+      ON atlas_book_materials(book_id, item_type)
+    ''');
+  }
+
   static Future<void> _createBookPagesTable(Database db) async {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS atlas_book_pages (
@@ -119,6 +168,10 @@ class AtlasBookRepository {
         generation_count INTEGER NOT NULL DEFAULT 4,
         collage_photo_paths_json TEXT NOT NULL DEFAULT '[]',
         collage_layout_key TEXT NOT NULL DEFAULT 'balanced',
+        collage_title TEXT NOT NULL DEFAULT 'Family Memories',
+        collage_subtitle TEXT NOT NULL DEFAULT '',
+        collage_photo_layout_json TEXT NOT NULL DEFAULT '{}',
+        collage_layout_seed INTEGER NOT NULL DEFAULT 0,
         sort_order INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -134,26 +187,18 @@ class AtlasBookRepository {
   Future<List<AtlasBookProject>> getBooks() async {
     final db = await database;
 
-    final rows = await db.query(
-      'atlas_books',
-      orderBy: 'created_at DESC',
-    );
+    final rows = await db.query('atlas_books', orderBy: 'created_at DESC');
 
     return rows.map(AtlasBookProject.fromMap).toList();
   }
 
-  Future<AtlasBookProject> createBook(
-    AtlasBookProject project,
-  ) async {
+  Future<AtlasBookProject> createBook(AtlasBookProject project) async {
     final db = await database;
 
     final map = project.toMap();
     map.remove('id');
 
-    final id = await db.insert(
-      'atlas_books',
-      map,
-    );
+    final id = await db.insert('atlas_books', map);
 
     return AtlasBookProject(
       id: id,
@@ -176,15 +221,10 @@ class AtlasBookRepository {
       orderBy: 'added_at ASC',
     );
 
-    return rows
-        .map((row) => (row['person_id'] as num).toInt())
-        .toList();
+    return rows.map((row) => (row['person_id'] as num).toInt()).toList();
   }
 
-  Future<void> replaceBookPeople(
-    int bookId,
-    Iterable<int> personIds,
-  ) async {
+  Future<void> replaceBookPeople(int bookId, Iterable<int> personIds) async {
     final db = await database;
 
     await db.transaction((txn) async {
@@ -197,65 +237,124 @@ class AtlasBookRepository {
       final now = DateTime.now().toIso8601String();
 
       for (final personId in personIds.toSet()) {
-        await txn.insert(
-          'atlas_book_people',
-          {
-            'book_id': bookId,
-            'person_id': personId,
-            'added_at': now,
-          },
-        );
+        await txn.insert('atlas_book_people', {
+          'book_id': bookId,
+          'person_id': personId,
+          'added_at': now,
+        });
       }
     });
   }
 
-  Future<List<String>> getBookPhotoPaths(int bookId) async {
+  Future<List<AtlasBookMaterialRef>> getBookMaterials(int bookId) async {
     final db = await database;
-
     final rows = await db.query(
-      'atlas_book_photos',
-      columns: ['photo_file_path'],
+      'atlas_book_materials',
+      columns: ['item_type', 'item_key', 'added_at'],
       where: 'book_id = ?',
       whereArgs: [bookId],
-      orderBy: 'added_at ASC',
+      orderBy: 'added_at ASC, item_type COLLATE NOCASE, item_key COLLATE NOCASE',
     );
 
     return rows
-        .map((row) => row['photo_file_path'] as String? ?? '')
-        .where((path) => path.isNotEmpty)
+        .map(
+          (row) => AtlasBookMaterialRef(
+            itemType: row['item_type'] as String? ?? '',
+            itemKey: row['item_key'] as String? ?? '',
+          ),
+        )
+        .where((item) => item.itemType.isNotEmpty && item.itemKey.isNotEmpty)
         .toList();
+  }
+
+  Future<List<String>> getBookMaterialKeys(
+    int bookId, {
+    required String itemType,
+  }) async {
+    final cleanType = itemType.trim().toLowerCase();
+    if (cleanType.isEmpty) return const [];
+
+    final materials = await getBookMaterials(bookId);
+    return materials
+        .where((item) => item.itemType == cleanType)
+        .map((item) => item.itemKey)
+        .toList();
+  }
+
+  Future<void> replaceBookMaterials(
+    int bookId, {
+    required String itemType,
+    required Iterable<String> itemKeys,
+  }) async {
+    final cleanType = itemType.trim().toLowerCase();
+    if (cleanType.isEmpty) return;
+
+    final cleanKeys = itemKeys
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .toSet();
+    final db = await database;
+
+    await db.transaction((txn) async {
+      await txn.delete(
+        'atlas_book_materials',
+        where: 'book_id = ? AND item_type = ?',
+        whereArgs: [bookId, cleanType],
+      );
+
+      final now = DateTime.now().toIso8601String();
+      for (final itemKey in cleanKeys) {
+        await txn.insert('atlas_book_materials', {
+          'book_id': bookId,
+          'item_type': cleanType,
+          'item_key': itemKey,
+          'added_at': now,
+        });
+      }
+    });
+  }
+
+  Future<List<String>> getBookPhotoPaths(int bookId) {
+    return getBookMaterialKeys(bookId, itemType: 'photo');
   }
 
   Future<void> replaceBookPhotos(
     int bookId,
-    Iterable<String> photoPaths,
+    Iterable<String> photoFilePaths,
   ) async {
-    final db = await database;
+    await replaceBookMaterials(
+      bookId,
+      itemType: 'photo',
+      itemKeys: photoFilePaths,
+    );
 
+    // Keep the legacy table synchronized for compatibility with older builds.
+    final db = await database;
     await db.transaction((txn) async {
+      await txn.delete(
+        'atlas_book_materials',
+        where: 'book_id = ?',
+        whereArgs: [bookId],
+      );
       await txn.delete(
         'atlas_book_photos',
         where: 'book_id = ?',
         whereArgs: [bookId],
       );
-
       final now = DateTime.now().toIso8601String();
-
-      for (final photoPath in photoPaths
-          .map((path) => path.trim())
-          .where((path) => path.isNotEmpty)
+      for (final photoFilePath in photoFilePaths
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty)
           .toSet()) {
-        await txn.insert(
-          'atlas_book_photos',
-          {
-            'book_id': bookId,
-            'photo_file_path': photoPath,
-            'added_at': now,
-          },
-        );
+        await txn.insert('atlas_book_photos', {
+          'book_id': bookId,
+          'photo_file_path': photoFilePath,
+          'added_at': now,
+        });
       }
     });
   }
+
   Future<List<AtlasBookPage>> getBookPages(int bookId) async {
     final db = await database;
     final rows = await db.query(
@@ -295,11 +394,62 @@ class AtlasBookRepository {
       heroPhotoPath: page.heroPhotoPath,
       generationCount: page.generationCount,
       collagePhotoPathsJson: page.collagePhotoPathsJson,
+      collageTitle: page.collageTitle,
+      collageSubtitle: page.collageSubtitle,
+      collagePhotoLayoutJson: page.collagePhotoLayoutJson,
       collageLayoutKey: page.collageLayoutKey,
+      collageLayoutSeed: page.collageLayoutSeed,
       sortOrder: page.sortOrder,
       createdAt: page.createdAt,
       updatedAt: page.updatedAt,
     );
+  }
+
+  Future<List<AtlasBookPage>> insertBookPages(List<AtlasBookPage> pages) async {
+    if (pages.isEmpty) return const [];
+
+    final db = await database;
+    final inserted = <AtlasBookPage>[];
+
+    await db.transaction((txn) async {
+      final batch = txn.batch();
+
+      for (final page in pages) {
+        final map = page.toMap();
+        map.remove('id');
+        batch.insert('atlas_book_pages', map);
+      }
+
+      final results = await batch.commit(noResult: false);
+
+      for (var index = 0; index < pages.length; index++) {
+        final page = pages[index];
+        final id = (results[index] as num?)?.toInt();
+
+        inserted.add(
+          AtlasBookPage(
+            id: id,
+            bookId: page.bookId,
+            pageType: page.pageType,
+            personId: page.personId,
+            relatedPersonId: page.relatedPersonId,
+            heroPhotoPath: page.heroPhotoPath,
+            generationCount: page.generationCount,
+            collagePhotoPathsJson: page.collagePhotoPathsJson,
+            collageLayoutKey: page.collageLayoutKey,
+            collageLayoutSeed: page.collageLayoutSeed,
+            collageTitle: page.collageTitle,
+            collageSubtitle: page.collageSubtitle,
+            collagePhotoLayoutJson: page.collagePhotoLayoutJson,
+            sortOrder: page.sortOrder,
+            createdAt: page.createdAt,
+            updatedAt: page.updatedAt,
+          ),
+        );
+      }
+    });
+
+    return inserted;
   }
 
   Future<void> updateBookPage(AtlasBookPage page) async {
@@ -318,33 +468,58 @@ class AtlasBookRepository {
     );
   }
 
-  Future<void> deleteBookPage(int pageId) async {
+  Future<void> deleteBook(int bookId) async {
     final db = await database;
-    await db.delete(
-      'atlas_book_pages',
-      where: 'id = ?',
-      whereArgs: [pageId],
-    );
+
+    await db.transaction((txn) async {
+      await txn.delete(
+        'atlas_book_pages',
+        where: 'book_id = ?',
+        whereArgs: [bookId],
+      );
+      await txn.delete(
+        'atlas_book_photos',
+        where: 'book_id = ?',
+        whereArgs: [bookId],
+      );
+      await txn.delete(
+        'atlas_book_people',
+        where: 'book_id = ?',
+        whereArgs: [bookId],
+      );
+      await txn.delete('atlas_books', where: 'id = ?', whereArgs: [bookId]);
+    });
   }
 
-  Future<void> reorderBookPages(
-    int bookId,
-    List<int> pageIdsInOrder,
-  ) async {
+  Future<void> deleteBookPage(int pageId) async {
+    final db = await database;
+    await db.delete('atlas_book_pages', where: 'id = ?', whereArgs: [pageId]);
+  }
+
+  Future<void> reorderBookPages(int bookId, List<int> pageIdsInOrder) async {
     final db = await database;
     await db.transaction((txn) async {
       for (var index = 0; index < pageIdsInOrder.length; index++) {
         await txn.update(
           'atlas_book_pages',
-          {
-            'sort_order': index,
-            'updated_at': DateTime.now().toIso8601String(),
-          },
+          {'sort_order': index, 'updated_at': DateTime.now().toIso8601String()},
           where: 'id = ? AND book_id = ?',
           whereArgs: [pageIdsInOrder[index], bookId],
         );
       }
     });
   }
+}
 
+
+class AtlasBookMaterialRef {
+  final String itemType;
+  final String itemKey;
+
+  const AtlasBookMaterialRef({
+    required this.itemType,
+    required this.itemKey,
+  });
+
+  String get storageKey => '$itemType::$itemKey';
 }

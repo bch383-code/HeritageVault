@@ -8,6 +8,12 @@ class Antique {
   final double? estimatedValue;
   final String notes;
   final List<String> imagePaths;
+  final String condition;
+  final String conditionNotes;
+  final String provenance;
+  final String appraisalSource;
+  final String valuationDate;
+  final List<String> supportingDocumentPaths;
 
   const Antique({
     this.id,
@@ -19,24 +25,34 @@ class Antique {
     this.estimatedValue,
     this.notes = '',
     this.imagePaths = const [],
+    this.condition = '',
+    this.conditionNotes = '',
+    this.provenance = '',
+    this.appraisalSource = '',
+    this.valuationDate = '',
+    this.supportingDocumentPaths = const [],
   });
 
-  Map<String, Object?> toMap() {
-    return {
-      'id': id,
-      'title': title,
-      'description': description,
-      'year': year,
-      'acquired_from': acquiredFrom,
-      'purchase_price': purchasePrice,
-      'estimated_value': estimatedValue,
-      'notes': notes,
-    };
-  }
+  Map<String, Object?> toMap() => {
+    'id': id,
+    'title': title,
+    'description': description,
+    'year': year,
+    'acquired_from': acquiredFrom,
+    'purchase_price': purchasePrice,
+    'estimated_value': estimatedValue,
+    'notes': notes,
+    'condition': condition,
+    'condition_notes': conditionNotes,
+    'provenance': provenance,
+    'appraisal_source': appraisalSource,
+    'valuation_date': valuationDate,
+  };
 
   factory Antique.fromMap(
     Map<String, Object?> map, {
     List<String> imagePaths = const [],
+    List<String> supportingDocumentPaths = const [],
   }) {
     double? toDouble(Object? value) {
       if (value == null) return null;
@@ -54,6 +70,12 @@ class Antique {
       estimatedValue: toDouble(map['estimated_value']),
       notes: map['notes'] as String? ?? '',
       imagePaths: imagePaths,
+      condition: map['condition'] as String? ?? '',
+      conditionNotes: map['condition_notes'] as String? ?? '',
+      provenance: map['provenance'] as String? ?? '',
+      appraisalSource: map['appraisal_source'] as String? ?? '',
+      valuationDate: map['valuation_date'] as String? ?? '',
+      supportingDocumentPaths: supportingDocumentPaths,
     );
   }
 }

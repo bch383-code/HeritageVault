@@ -27,7 +27,7 @@ class AtlasBookPage {
     this.collagePhotoPathsJson = '[]',
     this.collageTitle = '',
     this.collageSubtitle = '',
-    this.collagePhotoLayoutJson = '[]',
+    this.collagePhotoLayoutJson = '{}',
     this.collageLayoutKey = 'balanced',
     this.collageLayoutSeed = 0,
     required this.sortOrder,
@@ -67,7 +67,7 @@ class AtlasBookPage {
         collageTitle: map['collage_title'] as String? ?? '',
         collageSubtitle: map['collage_subtitle'] as String? ?? '',
         collagePhotoLayoutJson:
-            map['collage_photo_layout_json'] as String? ?? '[]',
+            map['collage_photo_layout_json'] as String? ?? '{}',
         collageLayoutKey:
             map['collage_layout_key'] as String? ?? 'balanced',
         collageLayoutSeed:

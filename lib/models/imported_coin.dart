@@ -10,6 +10,7 @@ class ImportedCoin {
   final String grade;
   final double? value;
   final String notes;
+  final String imagePath;
 
   const ImportedCoin({
     required this.category,
@@ -23,6 +24,7 @@ class ImportedCoin {
     required this.grade,
     this.value,
     required this.notes,
+    this.imagePath = '',
   });
 
   bool get isNeeded => status.toUpperCase() == 'NEED';

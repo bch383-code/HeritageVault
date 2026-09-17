@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as path;
@@ -16,6 +17,7 @@ import '../models/custom_collection_item.dart';
 import '../models/detected_face_record.dart';
 import '../models/family_person.dart';
 import '../models/sports_card.dart';
+import '../models/document_record.dart';
 
 class DatabaseHelper {
   DatabaseHelper._();
@@ -48,7 +50,7 @@ class DatabaseHelper {
     return databaseFactory.openDatabase(
       _databasePath!,
       options: OpenDatabaseOptions(
-        version: 26,
+        version: 41,
         onCreate: (database, version) async {
           await _createManualCoinsTable(database);
           await _createImportedCoinsTable(database);
@@ -72,6 +74,13 @@ class DatabaseHelper {
           await _createSportsCardCatalogTables(database);
           await _createPersonGroupsTables(database);
           await _createPhotoPersonFamilyLinksTable(database);
+          await _createPhotoPersonAliasesTable(database);
+          await _createPhotoSourcesTables(database);
+          await _createPersonMatchRejectionsTable(database);
+          await _createAtlasBookFavoritesTable(database);
+          await _createSyncFoundationTables(database);
+          await _createDocumentsTable(database);
+          await _createNewspaperClippingsTables(database);
         },
         onUpgrade: (database, oldVersion, newVersion) async {
           if (oldVersion < 2) {
@@ -173,9 +182,701 @@ class DatabaseHelper {
           if (oldVersion < 26) {
             await _createPhotoPersonFamilyLinksTable(database);
           }
+          if (oldVersion < 27) {
+            await database.execute(
+              "ALTER TABLE photo_catalog_metadata "
+              "ADD COLUMN back_writing TEXT NOT NULL DEFAULT ''",
+            );
+          }
+          if (oldVersion < 28) {
+            await _createPhotoPersonAliasesTable(database);
+          }
+          if (oldVersion < 29) {
+            await _upgradeFamilyPersonLinksToRoles(database);
+          }
+          if (oldVersion < 30) {
+            await _upgradePhotoFacesForSFace(database);
+          }
+          if (oldVersion < 31) {
+            await _createPhotoSourcesTables(database);
+            await _migrateLegacyPhotoSource(database);
+          }
+          if (oldVersion < 32) {
+            await _createPersonMatchRejectionsTable(database);
+          }
+          if (oldVersion < 33) {
+            await _createAtlasBookFavoritesTable(database);
+          }
+          if (oldVersion < 34) {
+            await _upgradeAntiquesToVersion34(database);
+          }
+          if (oldVersion < 35) {
+            await _upgradeValuablesToVersion35(database);
+          }
+          if (oldVersion < 36) {
+            await _createSyncFoundationTables(database);
+          }
+          if (oldVersion < 37) {
+            await _upgradeSyncFoundationToVersion37(database);
+          }
+          if (oldVersion < 38) {
+            await _upgradeSyncFoundationToVersion38(database);
+          }
+          if (oldVersion < 39) {
+            final info = await database.rawQuery(
+              "PRAGMA table_info(imported_coins)",
+            );
+            final columns = info
+                .map((row) => row['name'] as String? ?? '')
+                .toSet();
+            if (!columns.contains('image_path')) {
+              await database.execute(
+                "ALTER TABLE imported_coins "
+                "ADD COLUMN image_path TEXT NOT NULL DEFAULT ''",
+              );
+            }
+          }
+          if (oldVersion < 40) {
+            await _createDocumentsTable(database);
+          }
+          if (oldVersion < 41) {
+            await _createNewspaperClippingsTables(database);
+          }
         },
       ),
     );
+  }
+
+  static Future<void> _upgradeSyncFoundationToVersion37(
+    Database database,
+  ) async {
+    final columns = await database.rawQuery(
+      'PRAGMA table_info(sync_change_log)',
+    );
+    final hasDetailsJson = columns.any(
+      (column) => column['name']?.toString() == 'details_json',
+    );
+    if (!hasDetailsJson) {
+      await database.execute(
+        "ALTER TABLE sync_change_log "
+        "ADD COLUMN details_json TEXT NOT NULL DEFAULT '{}'",
+      );
+    }
+  }
+
+  static Future<void> _upgradeSyncFoundationToVersion38(
+    Database database,
+  ) async {
+    final columns = await database.rawQuery(
+      'PRAGMA table_info(sync_change_log)',
+    );
+    final columnNames = columns
+        .map((column) => column['name']?.toString() ?? '')
+        .toSet();
+
+    if (!columnNames.contains('details_json')) {
+      await database.execute(
+        "ALTER TABLE sync_change_log "
+        "ADD COLUMN details_json TEXT NOT NULL DEFAULT '{}'",
+      );
+    }
+
+    if (!columnNames.contains('reviewed')) {
+      await database.execute(
+        "ALTER TABLE sync_change_log "
+        "ADD COLUMN reviewed INTEGER NOT NULL DEFAULT 0",
+      );
+    }
+
+    // No provider sync processing exists yet. Any processed rows at this
+    // stage came from the temporary Mark Reviewed behavior.
+    await database.execute(
+      'UPDATE sync_change_log SET processed = 0, reviewed = 1 '
+      'WHERE processed = 1',
+    );
+  }
+
+  static Future<void> _createSyncFoundationTables(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS sync_devices (
+        device_id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL DEFAULT '',
+        platform TEXT NOT NULL DEFAULT '',
+        created_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        last_seen_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        is_current INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS sync_devices_current_index
+      ON sync_devices(is_current)
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS connected_sources (
+        source_id TEXT PRIMARY KEY,
+        provider_type TEXT NOT NULL,
+        display_name TEXT NOT NULL DEFAULT '',
+        account_identifier TEXT NOT NULL DEFAULT '',
+        root_identifier TEXT NOT NULL DEFAULT '',
+        root_path TEXT NOT NULL DEFAULT '',
+        connection_status TEXT NOT NULL DEFAULT 'disconnected',
+        capabilities_json TEXT NOT NULL DEFAULT '{}',
+        created_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        updated_at_milliseconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS connected_sources_provider_index
+      ON connected_sources(provider_type, connection_status)
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS sync_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        record_uuid TEXT NOT NULL UNIQUE,
+        entity_type TEXT NOT NULL,
+        local_key TEXT NOT NULL,
+        source_id TEXT NOT NULL DEFAULT '',
+        remote_id TEXT NOT NULL DEFAULT '',
+        remote_parent_id TEXT NOT NULL DEFAULT '',
+        remote_etag TEXT NOT NULL DEFAULT '',
+        local_modified_milliseconds INTEGER NOT NULL DEFAULT 0,
+        remote_modified_milliseconds INTEGER NOT NULL DEFAULT 0,
+        last_synced_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        sync_state TEXT NOT NULL DEFAULT 'local_only',
+        deleted_local INTEGER NOT NULL DEFAULT 0,
+        deleted_remote INTEGER NOT NULL DEFAULT 0,
+        conflict_details TEXT NOT NULL DEFAULT '',
+        UNIQUE(entity_type, local_key, source_id)
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS sync_records_state_index
+      ON sync_records(sync_state, entity_type)
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS sync_records_remote_index
+      ON sync_records(source_id, remote_id)
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS sync_change_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        change_uuid TEXT NOT NULL UNIQUE,
+        device_id TEXT NOT NULL DEFAULT '',
+        entity_type TEXT NOT NULL,
+        local_key TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        changed_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        payload_hash TEXT NOT NULL DEFAULT '',
+        details_json TEXT NOT NULL DEFAULT '{}',
+        reviewed INTEGER NOT NULL DEFAULT 0,
+        processed INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS sync_change_log_pending_index
+      ON sync_change_log(processed, changed_at_milliseconds)
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS sync_conflicts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_type TEXT NOT NULL,
+        local_key TEXT NOT NULL,
+        source_id TEXT NOT NULL DEFAULT '',
+        local_modified_milliseconds INTEGER NOT NULL DEFAULT 0,
+        remote_modified_milliseconds INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'open',
+        details TEXT NOT NULL DEFAULT '',
+        created_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        resolved_at_milliseconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS sync_conflicts_status_index
+      ON sync_conflicts(status, created_at_milliseconds)
+    ''');
+  }
+
+  Future<Map<String, Object?>> ensureCurrentSyncDevice({
+    String? displayName,
+  }) async {
+    final database = await this.database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    final currentRows = await database.query(
+      'sync_devices',
+      where: 'is_current = 1',
+      limit: 1,
+    );
+
+    if (currentRows.isNotEmpty) {
+      final existing = currentRows.first;
+      await database.update(
+        'sync_devices',
+        {
+          'last_seen_at_milliseconds': now,
+          if (displayName != null && displayName.trim().isNotEmpty)
+            'display_name': displayName.trim(),
+        },
+        where: 'device_id = ?',
+        whereArgs: [existing['device_id']],
+      );
+      final refreshed = await database.query(
+        'sync_devices',
+        where: 'device_id = ?',
+        whereArgs: [existing['device_id']],
+        limit: 1,
+      );
+      return refreshed.first;
+    }
+
+    final cleanHost = Platform.localHostname.trim().isEmpty
+        ? 'device'
+        : Platform.localHostname.trim();
+    final deviceId =
+        '${Platform.operatingSystem}_${cleanHost}_${DateTime.now().microsecondsSinceEpoch}';
+
+    await database.insert('sync_devices', {
+      'device_id': deviceId,
+      'display_name': displayName?.trim().isNotEmpty == true
+          ? displayName!.trim()
+          : cleanHost,
+      'platform': Platform.operatingSystem,
+      'created_at_milliseconds': now,
+      'last_seen_at_milliseconds': now,
+      'is_current': 1,
+    });
+
+    final rows = await database.query(
+      'sync_devices',
+      where: 'device_id = ?',
+      whereArgs: [deviceId],
+      limit: 1,
+    );
+    return rows.first;
+  }
+
+  Future<List<Map<String, Object?>>> getSyncDevices() async {
+    final database = await this.database;
+    return database.query(
+      'sync_devices',
+      orderBy: 'is_current DESC, last_seen_at_milliseconds DESC',
+    );
+  }
+
+  Future<void> upsertConnectedSource({
+    required String sourceId,
+    required String providerType,
+    required String displayName,
+    String accountIdentifier = '',
+    String rootIdentifier = '',
+    String rootPath = '',
+    String connectionStatus = 'disconnected',
+    String capabilitiesJson = '{}',
+  }) async {
+    final cleanSourceId = sourceId.trim();
+    final cleanProvider = providerType.trim().toLowerCase();
+    if (cleanSourceId.isEmpty) {
+      throw ArgumentError('A source ID is required.');
+    }
+    if (cleanProvider.isEmpty) {
+      throw ArgumentError('A provider type is required.');
+    }
+
+    final database = await this.database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final existing = await database.query(
+      'connected_sources',
+      columns: ['created_at_milliseconds'],
+      where: 'source_id = ?',
+      whereArgs: [cleanSourceId],
+      limit: 1,
+    );
+
+    await database.insert('connected_sources', {
+      'source_id': cleanSourceId,
+      'provider_type': cleanProvider,
+      'display_name': displayName.trim(),
+      'account_identifier': accountIdentifier.trim(),
+      'root_identifier': rootIdentifier.trim(),
+      'root_path': rootPath.trim(),
+      'connection_status': connectionStatus.trim().isEmpty
+          ? 'disconnected'
+          : connectionStatus.trim(),
+      'capabilities_json': capabilitiesJson.trim().isEmpty
+          ? '{}'
+          : capabilitiesJson.trim(),
+      'created_at_milliseconds': existing.isEmpty
+          ? now
+          : _mapInt(existing.first['created_at_milliseconds']),
+      'updated_at_milliseconds': now,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<List<Map<String, Object?>>> getConnectedSources({
+    String? providerType,
+  }) async {
+    final database = await this.database;
+    final cleanProvider = providerType?.trim().toLowerCase() ?? '';
+    return database.query(
+      'connected_sources',
+      where: cleanProvider.isEmpty ? null : 'provider_type = ?',
+      whereArgs: cleanProvider.isEmpty ? null : [cleanProvider],
+      orderBy: 'display_name COLLATE NOCASE, provider_type',
+    );
+  }
+
+  Future<void> removeConnectedSource(String sourceId) async {
+    final database = await this.database;
+    await database.delete(
+      'connected_sources',
+      where: 'source_id = ?',
+      whereArgs: [sourceId.trim()],
+    );
+  }
+
+  Future<void> upsertSyncRecord({
+    required String recordUuid,
+    required String entityType,
+    required String localKey,
+    String sourceId = '',
+    String remoteId = '',
+    String remoteParentId = '',
+    String remoteEtag = '',
+    int localModifiedMilliseconds = 0,
+    int remoteModifiedMilliseconds = 0,
+    int lastSyncedAtMilliseconds = 0,
+    String syncState = 'local_only',
+    bool deletedLocal = false,
+    bool deletedRemote = false,
+    String conflictDetails = '',
+  }) async {
+    final database = await this.database;
+    await database.insert('sync_records', {
+      'record_uuid': recordUuid.trim(),
+      'entity_type': entityType.trim().toLowerCase(),
+      'local_key': localKey.trim(),
+      'source_id': sourceId.trim(),
+      'remote_id': remoteId.trim(),
+      'remote_parent_id': remoteParentId.trim(),
+      'remote_etag': remoteEtag.trim(),
+      'local_modified_milliseconds': localModifiedMilliseconds,
+      'remote_modified_milliseconds': remoteModifiedMilliseconds,
+      'last_synced_at_milliseconds': lastSyncedAtMilliseconds,
+      'sync_state': syncState.trim().isEmpty ? 'local_only' : syncState.trim(),
+      'deleted_local': deletedLocal ? 1 : 0,
+      'deleted_remote': deletedRemote ? 1 : 0,
+      'conflict_details': conflictDetails,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> updateSyncRecordRemoteIdentity({
+    required String recordUuid,
+    required String remoteId,
+    String remoteParentId = '',
+    String remoteEtag = '',
+    int remoteModifiedMilliseconds = 0,
+  }) async {
+    final database = await this.database;
+    await database.update(
+      'sync_records',
+      {
+        'remote_id': remoteId.trim(),
+        'remote_parent_id': remoteParentId.trim(),
+        'remote_etag': remoteEtag.trim(),
+        'remote_modified_milliseconds': remoteModifiedMilliseconds,
+      },
+      where: 'record_uuid = ?',
+      whereArgs: [recordUuid.trim()],
+    );
+  }
+
+  Future<List<Map<String, Object?>>> getSyncRecords({
+    String? state,
+    String? entityType,
+    String? sourceId,
+  }) async {
+    final database = await this.database;
+    final where = <String>[];
+    final args = <Object?>[];
+
+    if (state != null && state.trim().isNotEmpty) {
+      where.add('sync_state = ?');
+      args.add(state.trim());
+    }
+    if (entityType != null && entityType.trim().isNotEmpty) {
+      where.add('entity_type = ?');
+      args.add(entityType.trim().toLowerCase());
+    }
+    if (sourceId != null && sourceId.trim().isNotEmpty) {
+      where.add('source_id = ?');
+      args.add(sourceId.trim());
+    }
+
+    return database.query(
+      'sync_records',
+      where: where.isEmpty ? null : where.join(' AND '),
+      whereArgs: args.isEmpty ? null : args,
+      orderBy: 'local_modified_milliseconds DESC, id DESC',
+    );
+  }
+
+  Future<void> markSyncRecordLocalChanged({
+    required String entityType,
+    required String localKey,
+    int? localModifiedMilliseconds,
+  }) async {
+    final database = await this.database;
+    await database.update(
+      'sync_records',
+      {
+        'sync_state': 'local_changed',
+        'local_modified_milliseconds':
+            localModifiedMilliseconds ?? DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'entity_type = ? AND local_key = ?',
+      whereArgs: [entityType.trim().toLowerCase(), localKey.trim()],
+    );
+  }
+
+  Future<void> recordSyncChange({
+    required String changeUuid,
+    required String deviceId,
+    required String entityType,
+    required String localKey,
+    required String operation,
+    String payloadHash = '',
+    String detailsJson = '{}',
+    int? changedAtMilliseconds,
+  }) async {
+    final database = await this.database;
+    await database.insert('sync_change_log', {
+      'change_uuid': changeUuid.trim(),
+      'device_id': deviceId.trim(),
+      'entity_type': entityType.trim().toLowerCase(),
+      'local_key': localKey.trim(),
+      'operation': operation.trim().toLowerCase(),
+      'changed_at_milliseconds':
+          changedAtMilliseconds ?? DateTime.now().millisecondsSinceEpoch,
+      'payload_hash': payloadHash.trim(),
+      'details_json': detailsJson.trim().isEmpty ? '{}' : detailsJson.trim(),
+      'reviewed': 0,
+      'processed': 0,
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
+  }
+
+  Future<void> recordOrMergePendingSyncChange({
+    required String changeUuid,
+    required String deviceId,
+    required String entityType,
+    required String localKey,
+    required String operation,
+    String payloadHash = '',
+    String detailsJson = '{}',
+    int? changedAtMilliseconds,
+  }) async {
+    final database = await this.database;
+    final cleanEntityType = entityType.trim().toLowerCase();
+    final cleanLocalKey = localKey.trim();
+    final cleanOperation = operation.trim().toLowerCase();
+    final changedAt =
+        changedAtMilliseconds ?? DateTime.now().millisecondsSinceEpoch;
+
+    await database.transaction((txn) async {
+      final existing = await txn.query(
+        'sync_change_log',
+        where:
+            'processed = 0 AND entity_type = ? AND local_key = ? AND operation = ?',
+        whereArgs: [cleanEntityType, cleanLocalKey, cleanOperation],
+        orderBy: 'changed_at_milliseconds ASC, id ASC',
+      );
+
+      if (existing.isEmpty) {
+        await txn.insert('sync_change_log', {
+          'change_uuid': changeUuid.trim(),
+          'device_id': deviceId.trim(),
+          'entity_type': cleanEntityType,
+          'local_key': cleanLocalKey,
+          'operation': cleanOperation,
+          'changed_at_milliseconds': changedAt,
+          'payload_hash': payloadHash.trim(),
+          'details_json': detailsJson.trim().isEmpty
+              ? '{}'
+              : detailsJson.trim(),
+          'reviewed': 0,
+          'processed': 0,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+        return;
+      }
+
+      final mergedFields = <String>{};
+
+      void addFieldsFromJson(Object? rawValue) {
+        final raw = rawValue?.toString().trim() ?? '';
+        if (raw.isEmpty) return;
+        try {
+          final decoded = jsonDecode(raw);
+          if (decoded is Map) {
+            final fields = decoded['changed_fields'];
+            if (fields is List) {
+              for (final field in fields) {
+                final clean = field.toString().trim();
+                if (clean.isNotEmpty) mergedFields.add(clean);
+              }
+            }
+          }
+        } catch (_) {
+          // Preserve the pending change even if an older details payload is bad.
+        }
+      }
+
+      for (final row in existing) {
+        addFieldsFromJson(row['details_json']);
+      }
+      addFieldsFromJson(detailsJson);
+
+      final sortedFields = mergedFields.toList()..sort();
+      final keeperId = existing.first['id'];
+
+      await txn.update(
+        'sync_change_log',
+        {
+          'device_id': deviceId.trim(),
+          'changed_at_milliseconds': changedAt,
+          'payload_hash': payloadHash.trim(),
+          'details_json': jsonEncode({'changed_fields': sortedFields}),
+          // A fresh edit means the combined pending item needs review again.
+          'reviewed': 0,
+          'processed': 0,
+        },
+        where: 'id = ?',
+        whereArgs: [keeperId],
+      );
+
+      if (existing.length > 1) {
+        final duplicateIds = existing
+            .skip(1)
+            .map((row) => row['id'])
+            .where((id) => id != null)
+            .toList();
+        if (duplicateIds.isNotEmpty) {
+          final placeholders = List.filled(duplicateIds.length, '?').join(', ');
+          await txn.delete(
+            'sync_change_log',
+            where: 'id IN ($placeholders)',
+            whereArgs: duplicateIds,
+          );
+        }
+      }
+    });
+  }
+
+  Future<List<Map<String, Object?>>> getPendingSyncChanges({
+    int limit = 500,
+  }) async {
+    final database = await this.database;
+    return database.query(
+      'sync_change_log',
+      where: 'processed = 0',
+      orderBy: 'changed_at_milliseconds ASC, id ASC',
+      limit: limit,
+    );
+  }
+
+  Future<void> markSyncChangeReviewed(String changeUuid) async {
+    final database = await this.database;
+    await database.update(
+      'sync_change_log',
+      {'reviewed': 1},
+      where: 'change_uuid = ?',
+      whereArgs: [changeUuid.trim()],
+    );
+  }
+
+  Future<void> markSyncChangeProcessed(String changeUuid) async {
+    final database = await this.database;
+    await database.update(
+      'sync_change_log',
+      {'processed': 1},
+      where: 'change_uuid = ?',
+      whereArgs: [changeUuid.trim()],
+    );
+  }
+
+  Future<int> recordSyncConflict({
+    required String entityType,
+    required String localKey,
+    String sourceId = '',
+    int localModifiedMilliseconds = 0,
+    int remoteModifiedMilliseconds = 0,
+    String details = '',
+  }) async {
+    final database = await this.database;
+    return database.insert('sync_conflicts', {
+      'entity_type': entityType.trim().toLowerCase(),
+      'local_key': localKey.trim(),
+      'source_id': sourceId.trim(),
+      'local_modified_milliseconds': localModifiedMilliseconds,
+      'remote_modified_milliseconds': remoteModifiedMilliseconds,
+      'status': 'open',
+      'details': details,
+      'created_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+      'resolved_at_milliseconds': 0,
+    });
+  }
+
+  Future<List<Map<String, Object?>>> getOpenSyncConflicts() async {
+    final database = await this.database;
+    return database.query(
+      'sync_conflicts',
+      where: "status = 'open'",
+      orderBy: 'created_at_milliseconds DESC, id DESC',
+    );
+  }
+
+  Future<void> resolveSyncConflict({
+    required int conflictId,
+    required String resolution,
+  }) async {
+    final database = await this.database;
+    await database.update(
+      'sync_conflicts',
+      {
+        'status': resolution.trim().isEmpty ? 'resolved' : resolution.trim(),
+        'resolved_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [conflictId],
+    );
+  }
+
+  Future<Map<String, int>> getSyncFoundationSummary() async {
+    final database = await this.database;
+
+    Future<int> count(String table, {String? where}) async {
+      final rows = await database.rawQuery(
+        'SELECT COUNT(*) AS total FROM $table'
+        '${where == null ? '' : ' WHERE $where'}',
+      );
+      return _mapInt(rows.first['total']);
+    }
+
+    return {
+      'devices': await count('sync_devices'),
+      'connected_sources': await count('connected_sources'),
+      'sync_records': await count('sync_records'),
+      'pending_changes': await count('sync_change_log', where: 'processed = 0'),
+      'open_conflicts': await count('sync_conflicts', where: "status = 'open'"),
+    };
   }
 
   static Future<void> _createPhotoPersonFamilyLinksTable(
@@ -245,6 +946,148 @@ class DatabaseHelper {
       where: 'person_name = ? COLLATE NOCASE',
       whereArgs: [personName.trim()],
     );
+  }
+
+  static Future<void> _createPhotoPersonAliasesTable(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS photo_person_aliases (
+        alias_name TEXT PRIMARY KEY COLLATE NOCASE,
+        family_person_id INTEGER NOT NULL,
+        created_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        updated_at_milliseconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS photo_person_aliases_family_index
+      ON photo_person_aliases(family_person_id)
+    ''');
+  }
+
+  Future<void> setPhotoPersonAlias({
+    required String aliasName,
+    required int familyPersonId,
+  }) async {
+    final cleanName = aliasName.trim();
+    if (cleanName.isEmpty) {
+      throw ArgumentError('A photo person alias is required.');
+    }
+
+    final database = await this.database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final existing = await database.query(
+      'photo_person_aliases',
+      columns: ['created_at_milliseconds'],
+      where: 'alias_name = ? COLLATE NOCASE',
+      whereArgs: [cleanName],
+      limit: 1,
+    );
+
+    await database.insert('photo_person_aliases', {
+      'alias_name': cleanName,
+      'family_person_id': familyPersonId,
+      'created_at_milliseconds': existing.isEmpty
+          ? now
+          : _mapInt(existing.first['created_at_milliseconds']),
+      'updated_at_milliseconds': now,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+    await setFamilyTreeLinkForPhotoPerson(
+      personName: cleanName,
+      familyPersonId: familyPersonId,
+    );
+  }
+
+  Future<Map<String, int>> getPhotoPersonAliases() async {
+    final database = await this.database;
+    final rows = await database.query('photo_person_aliases');
+    final result = <String, int>{};
+    for (final row in rows) {
+      final alias = row['alias_name'] as String? ?? '';
+      if (alias.isNotEmpty) {
+        result[alias] = _mapInt(row['family_person_id']);
+      }
+    }
+    return result;
+  }
+
+  Future<List<String>> getPhotoPersonAliasesForFamilyPerson(
+    int familyPersonId,
+  ) async {
+    final database = await this.database;
+    final rows = await database.query(
+      'photo_person_aliases',
+      columns: ['alias_name'],
+      where: 'family_person_id = ?',
+      whereArgs: [familyPersonId],
+      orderBy: 'alias_name COLLATE NOCASE',
+    );
+    return rows
+        .map((row) => row['alias_name'] as String? ?? '')
+        .where((name) => name.isNotEmpty)
+        .toList();
+  }
+
+  Future<void> removePhotoPersonAlias(String aliasName) async {
+    final cleanName = aliasName.trim();
+    if (cleanName.isEmpty) return;
+
+    final database = await this.database;
+    await database.delete(
+      'photo_person_aliases',
+      where: 'alias_name = ? COLLATE NOCASE',
+      whereArgs: [cleanName],
+    );
+    await removeFamilyTreeLinkForPhotoPerson(cleanName);
+  }
+
+  Future<int?> resolveFamilyPersonIdForPhotoName(String personName) async {
+    final cleanName = personName.trim();
+    if (cleanName.isEmpty) return null;
+
+    final database = await this.database;
+    final aliasRows = await database.query(
+      'photo_person_aliases',
+      columns: ['family_person_id'],
+      where: 'alias_name = ? COLLATE NOCASE',
+      whereArgs: [cleanName],
+      limit: 1,
+    );
+    if (aliasRows.isNotEmpty) {
+      return _mapInt(aliasRows.first['family_person_id']);
+    }
+
+    final linkRows = await database.query(
+      'photo_person_family_links',
+      columns: ['family_person_id'],
+      where: 'person_name = ? COLLATE NOCASE',
+      whereArgs: [cleanName],
+      limit: 1,
+    );
+    if (linkRows.isNotEmpty) {
+      return _mapInt(linkRows.first['family_person_id']);
+    }
+
+    return null;
+  }
+
+  Future<Map<int, List<String>>> getPhotoAliasesGroupedByFamilyPerson() async {
+    final database = await this.database;
+    final rows = await database.rawQuery('''
+      SELECT alias_name, family_person_id
+      FROM photo_person_aliases
+      ORDER BY family_person_id, alias_name COLLATE NOCASE
+    ''');
+
+    final result = <int, List<String>>{};
+    for (final row in rows) {
+      final familyId = _mapInt(row['family_person_id']);
+      final alias = row['alias_name'] as String? ?? '';
+      if (familyId > 0 && alias.isNotEmpty) {
+        result.putIfAbsent(familyId, () => <String>[]).add(alias);
+      }
+    }
+    return result;
   }
 
   static Future<void> _createPersonGroupsTables(Database database) async {
@@ -505,7 +1348,8 @@ class DatabaseHelper {
         storage_location TEXT NOT NULL DEFAULT '',
         grade TEXT NOT NULL DEFAULT '',
         value REAL,
-        notes TEXT NOT NULL DEFAULT ''
+        notes TEXT NOT NULL DEFAULT '',
+        image_path TEXT NOT NULL DEFAULT ''
       )
     ''');
 
@@ -613,7 +1457,12 @@ class DatabaseHelper {
         acquired_from TEXT NOT NULL DEFAULT '',
         purchase_price REAL,
         estimated_value REAL,
-        notes TEXT NOT NULL DEFAULT ''
+        notes TEXT NOT NULL DEFAULT '',
+        condition TEXT NOT NULL DEFAULT '',
+        condition_notes TEXT NOT NULL DEFAULT '',
+        provenance TEXT NOT NULL DEFAULT '',
+        appraisal_source TEXT NOT NULL DEFAULT '',
+        valuation_date TEXT NOT NULL DEFAULT ''
       )
     ''');
 
@@ -622,6 +1471,43 @@ class DatabaseHelper {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         valuable_id INTEGER NOT NULL,
         image_path TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS valuable_documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        valuable_id INTEGER NOT NULL,
+        document_path TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+  }
+
+  static Future<void> _upgradeValuablesToVersion35(Database database) async {
+    final info = await database.rawQuery("PRAGMA table_info(valuables)");
+    final columns = info.map((row) => row['name'] as String? ?? '').toSet();
+
+    Future<void> addColumn(String name, String definition) async {
+      if (!columns.contains(name)) {
+        await database.execute(
+          'ALTER TABLE valuables ADD COLUMN $name $definition',
+        );
+      }
+    }
+
+    await addColumn('condition', "TEXT NOT NULL DEFAULT ''");
+    await addColumn('condition_notes', "TEXT NOT NULL DEFAULT ''");
+    await addColumn('provenance', "TEXT NOT NULL DEFAULT ''");
+    await addColumn('appraisal_source', "TEXT NOT NULL DEFAULT ''");
+    await addColumn('valuation_date', "TEXT NOT NULL DEFAULT ''");
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS valuable_documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        valuable_id INTEGER NOT NULL,
+        document_path TEXT NOT NULL,
         sort_order INTEGER NOT NULL DEFAULT 0
       )
     ''');
@@ -640,6 +1526,18 @@ class DatabaseHelper {
         await transaction.insert('valuable_images', {
           'valuable_id': id,
           'image_path': valuable.imagePaths[index],
+          'sort_order': index,
+        });
+      }
+
+      for (
+        var index = 0;
+        index < valuable.supportingDocumentPaths.length;
+        index++
+      ) {
+        await transaction.insert('valuable_documents', {
+          'valuable_id': id,
+          'document_path': valuable.supportingDocumentPaths[index],
           'sort_order': index,
         });
       }
@@ -671,11 +1569,28 @@ class DatabaseHelper {
         where: 'valuable_id = ?',
         whereArgs: [id],
       );
+      await transaction.delete(
+        'valuable_documents',
+        where: 'valuable_id = ?',
+        whereArgs: [id],
+      );
 
       for (var index = 0; index < valuable.imagePaths.length; index++) {
         await transaction.insert('valuable_images', {
           'valuable_id': id,
           'image_path': valuable.imagePaths[index],
+          'sort_order': index,
+        });
+      }
+
+      for (
+        var index = 0;
+        index < valuable.supportingDocumentPaths.length;
+        index++
+      ) {
+        await transaction.insert('valuable_documents', {
+          'valuable_id': id,
+          'document_path': valuable.supportingDocumentPaths[index],
           'sort_order': index,
         });
       }
@@ -690,6 +1605,11 @@ class DatabaseHelper {
     return database.transaction((transaction) async {
       await transaction.delete(
         'valuable_images',
+        where: 'valuable_id = ?',
+        whereArgs: [id],
+      );
+      await transaction.delete(
+        'valuable_documents',
         where: 'valuable_id = ?',
         whereArgs: [id],
       );
@@ -727,7 +1647,26 @@ class DatabaseHelper {
           .where((value) => value.isNotEmpty)
           .toList();
 
-      result.add(Valuable.fromMap(row, imagePaths: imagePaths));
+      final documentRows = id == null
+          ? <Map<String, Object?>>[]
+          : await database.query(
+              'valuable_documents',
+              where: 'valuable_id = ?',
+              whereArgs: [id],
+              orderBy: 'sort_order ASC, id ASC',
+            );
+      final documentPaths = documentRows
+          .map((row) => row['document_path'] as String? ?? '')
+          .where((value) => value.isNotEmpty)
+          .toList();
+
+      result.add(
+        Valuable.fromMap(
+          row,
+          imagePaths: imagePaths,
+          supportingDocumentPaths: documentPaths,
+        ),
+      );
     }
 
     return result;
@@ -743,7 +1682,12 @@ class DatabaseHelper {
         acquired_from TEXT NOT NULL DEFAULT '',
         purchase_price REAL,
         estimated_value REAL,
-        notes TEXT NOT NULL DEFAULT ''
+        notes TEXT NOT NULL DEFAULT '',
+        condition TEXT NOT NULL DEFAULT '',
+        condition_notes TEXT NOT NULL DEFAULT '',
+        provenance TEXT NOT NULL DEFAULT '',
+        appraisal_source TEXT NOT NULL DEFAULT '',
+        valuation_date TEXT NOT NULL DEFAULT ''
       )
     ''');
 
@@ -754,6 +1698,38 @@ class DatabaseHelper {
         image_path TEXT NOT NULL,
         sort_order INTEGER NOT NULL DEFAULT 0
       )
+    ''');
+  }
+
+  static Future<void> _upgradeAntiquesToVersion34(Database database) async {
+    final info = await database.rawQuery("PRAGMA table_info(antiques)");
+    final columns = info.map((row) => row['name'] as String? ?? '').toSet();
+
+    Future<void> addColumn(String name, String definition) async {
+      if (!columns.contains(name)) {
+        await database.execute(
+          'ALTER TABLE antiques ADD COLUMN $name $definition',
+        );
+      }
+    }
+
+    await addColumn('condition', "TEXT NOT NULL DEFAULT ''");
+    await addColumn('condition_notes', "TEXT NOT NULL DEFAULT ''");
+    await addColumn('provenance', "TEXT NOT NULL DEFAULT ''");
+    await addColumn('appraisal_source', "TEXT NOT NULL DEFAULT ''");
+    await addColumn('valuation_date', "TEXT NOT NULL DEFAULT ''");
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS antique_documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        antique_id INTEGER NOT NULL,
+        document_path TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS antique_documents_antique_index
+      ON antique_documents(antique_id)
     ''');
   }
 
@@ -770,6 +1746,18 @@ class DatabaseHelper {
         await transaction.insert('antique_images', {
           'antique_id': id,
           'image_path': antique.imagePaths[index],
+          'sort_order': index,
+        });
+      }
+
+      for (
+        var index = 0;
+        index < antique.supportingDocumentPaths.length;
+        index++
+      ) {
+        await transaction.insert('antique_documents', {
+          'antique_id': id,
+          'document_path': antique.supportingDocumentPaths[index],
           'sort_order': index,
         });
       }
@@ -801,11 +1789,28 @@ class DatabaseHelper {
         where: 'antique_id = ?',
         whereArgs: [id],
       );
+      await transaction.delete(
+        'antique_documents',
+        where: 'antique_id = ?',
+        whereArgs: [id],
+      );
 
       for (var index = 0; index < antique.imagePaths.length; index++) {
         await transaction.insert('antique_images', {
           'antique_id': id,
           'image_path': antique.imagePaths[index],
+          'sort_order': index,
+        });
+      }
+
+      for (
+        var index = 0;
+        index < antique.supportingDocumentPaths.length;
+        index++
+      ) {
+        await transaction.insert('antique_documents', {
+          'antique_id': id,
+          'document_path': antique.supportingDocumentPaths[index],
           'sort_order': index,
         });
       }
@@ -820,6 +1825,11 @@ class DatabaseHelper {
     return database.transaction((transaction) async {
       await transaction.delete(
         'antique_images',
+        where: 'antique_id = ?',
+        whereArgs: [id],
+      );
+      await transaction.delete(
+        'antique_documents',
         where: 'antique_id = ?',
         whereArgs: [id],
       );
@@ -857,10 +1867,418 @@ class DatabaseHelper {
           .where((value) => value.isNotEmpty)
           .toList();
 
-      result.add(Antique.fromMap(row, imagePaths: imagePaths));
+      final documentRows = id == null
+          ? <Map<String, Object?>>[]
+          : await database.query(
+              'antique_documents',
+              where: 'antique_id = ?',
+              whereArgs: [id],
+              orderBy: 'sort_order ASC, id ASC',
+            );
+      final documentPaths = documentRows
+          .map((documentRow) => documentRow['document_path'] as String? ?? '')
+          .where((value) => value.isNotEmpty)
+          .toList();
+
+      result.add(
+        Antique.fromMap(
+          row,
+          imagePaths: imagePaths,
+          supportingDocumentPaths: documentPaths,
+        ),
+      );
     }
 
     return result;
+  }
+
+  static Future<void> _createAtlasBookFavoritesTable(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS atlas_book_favorites (
+        item_type TEXT NOT NULL,
+        item_key TEXT NOT NULL,
+        created_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (item_type, item_key)
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS atlas_book_favorites_type_index
+      ON atlas_book_favorites(item_type)
+    ''');
+  }
+
+  Future<void> setAtlasBookFavorite({
+    required String itemType,
+    required String itemKey,
+    required bool favorite,
+  }) async {
+    final cleanType = itemType.trim().toLowerCase();
+    final cleanKey = itemKey.trim();
+    if (cleanType.isEmpty || cleanKey.isEmpty) return;
+
+    final database = await this.database;
+    if (!favorite) {
+      await database.delete(
+        'atlas_book_favorites',
+        where: 'item_type = ? AND item_key = ?',
+        whereArgs: [cleanType, cleanKey],
+      );
+      return;
+    }
+
+    await database.insert('atlas_book_favorites', {
+      'item_type': cleanType,
+      'item_key': cleanKey,
+      'created_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<bool> isAtlasBookFavorite({
+    required String itemType,
+    required String itemKey,
+  }) async {
+    final database = await this.database;
+    final rows = await database.query(
+      'atlas_book_favorites',
+      columns: ['item_key'],
+      where: 'item_type = ? AND item_key = ?',
+      whereArgs: [itemType.trim().toLowerCase(), itemKey.trim()],
+      limit: 1,
+    );
+    return rows.isNotEmpty;
+  }
+
+  Future<Set<String>> getAtlasBookFavoriteKeys({String? itemType}) async {
+    final database = await this.database;
+    final cleanType = itemType?.trim().toLowerCase() ?? '';
+    final rows = await database.query(
+      'atlas_book_favorites',
+      columns: ['item_key'],
+      where: cleanType.isEmpty ? null : 'item_type = ?',
+      whereArgs: cleanType.isEmpty ? null : [cleanType],
+      orderBy: 'created_at_milliseconds DESC',
+    );
+    return rows
+        .map((row) => row['item_key'] as String? ?? '')
+        .where((value) => value.isNotEmpty)
+        .toSet();
+  }
+
+  static Future<void> _createPersonMatchRejectionsTable(
+    Database database,
+  ) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS person_match_rejections (
+        person_name TEXT NOT NULL,
+        face_id INTEGER NOT NULL,
+        rejected_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (person_name, face_id)
+      )
+    ''');
+  }
+
+  Future<Set<int>> getRejectedFaceIdsForPerson(String personName) async {
+    final database = await this.database;
+    final rows = await database.query(
+      'person_match_rejections',
+      columns: ['face_id'],
+      where: 'person_name = ?',
+      whereArgs: [personName.trim()],
+    );
+
+    return rows
+        .map((row) => _mapInt(row['face_id']))
+        .where((id) => id > 0)
+        .toSet();
+  }
+
+  Future<void> rejectFaceMatch({
+    required String personName,
+    required int faceId,
+  }) async {
+    final database = await this.database;
+    await database.insert('person_match_rejections', {
+      'person_name': personName.trim(),
+      'face_id': faceId,
+      'rejected_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> clearFaceMatchRejection({
+    required String personName,
+    required int faceId,
+  }) async {
+    final database = await this.database;
+    await database.delete(
+      'person_match_rejections',
+      where: 'person_name = ? AND face_id = ?',
+      whereArgs: [personName.trim(), faceId],
+    );
+  }
+
+  static Future<void> _createPhotoSourcesTables(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS photo_sources (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_type TEXT NOT NULL DEFAULT 'folder',
+        display_name TEXT NOT NULL DEFAULT '',
+        root_path TEXT NOT NULL UNIQUE,
+        last_scan_milliseconds INTEGER NOT NULL DEFAULT 0,
+        photo_count INTEGER NOT NULL DEFAULT 0,
+        created_at_milliseconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS photo_source_files (
+        file_path TEXT PRIMARY KEY,
+        source_id INTEGER NOT NULL
+      )
+    ''');
+
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS photo_source_files_source_index
+      ON photo_source_files(source_id)
+    ''');
+  }
+
+  static Future<void> _migrateLegacyPhotoSource(Database database) async {
+    final rows = await database.query('app_settings');
+    final settings = <String, String>{
+      for (final row in rows)
+        (row['setting_key'] as String? ?? ''):
+            (row['setting_value'] as String? ?? ''),
+    };
+
+    final rootPath = settings['photo_library_path']?.trim() ?? '';
+    if (rootPath.isEmpty) return;
+
+    final savedType = settings['photo_source_type']?.trim() ?? '';
+    final sourceType = savedType.isNotEmpty
+        ? savedType
+        : (rootPath.toLowerCase().contains('onedrive') ? 'onedrive' : 'folder');
+    final savedName = settings['photo_source_name']?.trim() ?? '';
+    final displayName = savedName.isNotEmpty
+        ? savedName
+        : (sourceType == 'onedrive' ? 'OneDrive' : 'Existing Photo Library');
+    final lastScan =
+        int.tryParse(settings['photo_source_last_scan_milliseconds'] ?? '') ??
+        0;
+
+    var sourceId = await database.insert('photo_sources', {
+      'source_type': sourceType,
+      'display_name': displayName,
+      'root_path': rootPath,
+      'last_scan_milliseconds': lastScan,
+      'photo_count': 0,
+      'created_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
+
+    if (sourceId == 0) {
+      final existing = await database.query(
+        'photo_sources',
+        columns: ['id'],
+        where: 'root_path = ?',
+        whereArgs: [rootPath],
+        limit: 1,
+      );
+      if (existing.isEmpty) return;
+      sourceId = _staticMapInt(existing.first['id']);
+    }
+
+    final photoRows = await database.query(
+      'indexed_photos',
+      columns: ['file_path'],
+    );
+    var count = 0;
+    final batch = database.batch();
+    for (final row in photoRows) {
+      final filePath = row['file_path'] as String? ?? '';
+      if (filePath.isEmpty) continue;
+      if (!path.isWithin(rootPath, filePath)) continue;
+      count++;
+      batch.insert('photo_source_files', {
+        'file_path': filePath,
+        'source_id': sourceId,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+    await batch.commit(noResult: true);
+
+    await database.update(
+      'photo_sources',
+      {'photo_count': count},
+      where: 'id = ?',
+      whereArgs: [sourceId],
+    );
+  }
+
+  Future<List<Map<String, Object?>>> getPhotoSources() async {
+    final database = await this.database;
+    return database.query(
+      'photo_sources',
+      orderBy: 'created_at_milliseconds ASC, id ASC',
+    );
+  }
+
+  Future<bool> removePhotoSourceByRootPath(String rootPath) async {
+    final cleanPath = rootPath.trim();
+    if (cleanPath.isEmpty) return false;
+
+    final sources = await getPhotoSources();
+    for (final source in sources) {
+      final sourcePath = (source['root_path'] as String? ?? '').trim();
+      if (sourcePath.toLowerCase() != cleanPath.toLowerCase()) continue;
+
+      final sourceId = source['id'] as int? ?? 0;
+      if (sourceId <= 0) continue;
+
+      await removePhotoSource(sourceId);
+      return true;
+    }
+
+    return false;
+  }
+
+  Future<void> removePhotoSource(int sourceId) async {
+    if (sourceId <= 0) {
+      throw ArgumentError('A valid photo source ID is required.');
+    }
+
+    final database = await this.database;
+    await database.transaction((transaction) async {
+      final mappings = await transaction.query(
+        'photo_source_files',
+        columns: ['file_path'],
+        where: 'source_id = ?',
+        whereArgs: [sourceId],
+      );
+
+      final mappedPaths = mappings
+          .map((row) => row['file_path'] as String? ?? '')
+          .where((value) => value.isNotEmpty)
+          .toSet();
+
+      await transaction.delete(
+        'photo_source_files',
+        where: 'source_id = ?',
+        whereArgs: [sourceId],
+      );
+
+      for (final filePath in mappedPaths) {
+        final otherMapping = await transaction.query(
+          'photo_source_files',
+          columns: ['file_path'],
+          where: 'file_path = ?',
+          whereArgs: [filePath],
+          limit: 1,
+        );
+        if (otherMapping.isEmpty) {
+          await transaction.delete(
+            'indexed_photos',
+            where: 'file_path = ?',
+            whereArgs: [filePath],
+          );
+        }
+      }
+
+      await transaction.delete(
+        'photo_sources',
+        where: 'id = ?',
+        whereArgs: [sourceId],
+      );
+    });
+  }
+
+  Future<int> addPhotoSource({
+    required String sourceType,
+    required String displayName,
+    required String rootPath,
+  }) async {
+    final database = await this.database;
+    final cleanPath = rootPath.trim();
+    final existing = await database.query(
+      'photo_sources',
+      columns: ['id'],
+      where: 'root_path = ?',
+      whereArgs: [cleanPath],
+      limit: 1,
+    );
+    if (existing.isNotEmpty) return _mapInt(existing.first['id']);
+
+    return database.insert('photo_sources', {
+      'source_type': sourceType.trim(),
+      'display_name': displayName.trim(),
+      'root_path': cleanPath,
+      'last_scan_milliseconds': 0,
+      'photo_count': 0,
+      'created_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  Future<void> replaceIndexedPhotosForSource({
+    required int sourceId,
+    required List<VaultPhoto> photos,
+  }) async {
+    final database = await this.database;
+    await database.transaction((transaction) async {
+      final oldMappings = await transaction.query(
+        'photo_source_files',
+        columns: ['file_path'],
+        where: 'source_id = ?',
+        whereArgs: [sourceId],
+      );
+      final oldPaths = oldMappings
+          .map((row) => row['file_path'] as String? ?? '')
+          .where((value) => value.isNotEmpty)
+          .toSet();
+      final newPaths = photos.map((photo) => photo.filePath).toSet();
+
+      for (final removedPath in oldPaths.difference(newPaths)) {
+        await transaction.delete(
+          'photo_source_files',
+          where: 'file_path = ? AND source_id = ?',
+          whereArgs: [removedPath, sourceId],
+        );
+        final otherMapping = await transaction.query(
+          'photo_source_files',
+          columns: ['file_path'],
+          where: 'file_path = ?',
+          whereArgs: [removedPath],
+          limit: 1,
+        );
+        if (otherMapping.isEmpty) {
+          await transaction.delete(
+            'indexed_photos',
+            where: 'file_path = ?',
+            whereArgs: [removedPath],
+          );
+        }
+      }
+
+      for (final photo in photos) {
+        final map = photo.toMap()..remove('id');
+        await transaction.insert(
+          'indexed_photos',
+          map,
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        await transaction.insert('photo_source_files', {
+          'file_path': photo.filePath,
+          'source_id': sourceId,
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+
+      await transaction.update(
+        'photo_sources',
+        {
+          'photo_count': photos.length,
+          'last_scan_milliseconds': DateTime.now().millisecondsSinceEpoch,
+        },
+        where: 'id = ?',
+        whereArgs: [sourceId],
+      );
+    });
   }
 
   static Future<void> _createPhotoLibraryTables(Database database) async {
@@ -1026,6 +2444,7 @@ class DatabaseHelper {
         approximate_date TEXT NOT NULL DEFAULT '',
         location TEXT NOT NULL DEFAULT '',
         description TEXT NOT NULL DEFAULT '',
+        back_writing TEXT NOT NULL DEFAULT '',
         notes TEXT NOT NULL DEFAULT ''
       )
     ''');
@@ -1062,6 +2481,96 @@ class DatabaseHelper {
     );
   }
 
+  static Future<void> _upgradePhotoFacesForSFace(Database database) async {
+    final tableInfo = await database.rawQuery("PRAGMA table_info(photo_faces)");
+    final columns = tableInfo
+        .map((row) => row['name'] as String? ?? '')
+        .toSet();
+
+    // Existing identity/review fields are deliberately untouched.
+    if (!columns.contains('sface_embedding_json')) {
+      await database.execute(
+        "ALTER TABLE photo_faces ADD COLUMN sface_embedding_json TEXT NOT NULL DEFAULT '[]'",
+      );
+    }
+    if (!columns.contains('sface_embedding_version')) {
+      await database.execute(
+        "ALTER TABLE photo_faces ADD COLUMN sface_embedding_version INTEGER NOT NULL DEFAULT 0",
+      );
+    }
+    if (!columns.contains('sface_embedded_at_milliseconds')) {
+      await database.execute(
+        "ALTER TABLE photo_faces ADD COLUMN sface_embedded_at_milliseconds INTEGER NOT NULL DEFAULT 0",
+      );
+    }
+  }
+
+  Future<void> saveSFaceEmbedding({
+    required int faceId,
+    required String embeddingJson,
+    int embeddingVersion = 1,
+  }) async {
+    final database = await this.database;
+    await database.update(
+      'photo_faces',
+      {
+        'sface_embedding_json': embeddingJson,
+        'sface_embedding_version': embeddingVersion,
+        'sface_embedded_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [faceId],
+    );
+  }
+
+  Future<List<Map<String, Object?>>> getFacesMissingSFaceEmbeddings({
+    int? limit,
+  }) async {
+    final database = await this.database;
+    return database.query(
+      'photo_faces',
+      where: "sface_embedding_json = '[]'",
+      orderBy: 'confirmed DESC, person_name COLLATE NOCASE, id ASC',
+      limit: limit,
+    );
+  }
+
+  Future<List<Map<String, Object?>>> getAllSFaceEmbeddingRows() async {
+    final database = await this.database;
+    return database.query(
+      'photo_faces',
+      columns: ['id', 'person_name', 'confirmed', 'sface_embedding_json'],
+      where: "sface_embedding_json <> '[]'",
+      orderBy: 'id ASC',
+    );
+  }
+
+  Future<List<Map<String, Object?>>> getIndexedSFaceRecoveryRows({
+    required int excludeFaceId,
+  }) async {
+    final database = await this.database;
+    return database.rawQuery(
+      '''
+      SELECT f.id, f.photo_file_path, f.face_index, f.person_name,
+             f.confirmed, f.sface_embedding_json
+      FROM photo_faces f
+      INNER JOIN indexed_photos p ON p.file_path = f.photo_file_path
+      WHERE f.id <> ?
+        AND f.sface_embedding_json <> '[]'
+      ORDER BY f.id ASC
+      ''',
+      [excludeFaceId],
+    );
+  }
+
+  Future<int> getFacesMissingSFaceEmbeddingCount() async {
+    final database = await this.database;
+    final rows = await database.rawQuery(
+      "SELECT COUNT(*) AS total FROM photo_faces WHERE sface_embedding_json = '[]'",
+    );
+    return _mapInt(rows.first['total']);
+  }
+
   static Future<void> _createPhotoFacesTable(Database database) async {
     await database.execute('''
       CREATE TABLE IF NOT EXISTS photo_faces (
@@ -1074,6 +2583,9 @@ class DatabaseHelper {
         box_height REAL NOT NULL DEFAULT 0,
         detection_score REAL NOT NULL DEFAULT 0,
         embedding_json TEXT NOT NULL DEFAULT '[]',
+        sface_embedding_json TEXT NOT NULL DEFAULT '[]',
+        sface_embedding_version INTEGER NOT NULL DEFAULT 0,
+        sface_embedded_at_milliseconds INTEGER NOT NULL DEFAULT 0,
         thumbnail_path TEXT NOT NULL DEFAULT '',
         person_name TEXT NOT NULL DEFAULT '',
         confirmed INTEGER NOT NULL DEFAULT 0,
@@ -1121,6 +2633,135 @@ class DatabaseHelper {
 
       await batch.commit(noResult: true);
     });
+  }
+
+  /// Repairs stale photo paths stored on face records when the old file no
+  /// longer exists and exactly one currently indexed photo has the same
+  /// filename. Ambiguous filenames are deliberately left unchanged.
+  Future<int> repairStaleFacePhotoPaths() async {
+    final database = await this.database;
+
+    final faceRows = await database.query(
+      'photo_faces',
+      columns: ['id', 'photo_file_path', 'face_index'],
+    );
+    if (faceRows.isEmpty) return 0;
+
+    final indexedRows = await database.query(
+      'indexed_photos',
+      columns: ['file_path', 'file_name'],
+    );
+
+    final indexedByName = <String, List<String>>{};
+    for (final row in indexedRows) {
+      final filePath = (row['file_path'] as String? ?? '').trim();
+      var fileName = (row['file_name'] as String? ?? '').trim();
+      if (filePath.isEmpty) continue;
+
+      if (fileName.isEmpty) {
+        fileName = filePath.replaceAll('\\', '/').split('/').last;
+      }
+      if (fileName.isEmpty) continue;
+
+      indexedByName
+          .putIfAbsent(fileName.toLowerCase(), () => <String>[])
+          .add(filePath);
+    }
+
+    var repaired = 0;
+
+    await database.transaction((transaction) async {
+      for (final row in faceRows) {
+        final id = row['id'];
+        final oldPath = (row['photo_file_path'] as String? ?? '').trim();
+        if (id is! int || oldPath.isEmpty) continue;
+
+        if (await File(oldPath).exists()) continue;
+
+        final oldName = oldPath
+            .replaceAll('\\', '/')
+            .split('/')
+            .last
+            .toLowerCase();
+        if (oldName.isEmpty) continue;
+
+        final matches = indexedByName[oldName] ?? const <String>[];
+        if (matches.length != 1) continue;
+
+        final newPath = matches.single;
+        if (newPath == oldPath || !await File(newPath).exists()) continue;
+
+        // Never overwrite another face record that already occupies the
+        // destination photo/face-index pair.
+        final faceIndex = _mapInt(row['face_index']);
+        final conflict = await transaction.query(
+          'photo_faces',
+          columns: ['id'],
+          where: 'photo_file_path = ? AND face_index = ? AND id <> ?',
+          whereArgs: [newPath, faceIndex, id],
+          limit: 1,
+        );
+        if (conflict.isNotEmpty) continue;
+
+        final count = await transaction.update(
+          'photo_faces',
+          {'photo_file_path': newPath},
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+        repaired += count;
+      }
+    });
+
+    return repaired;
+  }
+
+  /// Manually reconnects all face records that point to [oldPath] to
+  /// [newPath]. Destination conflicts are preserved rather than overwritten.
+  Future<int> relinkFacePhotoPath({
+    required String oldPath,
+    required String newPath,
+  }) async {
+    final cleanOld = oldPath.trim();
+    final cleanNew = newPath.trim();
+    if (cleanOld.isEmpty || cleanNew.isEmpty || cleanOld == cleanNew) return 0;
+
+    final database = await this.database;
+    var repaired = 0;
+
+    await database.transaction((transaction) async {
+      final rows = await transaction.query(
+        'photo_faces',
+        columns: ['id', 'face_index'],
+        where: 'photo_file_path = ?',
+        whereArgs: [cleanOld],
+        orderBy: 'face_index ASC, id ASC',
+      );
+
+      for (final row in rows) {
+        final id = row['id'];
+        if (id is! int) continue;
+        final faceIndex = _mapInt(row['face_index']);
+
+        final conflict = await transaction.query(
+          'photo_faces',
+          columns: ['id'],
+          where: 'photo_file_path = ? AND face_index = ?',
+          whereArgs: [cleanNew, faceIndex],
+          limit: 1,
+        );
+        if (conflict.isNotEmpty) continue;
+
+        repaired += await transaction.update(
+          'photo_faces',
+          {'photo_file_path': cleanNew},
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+      }
+    });
+
+    return repaired;
   }
 
   Future<List<DetectedFaceRecord>> getFacesForPhotoPaths(
@@ -1219,6 +2860,7 @@ class DatabaseHelper {
         approximateDate: metadata.approximateDate,
         location: metadata.location,
         description: metadata.description,
+        backWriting: metadata.backWriting,
         notes: metadata.notes,
       ),
     );
@@ -1606,12 +3248,49 @@ class DatabaseHelper {
   Future<List<FamilyPerson>> getFamilyPeople({String searchText = ''}) async {
     final database = await this.database;
     final search = searchText.trim();
+
+    if (search.isEmpty) {
+      final rows = await database.query(
+        'family_people',
+        orderBy:
+            'last_name COLLATE NOCASE, first_name COLLATE NOCASE, middle_name COLLATE NOCASE',
+      );
+      return rows.map(FamilyPerson.fromMap).toList();
+    }
+
+    // Treat each word as an independent search term. This lets searches such
+    // as "John Smith" match "John Michael Smith" without requiring the
+    // middle name, and also supports terms entered in a different order.
+    final terms = search
+        .split(RegExp(r'\s+'))
+        .map((term) => term.trim())
+        .where((term) => term.isNotEmpty)
+        .toList();
+
+    const searchableFields = <String>[
+      'first_name',
+      'middle_name',
+      'last_name',
+      'birth_name',
+      'birth_place',
+      'death_place',
+    ];
+
+    final whereParts = <String>[];
+    final whereArgs = <Object?>[];
+
+    for (final term in terms) {
+      whereParts.add(
+        '(${searchableFields.map((field) => '$field LIKE ? COLLATE NOCASE').join(' OR ')})',
+      );
+      final pattern = '%$term%';
+      whereArgs.addAll(List<Object?>.filled(searchableFields.length, pattern));
+    }
+
     final rows = await database.query(
       'family_people',
-      where: search.isEmpty
-          ? null
-          : 'first_name LIKE ? OR middle_name LIKE ? OR last_name LIKE ? OR birth_name LIKE ? OR birth_place LIKE ? OR death_place LIKE ?',
-      whereArgs: search.isEmpty ? null : List<Object?>.filled(6, '%$search%'),
+      where: whereParts.join(' AND '),
+      whereArgs: whereArgs,
       orderBy:
           'last_name COLLATE NOCASE, first_name COLLATE NOCASE, middle_name COLLATE NOCASE',
     );
@@ -1625,6 +3304,16 @@ class DatabaseHelper {
       await transaction.delete(
         'family_person_links',
         where: 'person_id = ?',
+        whereArgs: [id],
+      );
+      await transaction.delete(
+        'photo_person_family_links',
+        where: 'family_person_id = ?',
+        whereArgs: [id],
+      );
+      await transaction.delete(
+        'photo_person_aliases',
+        where: 'family_person_id = ?',
         whereArgs: [id],
       );
 
@@ -1817,6 +3506,46 @@ class DatabaseHelper {
     );
   }
 
+  static Future<void> _upgradeFamilyPersonLinksToRoles(
+    Database database,
+  ) async {
+    final tableInfo = await database.rawQuery(
+      "PRAGMA table_info(family_person_links)",
+    );
+    if (tableInfo.isEmpty) {
+      await _createFamilyPersonLinksTable(database);
+      return;
+    }
+
+    final hasRole = tableInfo.any((row) => row['name'] == 'role');
+    if (hasRole) return;
+
+    await database.execute(
+      'ALTER TABLE family_person_links RENAME TO family_person_links_legacy',
+    );
+
+    await _createFamilyPersonLinksTable(database);
+
+    await database.execute('''
+      INSERT INTO family_person_links (
+        person_id,
+        item_type,
+        item_key,
+        role,
+        created_at_milliseconds
+      )
+      SELECT
+        person_id,
+        item_type,
+        item_key,
+        'Associated',
+        created_at_milliseconds
+      FROM family_person_links_legacy
+    ''');
+
+    await database.execute('DROP TABLE family_person_links_legacy');
+  }
+
   static Future<void> _createFamilyPersonLinksTable(Database database) async {
     await database.execute('''
       CREATE TABLE IF NOT EXISTS family_person_links (
@@ -1824,8 +3553,9 @@ class DatabaseHelper {
         person_id INTEGER NOT NULL,
         item_type TEXT NOT NULL,
         item_key TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'Associated',
         created_at_milliseconds INTEGER NOT NULL DEFAULT 0,
-        UNIQUE(person_id, item_type, item_key)
+        UNIQUE(person_id, item_type, item_key, role)
       )
     ''');
 
@@ -1840,13 +3570,17 @@ class DatabaseHelper {
     ''');
   }
 
+  static const String defaultFamilyItemRole = 'Associated';
+
   Future<void> linkFamilyPersonToItem({
     required int personId,
     required String itemType,
     required String itemKey,
+    String role = defaultFamilyItemRole,
   }) async {
     final cleanType = itemType.trim().toLowerCase();
     final cleanKey = itemKey.trim();
+    final cleanRole = _cleanFamilyItemRole(role);
 
     if (cleanType.isEmpty) {
       throw ArgumentError('An item type is required.');
@@ -1860,6 +3594,7 @@ class DatabaseHelper {
       'person_id': personId,
       'item_type': cleanType,
       'item_key': cleanKey,
+      'role': cleanRole,
       'created_at_milliseconds': DateTime.now().millisecondsSinceEpoch,
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
   }
@@ -1868,12 +3603,25 @@ class DatabaseHelper {
     required int personId,
     required String itemType,
     required String itemKey,
+    String? role,
   }) async {
+    final cleanType = itemType.trim().toLowerCase();
+    final cleanKey = itemKey.trim();
     final database = await this.database;
+
+    if (role == null) {
+      await database.delete(
+        'family_person_links',
+        where: 'person_id = ? AND item_type = ? AND item_key = ?',
+        whereArgs: [personId, cleanType, cleanKey],
+      );
+      return;
+    }
+
     await database.delete(
       'family_person_links',
-      where: 'person_id = ? AND item_type = ? AND item_key = ?',
-      whereArgs: [personId, itemType.trim().toLowerCase(), itemKey.trim()],
+      where: 'person_id = ? AND item_type = ? AND item_key = ? AND role = ?',
+      whereArgs: [personId, cleanType, cleanKey, _cleanFamilyItemRole(role)],
     );
   }
 
@@ -1881,9 +3629,11 @@ class DatabaseHelper {
     required String itemType,
     required String itemKey,
     required Iterable<int> personIds,
+    String role = defaultFamilyItemRole,
   }) async {
     final cleanType = itemType.trim().toLowerCase();
     final cleanKey = itemKey.trim();
+    final cleanRole = _cleanFamilyItemRole(role);
 
     if (cleanType.isEmpty) {
       throw ArgumentError('An item type is required.');
@@ -1906,10 +3656,108 @@ class DatabaseHelper {
           'person_id': personId,
           'item_type': cleanType,
           'item_key': cleanKey,
+          'role': cleanRole,
           'created_at_milliseconds': now,
         }, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
     });
+  }
+
+  Future<void> replaceFamilyPersonRolesForItem({
+    required String itemType,
+    required String itemKey,
+    required Iterable<FamilyItemPersonRole> links,
+  }) async {
+    final cleanType = itemType.trim().toLowerCase();
+    final cleanKey = itemKey.trim();
+
+    if (cleanType.isEmpty) {
+      throw ArgumentError('An item type is required.');
+    }
+    if (cleanKey.isEmpty) {
+      throw ArgumentError('An item key is required.');
+    }
+
+    final unique = <String, FamilyItemPersonRole>{};
+    for (final link in links) {
+      final cleanRole = _cleanFamilyItemRole(link.role);
+      unique['${link.personId}:$cleanRole'] = FamilyItemPersonRole(
+        personId: link.personId,
+        role: cleanRole,
+      );
+    }
+
+    final database = await this.database;
+    await database.transaction((transaction) async {
+      await transaction.delete(
+        'family_person_links',
+        where: 'item_type = ? AND item_key = ?',
+        whereArgs: [cleanType, cleanKey],
+      );
+
+      final now = DateTime.now().millisecondsSinceEpoch;
+      for (final link in unique.values) {
+        await transaction.insert('family_person_links', {
+          'person_id': link.personId,
+          'item_type': cleanType,
+          'item_key': cleanKey,
+          'role': link.role,
+          'created_at_milliseconds': now,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+    });
+  }
+
+  Future<List<FamilyItemPersonRole>> getFamilyPersonRolesForItem({
+    required String itemType,
+    required String itemKey,
+  }) async {
+    final database = await this.database;
+    final rows = await database.query(
+      'family_person_links',
+      columns: ['person_id', 'role'],
+      where: 'item_type = ? AND item_key = ?',
+      whereArgs: [itemType.trim().toLowerCase(), itemKey.trim()],
+      orderBy: 'created_at_milliseconds ASC, id ASC',
+    );
+
+    return rows
+        .map(
+          (row) => FamilyItemPersonRole(
+            personId: _mapInt(row['person_id']),
+            role: row['role'] as String? ?? defaultFamilyItemRole,
+          ),
+        )
+        .toList();
+  }
+
+  Future<List<FamilyPersonItemLink>> getFamilyPeopleWithRolesForItem({
+    required String itemType,
+    required String itemKey,
+  }) async {
+    final database = await this.database;
+    final rows = await database.rawQuery(
+      '''
+      SELECT p.*, l.role AS link_role
+      FROM family_people p
+      INNER JOIN family_person_links l ON l.person_id = p.id
+      WHERE l.item_type = ? AND l.item_key = ?
+      ORDER BY p.last_name COLLATE NOCASE,
+               p.first_name COLLATE NOCASE,
+               p.middle_name COLLATE NOCASE,
+               l.role COLLATE NOCASE
+      ''',
+      [itemType.trim().toLowerCase(), itemKey.trim()],
+    );
+
+    return rows
+        .map(
+          (row) => FamilyPersonItemLink(
+            person: FamilyPerson.fromMap(row),
+            role: row['link_role'] as String? ?? defaultFamilyItemRole,
+          ),
+        )
+        .toList();
   }
 
   Future<List<int>> getFamilyPersonIdsForItem({
@@ -1917,12 +3765,14 @@ class DatabaseHelper {
     required String itemKey,
   }) async {
     final database = await this.database;
-    final rows = await database.query(
-      'family_person_links',
-      columns: ['person_id'],
-      where: 'item_type = ? AND item_key = ?',
-      whereArgs: [itemType.trim().toLowerCase(), itemKey.trim()],
-      orderBy: 'created_at_milliseconds ASC, id ASC',
+    final rows = await database.rawQuery(
+      '''
+      SELECT DISTINCT person_id
+      FROM family_person_links
+      WHERE item_type = ? AND item_key = ?
+      ORDER BY person_id
+      ''',
+      [itemType.trim().toLowerCase(), itemKey.trim()],
     );
 
     return rows.map((row) => _mapInt(row['person_id'])).toList();
@@ -1935,7 +3785,7 @@ class DatabaseHelper {
     final database = await this.database;
     final rows = await database.rawQuery(
       '''
-      SELECT p.*
+      SELECT DISTINCT p.*
       FROM family_people p
       INNER JOIN family_person_links l ON l.person_id = p.id
       WHERE l.item_type = ? AND l.item_key = ?
@@ -1952,6 +3802,7 @@ class DatabaseHelper {
   Future<List<String>> getItemKeysForFamilyPeople({
     required Iterable<int> personIds,
     required String itemType,
+    String? role,
   }) async {
     final ids = personIds.toSet().toList();
     if (ids.isEmpty) return const [];
@@ -1959,22 +3810,58 @@ class DatabaseHelper {
     final cleanType = itemType.trim().toLowerCase();
     final database = await this.database;
     final placeholders = List.filled(ids.length, '?').join(',');
+    final roleFilter = role == null ? '' : ' AND role = ?';
+    final args = <Object?>[cleanType, ...ids];
+    if (role != null) args.add(_cleanFamilyItemRole(role));
 
-    final rows = await database.rawQuery(
-      '''
+    final rows = await database.rawQuery('''
       SELECT DISTINCT item_key
       FROM family_person_links
       WHERE item_type = ?
         AND person_id IN ($placeholders)
+        $roleFilter
       ORDER BY item_key COLLATE NOCASE
-      ''',
-      [cleanType, ...ids],
-    );
+      ''', args);
 
     return rows
         .map((row) => row['item_key'] as String? ?? '')
         .where((value) => value.isNotEmpty)
         .toList();
+  }
+
+  Future<List<Map<String, String>>> getFamilyItemLinksForPerson(
+    int personId,
+  ) async {
+    final database = await this.database;
+    final rows = await database.rawQuery(
+      '''
+      SELECT DISTINCT item_type, item_key, role
+      FROM family_person_links
+      WHERE person_id = ?
+      ORDER BY item_type COLLATE NOCASE, item_key COLLATE NOCASE
+      ''',
+      [personId],
+    );
+
+    return rows
+        .map(
+          (row) => <String, String>{
+            'itemType': row['item_type'] as String? ?? '',
+            'itemKey': row['item_key'] as String? ?? '',
+            'role': row['role'] as String? ?? defaultFamilyItemRole,
+          },
+        )
+        .where(
+          (row) =>
+              (row['itemType'] ?? '').isNotEmpty &&
+              (row['itemKey'] ?? '').isNotEmpty,
+        )
+        .toList();
+  }
+
+  static String _cleanFamilyItemRole(String role) {
+    final cleanRole = role.trim();
+    return cleanRole.isEmpty ? defaultFamilyItemRole : cleanRole;
   }
 
   Future<List<String>> getPhotoPathsForFamilyPeople(Iterable<int> personIds) {
@@ -2478,6 +4365,7 @@ class DatabaseHelper {
       grade: coin.grade,
       value: coin.value,
       notes: coin.notes,
+      imagePath: coin.imagePath,
     );
 
     return updateImportedCoin(originalCoin: coin, updatedCoin: updatedCoin);
@@ -2522,6 +4410,7 @@ class DatabaseHelper {
       'grade': coin.grade,
       'value': coin.value,
       'notes': coin.notes,
+      'image_path': coin.imagePath,
     };
   }
 
@@ -2538,6 +4427,7 @@ class DatabaseHelper {
       grade: row['grade'] as String? ?? '',
       value: _mapDouble(row['value']),
       notes: row['notes'] as String? ?? '',
+      imagePath: row['image_path'] as String? ?? '',
     );
   }
 
@@ -3054,6 +4944,305 @@ class DatabaseHelper {
       'untracked': _mapInt(row['untracked']),
     };
   }
+
+  static Future<void> _createDocumentsTable(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL DEFAULT '',
+        document_date TEXT NOT NULL DEFAULT '',
+        document_type TEXT NOT NULL DEFAULT '',
+        people TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT '',
+        file_path TEXT NOT NULL,
+        created_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        updated_at_milliseconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS documents_title_index
+      ON documents(title COLLATE NOCASE)
+    ''');
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS documents_type_index
+      ON documents(document_type COLLATE NOCASE)
+    ''');
+  }
+
+  Future<List<DocumentRecord>> getDocuments() async {
+    final database = await this.database;
+    final rows = await database.query(
+      'documents',
+      orderBy: 'title COLLATE NOCASE, id DESC',
+    );
+    return rows.map(DocumentRecord.fromMap).toList();
+  }
+
+  Future<int> insertDocument(DocumentRecord document) async {
+    final database = await this.database;
+    final map = document.toMap();
+    map.remove('id');
+    return database.insert('documents', map);
+  }
+
+  Future<int> updateDocument(DocumentRecord document) async {
+    final id = document.id;
+    if (id == null) throw ArgumentError('A document ID is required.');
+    final database = await this.database;
+    final map = document.toMap();
+    map.remove('id');
+    return database.update('documents', map, where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<int> deleteDocument(int id) async {
+    final database = await this.database;
+    return database.delete('documents', where: 'id = ?', whereArgs: [id]);
+  }
+
+  static Future<void> _createNewspaperClippingsTables(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS newspaper_clippings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL DEFAULT '',
+        newspaper_name TEXT NOT NULL DEFAULT '',
+        publication_date TEXT NOT NULL DEFAULT '',
+        page_number TEXT NOT NULL DEFAULT '',
+        location TEXT NOT NULL DEFAULT '',
+        article_type TEXT NOT NULL DEFAULT '',
+        headline TEXT NOT NULL DEFAULT '',
+        transcription TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT '',
+        file_path TEXT NOT NULL DEFAULT '',
+        created_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        updated_at_milliseconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS newspaper_clippings_title_index
+      ON newspaper_clippings(title COLLATE NOCASE)
+    ''');
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS newspaper_clippings_newspaper_index
+      ON newspaper_clippings(newspaper_name COLLATE NOCASE)
+    ''');
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS newspaper_clippings_date_index
+      ON newspaper_clippings(publication_date)
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS newspaper_clipping_people (
+        clipping_id INTEGER NOT NULL,
+        family_person_id INTEGER NOT NULL,
+        role TEXT NOT NULL DEFAULT 'Mentioned',
+        created_at_milliseconds INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (clipping_id, family_person_id)
+      )
+    ''');
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS newspaper_clipping_people_person_index
+      ON newspaper_clipping_people(family_person_id, clipping_id)
+    ''');
+  }
+
+  Future<List<Map<String, Object?>>> getNewspaperClippings({
+    String searchText = '',
+  }) async {
+    final database = await this.database;
+    final cleanSearch = searchText.trim();
+    if (cleanSearch.isEmpty) {
+      return database.query(
+        'newspaper_clippings',
+        orderBy:
+            'publication_date DESC, newspaper_name COLLATE NOCASE, title COLLATE NOCASE, id DESC',
+      );
+    }
+
+    final like = '%$cleanSearch%';
+    return database.query(
+      'newspaper_clippings',
+      where: '''
+        title LIKE ? COLLATE NOCASE OR
+        headline LIKE ? COLLATE NOCASE OR
+        newspaper_name LIKE ? COLLATE NOCASE OR
+        publication_date LIKE ? COLLATE NOCASE OR
+        location LIKE ? COLLATE NOCASE OR
+        article_type LIKE ? COLLATE NOCASE OR
+        transcription LIKE ? COLLATE NOCASE OR
+        description LIKE ? COLLATE NOCASE OR
+        source LIKE ? COLLATE NOCASE
+      ''',
+      whereArgs: List<Object?>.filled(9, like),
+      orderBy:
+          'publication_date DESC, newspaper_name COLLATE NOCASE, title COLLATE NOCASE, id DESC',
+    );
+  }
+
+  Future<Map<String, Object?>?> getNewspaperClipping(int id) async {
+    final database = await this.database;
+    final rows = await database.query(
+      'newspaper_clippings',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first;
+  }
+
+  Future<int> insertNewspaperClipping(
+    Map<String, Object?> clipping, {
+    Iterable<FamilyItemPersonRole> people = const [],
+  }) async {
+    final database = await this.database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final map = Map<String, Object?>.from(clipping)
+      ..remove('id')
+      ..putIfAbsent('created_at_milliseconds', () => now)
+      ..['updated_at_milliseconds'] = now;
+
+    return database.transaction((txn) async {
+      final clippingId = await txn.insert('newspaper_clippings', map);
+      await _replaceNewspaperClippingPeopleTxn(txn, clippingId, people);
+      return clippingId;
+    });
+  }
+
+  Future<int> updateNewspaperClipping(
+    int id,
+    Map<String, Object?> clipping, {
+    Iterable<FamilyItemPersonRole>? people,
+  }) async {
+    final database = await this.database;
+    final map = Map<String, Object?>.from(clipping)
+      ..remove('id')
+      ..['updated_at_milliseconds'] = DateTime.now().millisecondsSinceEpoch;
+
+    return database.transaction((txn) async {
+      final updated = await txn.update(
+        'newspaper_clippings',
+        map,
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      if (people != null) {
+        await _replaceNewspaperClippingPeopleTxn(txn, id, people);
+      }
+      return updated;
+    });
+  }
+
+  Future<void> replaceNewspaperClippingPeople(
+    int clippingId,
+    Iterable<FamilyItemPersonRole> people,
+  ) async {
+    final database = await this.database;
+    await database.transaction(
+      (txn) => _replaceNewspaperClippingPeopleTxn(txn, clippingId, people),
+    );
+  }
+
+  static Future<void> _replaceNewspaperClippingPeopleTxn(
+    DatabaseExecutor database,
+    int clippingId,
+    Iterable<FamilyItemPersonRole> people,
+  ) async {
+    await database.delete(
+      'newspaper_clipping_people',
+      where: 'clipping_id = ?',
+      whereArgs: [clippingId],
+    );
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final seen = <int>{};
+    for (final person in people) {
+      if (!seen.add(person.personId)) continue;
+      await database.insert('newspaper_clipping_people', {
+        'clipping_id': clippingId,
+        'family_person_id': person.personId,
+        'role': person.role.trim().isEmpty ? 'Mentioned' : person.role.trim(),
+        'created_at_milliseconds': now,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+  }
+
+  Future<List<FamilyPersonItemLink>> getNewspaperClippingPeople(
+    int clippingId,
+  ) async {
+    final database = await this.database;
+    final rows = await database.rawQuery(
+      '''
+      SELECT p.*, l.role AS item_link_role
+      FROM newspaper_clipping_people l
+      INNER JOIN family_people p ON p.id = l.family_person_id
+      WHERE l.clipping_id = ?
+      ORDER BY p.last_name COLLATE NOCASE, p.first_name COLLATE NOCASE, p.id
+    ''',
+      [clippingId],
+    );
+
+    return rows
+        .map(
+          (row) => FamilyPersonItemLink(
+            person: FamilyPerson.fromMap(row),
+            role: row['item_link_role']?.toString() ?? 'Mentioned',
+          ),
+        )
+        .toList();
+  }
+
+  Future<List<Map<String, Object?>>> getNewspaperClippingsForFamilyPerson(
+    int familyPersonId,
+  ) async {
+    final database = await this.database;
+    return database.rawQuery(
+      '''
+      SELECT c.*, l.role AS person_role
+      FROM newspaper_clipping_people l
+      INNER JOIN newspaper_clippings c ON c.id = l.clipping_id
+      WHERE l.family_person_id = ?
+      ORDER BY c.publication_date DESC, c.newspaper_name COLLATE NOCASE, c.title COLLATE NOCASE
+    ''',
+      [familyPersonId],
+    );
+  }
+
+  Future<int> deleteNewspaperClipping(int id) async {
+    final database = await this.database;
+    return database.transaction((txn) async {
+      await txn.delete(
+        'newspaper_clipping_people',
+        where: 'clipping_id = ?',
+        whereArgs: [id],
+      );
+      return txn.delete(
+        'newspaper_clippings',
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    });
+  }
+}
+
+class FamilyItemPersonRole {
+  final int personId;
+  final String role;
+
+  const FamilyItemPersonRole({
+    required this.personId,
+    this.role = DatabaseHelper.defaultFamilyItemRole,
+  });
+}
+
+class FamilyPersonItemLink {
+  final FamilyPerson person;
+  final String role;
+
+  const FamilyPersonItemLink({
+    required this.person,
+    this.role = DatabaseHelper.defaultFamilyItemRole,
+  });
 }
 
 class CollectionSummary {
