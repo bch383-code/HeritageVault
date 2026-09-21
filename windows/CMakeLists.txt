@@ -115,3 +115,6 @@ install(
 )
 
 
+
+
+set(PDFIUM_VERSION "4638" CACHE STRING "")

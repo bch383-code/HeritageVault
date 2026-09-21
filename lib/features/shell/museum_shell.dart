@@ -18,6 +18,7 @@ import '../../screens/postcards_screen.dart';
 import '../../screens/valuables_screen.dart';
 import '../../screens/antiques_screen.dart';
 import '../../screens/photos_screen.dart';
+import '../../screens/videos_screen.dart';
 import '../../screens/sports_cards_screen.dart';
 import '../../screens/family_tree_screen.dart';
 import '../../screens/stories_screen.dart';
@@ -44,6 +45,7 @@ enum _VaultPage {
   postcards,
   valuables,
   photos,
+  videos,
   documents,
   familyTree,
   atlasBook,
@@ -100,6 +102,8 @@ class _MuseumShellState extends State<MuseumShell> {
         return const ValuablesScreen();
       case _VaultPage.photos:
         return const PhotosScreen();
+      case _VaultPage.videos:
+        return const VideosScreen();
       case _VaultPage.documents:
         return const DocumentsScreen();
       case _VaultPage.familyTree:
@@ -220,9 +224,9 @@ class _VaultSidebar extends StatelessWidget {
       child: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 18, 16, 14),
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
             child: SizedBox(
-              height: 142,
+              height: 108,
               width: double.infinity,
               child: Image.asset(
                 'assets/branding/heirloom_atlas_logo.png',
@@ -236,10 +240,7 @@ class _VaultSidebar extends StatelessWidget {
               ),
             ),
           ),
-          Divider(
-            height: 1,
-            color: antiqueGold.withValues(alpha: .22),
-          ),
+          Divider(height: 1, color: antiqueGold.withValues(alpha: .22)),
           Expanded(
             child: ListView(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
@@ -258,6 +259,13 @@ class _VaultSidebar extends StatelessWidget {
                   label: 'Photos',
                   selected: selectedPage == _VaultPage.photos,
                   onTap: () => onSelect(_VaultPage.photos),
+                ),
+                _SidebarItem(
+                  icon: Icons.video_library_outlined,
+                  selectedIcon: Icons.video_library_outlined,
+                  label: 'Videos',
+                  selected: selectedPage == _VaultPage.videos,
+                  onTap: () => onSelect(_VaultPage.videos),
                 ),
                 _SidebarItem(
                   icon: Icons.account_tree_outlined,
@@ -334,7 +342,8 @@ class _VaultSidebar extends StatelessWidget {
                                   icon: Icons.grid_view_outlined,
                                   selectedIcon: Icons.grid_view_outlined,
                                   label: 'Coin Series',
-                                  selected: selectedPage == _VaultPage.coinSeries,
+                                  selected:
+                                      selectedPage == _VaultPage.coinSeries,
                                   onTap: () => onSelect(_VaultPage.coinSeries),
                                   compact: true,
                                 ),
@@ -342,7 +351,8 @@ class _VaultSidebar extends StatelessWidget {
                                   icon: Icons.folder_outlined,
                                   selectedIcon: Icons.folder_outlined,
                                   label: 'Collection',
-                                  selected: selectedPage == _VaultPage.collection,
+                                  selected:
+                                      selectedPage == _VaultPage.collection,
                                   onTap: () => onSelect(_VaultPage.collection),
                                   compact: true,
                                 ),
@@ -350,7 +360,8 @@ class _VaultSidebar extends StatelessWidget {
                                   icon: Icons.upload_file_outlined,
                                   selectedIcon: Icons.upload_file_outlined,
                                   label: 'Import Collection',
-                                  selected: selectedPage == _VaultPage.coinImport,
+                                  selected:
+                                      selectedPage == _VaultPage.coinImport,
                                   onTap: () => onSelect(_VaultPage.coinImport),
                                   compact: true,
                                 ),
@@ -430,52 +441,53 @@ class _VaultSidebar extends StatelessWidget {
               ],
             ),
           ),
-          Divider(
-            height: 1,
-            color: antiqueGold.withValues(alpha: .22),
-          ),
+          const Divider(height: 1, thickness: 1, color: Color(0xFFA68B4F)),
           Padding(
-            padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
+            padding: const EdgeInsets.fromLTRB(10, 4, 10, 0),
             child: _SidebarItem(
               icon: Icons.add_a_photo_outlined,
               selectedIcon: Icons.add_a_photo_outlined,
               label: 'Quick Capture',
               selected: selectedPage == _VaultPage.quickCapture,
               onTap: () => onSelect(_VaultPage.quickCapture),
+              compact: true,
             ),
           ),
           const Padding(
-            padding: EdgeInsets.fromLTRB(10, 6, 10, 0),
+            padding: EdgeInsets.fromLTRB(10, 0, 10, 0),
             child: AddCollectionSidebarButton(),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(10, 6, 10, 0),
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 0),
             child: _SidebarItem(
               icon: Icons.sync_outlined,
               selectedIcon: Icons.sync_outlined,
               label: 'Sync & Storage',
               selected: selectedPage == _VaultPage.syncStorage,
               onTap: () => onSelect(_VaultPage.syncStorage),
+              compact: true,
             ),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(10, 6, 10, 0),
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 0),
             child: _SidebarItem(
               icon: Icons.help_outline,
               selectedIcon: Icons.help_outline,
               label: 'Help & Getting Started',
               selected: selectedPage == _VaultPage.help,
               onTap: () => onSelect(_VaultPage.help),
+              compact: true,
             ),
           ),
           Padding(
-            padding: const EdgeInsets.all(10),
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 4),
             child: _SidebarItem(
               icon: Icons.settings_outlined,
               selectedIcon: Icons.settings_outlined,
               label: 'Settings',
               selected: selectedPage == _VaultPage.settings,
               onTap: () => onSelect(_VaultPage.settings),
+              compact: true,
             ),
           ),
         ],
@@ -513,16 +525,11 @@ class _SidebarItem extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Material(
-        color: selected
-            ? const Color(0xFF0A2943)
-            : Colors.transparent,
+        color: selected ? const Color(0xFF0A2943) : Colors.transparent,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(3),
           side: selected
-              ? BorderSide(
-                  color: antiqueGold.withValues(alpha: .44),
-                  width: .8,
-                )
+              ? BorderSide(color: antiqueGold.withValues(alpha: .44), width: .8)
               : BorderSide.none,
         ),
         child: InkWell(
@@ -538,9 +545,7 @@ class _SidebarItem extends StatelessWidget {
                 Container(
                   width: 2,
                   height: compact ? 18 : 20,
-                  color: selected
-                      ? antiqueGold
-                      : Colors.transparent,
+                  color: selected ? antiqueGold : Colors.transparent,
                 ),
                 const SizedBox(width: 9),
                 Icon(
@@ -575,7 +580,6 @@ class _SidebarItem extends StatelessWidget {
   }
 }
 
-
 class _QuickCapturePage extends StatefulWidget {
   final VoidCallback onOpenPhotos;
   final ValueChanged<String?> onOpenSportsCards;
@@ -600,32 +604,32 @@ class _QuickCapturePageState extends State<_QuickCapturePage> {
     (
       name: 'Photos',
       icon: Icons.photo_library_outlined,
-      note: 'Add family photos or images to the photo archive.'
+      note: 'Add family photos or images to the photo archive.',
     ),
     (
       name: 'Antiques',
       icon: Icons.inventory_2_outlined,
-      note: 'Capture an antique and document its history.'
+      note: 'Capture an antique and document its history.',
     ),
     (
       name: 'Valuables',
       icon: Icons.diamond_outlined,
-      note: 'Add a valuable with photos and descriptive details.'
+      note: 'Add a valuable with photos and descriptive details.',
     ),
     (
       name: 'Coins',
       icon: Icons.monetization_on_outlined,
-      note: 'Capture a coin for identification or cataloging.'
+      note: 'Capture a coin for identification or cataloging.',
     ),
     (
       name: 'Sports Cards',
       icon: Icons.sports_baseball_outlined,
-      note: 'Capture the front and back of a sports card.'
+      note: 'Capture the front and back of a sports card.',
     ),
     (
       name: 'Documents',
       icon: Icons.description_outlined,
-      note: 'Scan or add a family document.'
+      note: 'Scan or add a family document.',
     ),
   ];
 
@@ -641,9 +645,7 @@ class _QuickCapturePageState extends State<_QuickCapturePage> {
   }
 
   Future<List<String>> _pickImages() async {
-    final file = await FilePicker.pickFile(
-      type: FileType.image,
-    );
+    final file = await FilePicker.pickFile(type: FileType.image);
     final filePath = file?.path;
     if (filePath == null || filePath.trim().isEmpty) {
       return const <String>[];
@@ -836,8 +838,8 @@ class _QuickCapturePageState extends State<_QuickCapturePage> {
               final columns = constraints.maxWidth >= 1050
                   ? 3
                   : constraints.maxWidth >= 680
-                      ? 2
-                      : 1;
+                  ? 2
+                  : 1;
               final width =
                   (constraints.maxWidth - ((columns - 1) * 12)) / columns;
               return Wrap(
@@ -854,9 +856,7 @@ class _QuickCapturePageState extends State<_QuickCapturePage> {
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(4),
                         side: BorderSide(
-                          color: selected
-                              ? gold
-                              : gold.withValues(alpha: .24),
+                          color: selected ? gold : gold.withValues(alpha: .24),
                         ),
                       ),
                       child: InkWell(
@@ -956,10 +956,7 @@ class _QuickCapturePageState extends State<_QuickCapturePage> {
             const SizedBox(height: 18),
             Text(
               'Adding to: $_selectedCollection',
-              style: const TextStyle(
-                color: cream,
-                fontWeight: FontWeight.w800,
-              ),
+              style: const TextStyle(color: cream, fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 6),
             const Text(
@@ -1112,9 +1109,9 @@ class _ComingSoonPage extends StatelessWidget {
                   Text(
                     'COMING LATER',
                     style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                          color: gold,
-                          letterSpacing: 1.1,
-                        ),
+                      color: gold,
+                      letterSpacing: 1.1,
+                    ),
                   ),
                 ],
               ),

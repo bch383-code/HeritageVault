@@ -1,5 +1,4 @@
 // LOCKED PHOTOS DASHBOARD — matches approved navy/gold/cream visual blueprint.
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -86,16 +85,9 @@ class _PhotosScreenState extends State<PhotosScreen> {
   final Set<String> _quickFilters = <String>{};
   int? _selectedPhotoSourceId;
   String _photoSortMode = 'date_newest';
+  String _folderPhotoFilter = 'all';
   Set<String> _recentlyAddedPaths = <String>{};
   Set<String> _atlasFavoritePhotoPaths = <String>{};
-
-  // Keep Windows/desktop photo sources synchronized with changes made
-  // outside Heirloom Atlas (Explorer, OneDrive, scanners, etc.).
-  final List<StreamSubscription<FileSystemEvent>> _photoSourceWatchers =
-      <StreamSubscription<FileSystemEvent>>[];
-  Timer? _photoSourceChangeDebounce;
-  bool _sourceReconciliationRunning = false;
-  bool _sourceReconciliationQueued = false;
 
   // Persisted as JSON in app settings:
   // { "top-level folder": "chosen photo file path" }
@@ -121,87 +113,13 @@ class _PhotosScreenState extends State<PhotosScreen> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _handleInitialQuickCapture();
       });
-
-      // Reconcile once after startup so files added while Heirloom Atlas was
-      // closed are discovered, then keep watching for Explorer/OneDrive
-      // changes while this screen is alive.
-      _startPhotoSourceMonitoring();
-      unawaited(_reconcilePhotoSources(reason: 'startup'));
     });
   }
 
   @override
   void dispose() {
-    _photoSourceChangeDebounce?.cancel();
-    for (final watcher in _photoSourceWatchers) {
-      unawaited(watcher.cancel());
-    }
-    _photoSourceWatchers.clear();
     _searchController.dispose();
     super.dispose();
-  }
-
-  void _startPhotoSourceMonitoring() {
-    for (final watcher in _photoSourceWatchers) {
-      unawaited(watcher.cancel());
-    }
-    _photoSourceWatchers.clear();
-
-    for (final source in _photoSources) {
-      final rootPath = (source['root_path'] as String? ?? '').trim();
-      if (rootPath.isEmpty) continue;
-
-      final root = Directory(rootPath);
-      if (!root.existsSync()) continue;
-
-      try {
-        final watcher = root
-            .watch(recursive: true)
-            .listen(
-              (event) {
-                final extension = path.extension(event.path).toLowerCase();
-                if (!_extensions.contains(extension)) return;
-
-                // Explorer can emit several events for one copy/rename. Debounce
-                // them into one quiet reconciliation pass.
-                _photoSourceChangeDebounce?.cancel();
-                _photoSourceChangeDebounce = Timer(
-                  const Duration(seconds: 2),
-                  () => unawaited(
-                    _reconcilePhotoSources(reason: 'filesystem change'),
-                  ),
-                );
-              },
-              onError: (Object error, StackTrace stackTrace) {
-                debugPrint('PHOTO SOURCE WATCH ERROR: $rootPath: $error');
-              },
-            );
-        _photoSourceWatchers.add(watcher);
-      } catch (error) {
-        debugPrint('PHOTO SOURCE WATCH START ERROR: $rootPath: $error');
-      }
-    }
-  }
-
-  Future<void> _reconcilePhotoSources({required String reason}) async {
-    if (!mounted) return;
-    if (_sourceReconciliationRunning) {
-      _sourceReconciliationQueued = true;
-      return;
-    }
-
-    _sourceReconciliationRunning = true;
-    try {
-      do {
-        _sourceReconciliationQueued = false;
-        debugPrint('PHOTO SOURCE RECONCILE: $reason');
-        await _scanLibrary(runAutomaticIntake: false);
-      } while (mounted && _sourceReconciliationQueued);
-    } catch (error) {
-      debugPrint('PHOTO SOURCE RECONCILE ERROR: $error');
-    } finally {
-      _sourceReconciliationRunning = false;
-    }
   }
 
   Future<void> _loadOrganizerCounts() async {
@@ -1528,26 +1446,15 @@ class _PhotosScreenState extends State<PhotosScreen> {
               final quickLocationController = TextEditingController(
                 text: metadata.location,
               );
-              final quickDescriptionController = TextEditingController(
-                text: metadata.description,
-              );
-              final quickTagsController = TextEditingController(
-                text: metadata.tags.join(', '),
-              );
 
               Future<void> saveQuickDetails() async {
                 final updated = PhotoCatalogMetadata(
                   filePath: metadata.filePath,
                   people: metadata.people,
-                  tags: quickTagsController.text
-                      .split(',')
-                      .map((value) => value.trim())
-                      .where((value) => value.isNotEmpty)
-                      .toSet()
-                      .toList(),
+                  tags: metadata.tags,
                   approximateDate: quickDateController.text.trim(),
                   location: quickLocationController.text.trim(),
-                  description: quickDescriptionController.text.trim(),
+                  description: metadata.description,
                   backWriting: metadata.backWriting,
                   notes: metadata.notes,
                 );
@@ -1558,13 +1465,6 @@ class _PhotosScreenState extends State<PhotosScreen> {
                 }
                 if (updated.location != metadata.location) {
                   changedFields.add('Location');
-                }
-                if (updated.description != metadata.description) {
-                  changedFields.add('Description');
-                }
-                if (updated.tags.join('\u0000') !=
-                    metadata.tags.join('\u0000')) {
-                  changedFields.add('Tags');
                 }
 
                 await _databaseHelper.savePhotoCatalogMetadata(updated);
@@ -1596,24 +1496,6 @@ class _PhotosScreenState extends State<PhotosScreen> {
                       'in the pending sync queue.',
                     );
                   }
-
-                  final writeResult = await PhotoMetadataWriter.write(
-                    filePath: currentPhoto.filePath,
-                    metadata: updated,
-                  );
-                  if (!writeResult.success) {
-                    if (!mounted || !dialogContext.mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          'Details saved to Heirloom Atlas, but the original file '
-                          'could not be updated: ${writeResult.message}',
-                        ),
-                        duration: const Duration(seconds: 6),
-                      ),
-                    );
-                    return;
-                  }
                 }
 
                 if (!mounted || !dialogContext.mounted) return;
@@ -1626,7 +1508,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                       changedFields.isEmpty
                           ? 'No photo details changed.'
                           : pendingVerified
-                          ? 'Photo details saved and written to the original file.'
+                          ? 'Photo details saved and added to Pending.'
                           : 'Photo details saved.',
                     ),
                     duration: const Duration(seconds: 4),
@@ -2218,45 +2100,6 @@ class _PhotosScreenState extends State<PhotosScreen> {
                                                 },
                                               ),
                                               const SizedBox(height: 10),
-                                              TextFormField(
-                                                controller:
-                                                    quickDescriptionController,
-                                                minLines: 2,
-                                                maxLines: 4,
-                                                decoration: const InputDecoration(
-                                                  labelText:
-                                                      'Description / Caption',
-                                                  hintText:
-                                                      'What is happening in this photo?',
-                                                  prefixIcon: Icon(
-                                                    Icons.notes_outlined,
-                                                  ),
-                                                  border: OutlineInputBorder(),
-                                                  isDense: true,
-                                                ),
-                                              ),
-                                              const SizedBox(height: 10),
-                                              TextFormField(
-                                                controller: quickTagsController,
-                                                textInputAction:
-                                                    TextInputAction.done,
-                                                decoration: const InputDecoration(
-                                                  labelText: 'Tags / Keywords',
-                                                  hintText:
-                                                      'Family, vacation, softball',
-                                                  prefixIcon: Icon(
-                                                    Icons.sell_outlined,
-                                                  ),
-                                                  helperText:
-                                                      'Separate tags with commas',
-                                                  border: OutlineInputBorder(),
-                                                  isDense: true,
-                                                ),
-                                                onFieldSubmitted: (_) async {
-                                                  await saveQuickDetails();
-                                                },
-                                              ),
-                                              const SizedBox(height: 10),
                                               Align(
                                                 alignment:
                                                     Alignment.centerRight,
@@ -2553,7 +2396,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                                                       Icons.edit_note_outlined,
                                                     ),
                                                     label: const Text(
-                                                      'More Details',
+                                                      'Edit Details',
                                                     ),
                                                   ),
                                                   OutlinedButton.icon(
@@ -4003,7 +3846,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                     child: entries.isEmpty
                         ? const Center(child: Text('Photo Trash is empty.'))
                         : ListView.separated(
-                            padding: const EdgeInsets.all(10),
+                            padding: const EdgeInsets.all(14),
                             itemCount: entries.length,
                             separatorBuilder: (_, _) =>
                                 const Divider(height: 1),
@@ -5179,7 +5022,6 @@ class _PhotosScreenState extends State<PhotosScreen> {
           mergedByPair[key] = match;
         }
       }
-
       final matches = mergedByPair.values.toList()
         ..sort(
           (a, b) => _dbInt(b['similarity']).compareTo(_dbInt(a['similarity'])),
@@ -5659,11 +5501,16 @@ class _PhotosScreenState extends State<PhotosScreen> {
         final aDate = _catalogDateForSort(a);
         final bDate = _catalogDateForSort(b);
 
-        // Prefer the cataloged/embedded heritage date. If a photo has no
-        // catalog date yet, use its file modified date as a practical fallback.
-        final aValue = aDate?.millisecondsSinceEpoch ?? a.modifiedMilliseconds;
-        final bValue = bDate?.millisecondsSinceEpoch ?? b.modifiedMilliseconds;
-        final result = aValue.compareTo(bValue);
+        // A filesystem created/modified timestamp is not a trustworthy
+        // historical photo date. Unknown dates stay at the end instead of
+        // being mixed into the chronology.
+        if (aDate == null && bDate == null) {
+          return a.fileName.toLowerCase().compareTo(b.fileName.toLowerCase());
+        }
+        if (aDate == null) return 1;
+        if (bDate == null) return -1;
+
+        final result = aDate.compareTo(bDate);
         if (result != 0) {
           return _photoSortMode == 'date_newest' ? -result : result;
         }
@@ -5700,9 +5547,30 @@ class _PhotosScreenState extends State<PhotosScreen> {
       _photos.where(_matchesSearch).toList();
 
   List<VaultPhoto> get _filteredPhotosInCurrentFolder {
-    return _filteredPhotos
-        .where((photo) => photo.relativeFolder == _currentFolder)
-        .toList();
+    final photos = _filteredPhotos.where(
+      (photo) => photo.relativeFolder == _currentFolder,
+    );
+
+    final filtered = _currentFolder.isEmpty
+        ? photos
+        : photos.where((photo) {
+            final metadata = _catalogByPath[photo.filePath];
+            switch (_folderPhotoFilter) {
+              case 'no_people':
+                return metadata == null || metadata.people.isEmpty;
+              case 'no_date':
+                return metadata == null ||
+                    metadata.approximateDate.trim().isEmpty;
+              case 'no_location':
+                return metadata == null || metadata.location.trim().isEmpty;
+              case 'no_description':
+                return metadata == null || metadata.description.trim().isEmpty;
+              default:
+                return true;
+            }
+          });
+
+    return _sortedPhotos(filtered);
   }
 
   int get _uncatalogedCount => _photos
@@ -7594,15 +7462,34 @@ class _PhotosScreenState extends State<PhotosScreen> {
         _showAllPhotosOnLanding ||
         _quickFilters.isNotEmpty ||
         _selectedPhotoSourceId != null;
-    final photoResults = _sortedPhotos(
-      _currentFolder.isEmpty
-          ? _filteredPhotos
-          : _filteredPhotos.where((photo) {
-              final prefix = '$_currentFolder${path.separator}';
-              return photo.relativeFolder == _currentFolder ||
-                  photo.relativeFolder.startsWith(prefix);
-            }),
-    );
+    final folderScopedPhotos = _currentFolder.isEmpty
+        ? _filteredPhotos
+        : _filteredPhotos.where((photo) {
+            final prefix = '$_currentFolder${path.separator}';
+            return photo.relativeFolder == _currentFolder ||
+                photo.relativeFolder.startsWith(prefix);
+          });
+
+    final folderFilteredPhotos = _currentFolder.isEmpty
+        ? folderScopedPhotos
+        : folderScopedPhotos.where((photo) {
+            final metadata = _catalogByPath[photo.filePath];
+            switch (_folderPhotoFilter) {
+              case 'no_people':
+                return metadata == null || metadata.people.isEmpty;
+              case 'no_date':
+                return metadata == null ||
+                    metadata.approximateDate.trim().isEmpty;
+              case 'no_location':
+                return metadata == null || metadata.location.trim().isEmpty;
+              case 'no_description':
+                return metadata == null || metadata.description.trim().isEmpty;
+              default:
+                return true;
+            }
+          });
+
+    final photoResults = _sortedPhotos(folderFilteredPhotos);
 
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
@@ -7718,6 +7605,77 @@ class _PhotosScreenState extends State<PhotosScreen> {
               ],
               const SizedBox(width: 8),
               if (showPhotoResults) ...[
+                if (_currentFolder.isNotEmpty) ...[
+                  PopupMenuButton<String>(
+                    tooltip: 'Filter this folder',
+                    initialValue: _folderPhotoFilter,
+                    onSelected: (value) {
+                      setState(() => _folderPhotoFilter = value);
+                    },
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(value: 'all', child: Text('All photos')),
+                      PopupMenuDivider(),
+                      PopupMenuItem(
+                        value: 'no_people',
+                        child: Text('No people'),
+                      ),
+                      PopupMenuItem(value: 'no_date', child: Text('No date')),
+                      PopupMenuItem(
+                        value: 'no_location',
+                        child: Text('No location'),
+                      ),
+                      PopupMenuItem(
+                        value: 'no_description',
+                        child: Text('No description'),
+                      ),
+                    ],
+                    child: Container(
+                      height: 34,
+                      padding: const EdgeInsets.symmetric(horizontal: 11),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0A2946),
+                        borderRadius: BorderRadius.circular(2),
+                        border: Border.all(
+                          color: _heritageGold.withValues(alpha: .38),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.filter_list,
+                            color: _heritageGold,
+                            size: 16,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            _folderPhotoFilter == 'all'
+                                ? 'Filter'
+                                : _folderPhotoFilter == 'no_people'
+                                ? 'No People'
+                                : _folderPhotoFilter == 'no_date'
+                                ? 'No Date'
+                                : _folderPhotoFilter == 'no_location'
+                                ? 'No Location'
+                                : 'No Description',
+                            style: TextStyle(
+                              color: _heritageCream,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Icon(
+                            Icons.expand_more,
+                            color: _heritageGold,
+                            size: 16,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                ],
                 PopupMenuButton<String>(
                   tooltip: 'Sort photos',
                   initialValue: _photoSortMode,
@@ -9020,6 +8978,16 @@ class _PhotosScreenState extends State<PhotosScreen> {
                   icon: const Icon(Icons.edit_note_outlined),
                   label: const Text('Edit Selected'),
                 ),
+                const SizedBox(width: 4),
+                TextButton.icon(
+                  onPressed: _selectedPaths.isEmpty
+                      ? null
+                      : () => _moveSelectedSearchPhotosToTrash(
+                          _filteredPhotosInCurrentFolder,
+                        ),
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('Move to Photo Trash'),
+                ),
                 const SizedBox(width: 8),
               ],
               if (_currentFolder.isNotEmpty) ...[
@@ -9305,8 +9273,151 @@ class _PhotosScreenState extends State<PhotosScreen> {
                                   ?.copyWith(fontWeight: FontWeight.w800),
                             ),
                           ),
+                          if (_currentFolder.isNotEmpty) ...[
+                            PopupMenuButton<String>(
+                              tooltip: 'Filter this folder',
+                              initialValue: _folderPhotoFilter,
+                              onSelected: (value) {
+                                setState(() => _folderPhotoFilter = value);
+                              },
+                              itemBuilder: (_) => const [
+                                PopupMenuItem(
+                                  value: 'all',
+                                  child: Text('All photos'),
+                                ),
+                                PopupMenuDivider(),
+                                PopupMenuItem(
+                                  value: 'no_people',
+                                  child: Text('No people'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'no_date',
+                                  child: Text('No date'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'no_location',
+                                  child: Text('No location'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'no_description',
+                                  child: Text('No description'),
+                                ),
+                              ],
+                              child: OutlinedButton.icon(
+                                onPressed: null,
+                                icon: const Icon(Icons.filter_list, size: 16),
+                                label: Text(
+                                  _folderPhotoFilter == 'all'
+                                      ? 'Filter'
+                                      : _folderPhotoFilter == 'no_people'
+                                      ? 'No People'
+                                      : _folderPhotoFilter == 'no_date'
+                                      ? 'No Date'
+                                      : _folderPhotoFilter == 'no_location'
+                                      ? 'No Location'
+                                      : 'No Description',
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            PopupMenuButton<String>(
+                              tooltip: 'Sort this folder',
+                              initialValue: _photoSortMode,
+                              onSelected: (value) {
+                                setState(() => _photoSortMode = value);
+                              },
+                              itemBuilder: (_) => const [
+                                PopupMenuItem(
+                                  value: 'date_newest',
+                                  child: Text('Date: Newest First'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'date_oldest',
+                                  child: Text('Date: Oldest First'),
+                                ),
+                                PopupMenuDivider(),
+                                PopupMenuItem(
+                                  value: 'name_a_z',
+                                  child: Text('Name: A–Z'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'name_z_a',
+                                  child: Text('Name: Z–A'),
+                                ),
+                              ],
+                              child: OutlinedButton.icon(
+                                onPressed: null,
+                                icon: const Icon(Icons.swap_vert, size: 16),
+                                label: Text(_photoSortLabel),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            OutlinedButton.icon(
+                              onPressed: _toggleSelectionMode,
+                              icon: Icon(
+                                _selectionMode
+                                    ? Icons.close
+                                    : Icons.check_box_outlined,
+                              ),
+                              label: Text(
+                                _selectionMode ? 'Cancel' : 'Select Photos',
+                              ),
+                            ),
+                          ],
                         ],
                       ),
+                      if (_currentFolder.isNotEmpty && _selectionMode) ...[
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Wrap(
+                            alignment: WrapAlignment.end,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            spacing: 8,
+                            runSpacing: 6,
+                            children: [
+                              Text(
+                                '${_selectedPaths.length} selected',
+                                style: TextStyle(
+                                  color: _heritageGold,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              OutlinedButton.icon(
+                                onPressed: _selectAllVisiblePhotos,
+                                icon: const Icon(Icons.select_all, size: 16),
+                                label: const Text('Select All'),
+                              ),
+                              FilledButton.icon(
+                                onPressed: _selectedPaths.isEmpty
+                                    ? null
+                                    : _openBatchEditor,
+                                icon: const Icon(
+                                  Icons.edit_note_outlined,
+                                  size: 16,
+                                ),
+                                label: const Text('Edit Selected'),
+                              ),
+                              OutlinedButton.icon(
+                                onPressed: _selectedPaths.isEmpty
+                                    ? null
+                                    : () => _moveSelectedSearchPhotosToTrash(
+                                        _filteredPhotosInCurrentFolder,
+                                      ),
+                                icon: const Icon(
+                                  Icons.delete_outline,
+                                  size: 16,
+                                ),
+                                label: const Text('Move to Photo Trash'),
+                              ),
+                              TextButton(
+                                onPressed: _clearPhotoSelection,
+                                child: const Text('Clear'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 12),
                       _buildPhotoGrid(_filteredPhotosInCurrentFolder),
                     ],
@@ -9335,7 +9446,13 @@ class _PhotosScreenState extends State<PhotosScreen> {
                   TextButton.icon(
                     onPressed: _selectionMode
                         ? null
-                        : () => setState(() => _currentFolder = ''),
+                        : () {
+                            setState(() {
+                              _currentFolder = '';
+                              _showAllPhotosOnLanding = false;
+                              _folderPhotoFilter = 'all';
+                            });
+                          },
                     icon: const Icon(Icons.home_outlined),
                     label: const Text('Pictures'),
                   ),
@@ -9348,7 +9465,11 @@ class _PhotosScreenState extends State<PhotosScreen> {
                               final target = path.joinAll(
                                 segments.take(i + 1).toList(),
                               );
-                              setState(() => _currentFolder = target);
+                              setState(() {
+                                _currentFolder = target;
+                                _showAllPhotosOnLanding = false;
+                                _folderPhotoFilter = 'all';
+                              });
                             },
                       child: Text(segments[i]),
                     ),
@@ -9492,7 +9613,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
     final tileSelectionMode = _selectionMode || searchSelectionMode;
     final metadata = _catalogByPath[photo.filePath];
 
-    final peopleCount = metadata?.people.length ?? 0;
+    final photoDate = metadata?.approximateDate.trim() ?? '';
     final location = metadata?.location.trim() ?? '';
     final description = metadata?.description.trim() ?? '';
 
@@ -9564,11 +9685,11 @@ class _PhotosScreenState extends State<PhotosScreen> {
                         runSpacing: 5,
                         children: [
                           _PhotoMetaPill(
-                            icon: Icons.people_outline,
-                            text: peopleCount == 0
-                                ? 'No people'
-                                : '$peopleCount ${peopleCount == 1 ? 'person' : 'people'}',
-                            missing: peopleCount == 0,
+                            icon: Icons.event_outlined,
+                            text: photoDate.isEmpty
+                                ? 'Unknown date'
+                                : photoDate,
+                            missing: photoDate.isEmpty,
                           ),
                           if (location.isNotEmpty)
                             _PhotoMetaPill(
@@ -9784,12 +9905,9 @@ Future<List<Map<String, Object?>>> _compareFingerprintRecords(
   final likelyExactGroups = <String, List<int>>{};
   for (var i = 0; i < records.length; i++) {
     final record = records[i];
-    final fileSize = asInt(record['file_size']);
-    // Exact duplicates must not depend on the visual fingerprint cache. Two
-    // byte-identical files can have stale/incompatible cached visual hashes.
-    // File size is a safe candidate gate; the existing byte-for-byte comparison
-    // below remains the final authority before a pair is marked 100% exact.
-    final key = '$fileSize';
+    final filePath = record['file_path'] as String? ?? '';
+    final key =
+        '${path.basename(filePath).toLowerCase()}|${asInt(record['file_size'])}';
     likelyExactGroups.putIfAbsent(key, () => <int>[]).add(i);
   }
 
@@ -10200,10 +10318,6 @@ class _PossibleDuplicatesDialogState extends State<_PossibleDuplicatesDialog> {
         return first == 'Local Folder' && second == 'Local Folder';
       case 'onedrive_onedrive':
         return first == 'OneDrive' && second == 'OneDrive';
-      case 'exact':
-        return pair.similarity == 100;
-      case 'similar':
-        return pair.similarity < 100;
       default:
         return true;
     }
@@ -10264,44 +10378,6 @@ class _PossibleDuplicatesDialogState extends State<_PossibleDuplicatesDialog> {
     }
     if (firstMeta >= secondMeta + 3) return pair.first;
     if (secondMeta >= firstMeta + 3) return pair.second;
-
-    // Byte-for-byte verified exact duplicates always get a deterministic
-    // keeper so Select Recommended can handle same-source copies too.
-    if (pair.similarity == 100) {
-      final firstSource = _sourceForPhoto(pair.first);
-      final secondSource = _sourceForPhoto(pair.second);
-
-      // Prefer the managed OneDrive copy over a Local Folder copy.
-      if (firstSource == 'OneDrive' && secondSource == 'Local Folder') {
-        return pair.first;
-      }
-      if (secondSource == 'OneDrive' && firstSource == 'Local Folder') {
-        return pair.second;
-      }
-
-      // For same-source exact duplicates, prefer the original-looking
-      // filename over common Windows Explorer copy names.
-      bool looksLikeCopyName(VaultPhoto photo) {
-        final stem = path
-            .basenameWithoutExtension(photo.fileName)
-            .toLowerCase();
-        return RegExp(r' - copy(?: \\(\\d+\\))?$').hasMatch(stem) ||
-            RegExp(r' \\(\\d+\\)$').hasMatch(stem);
-      }
-
-      final firstLooksCopied = looksLikeCopyName(pair.first);
-      final secondLooksCopied = looksLikeCopyName(pair.second);
-      if (firstLooksCopied != secondLooksCopied) {
-        return firstLooksCopied ? pair.second : pair.first;
-      }
-
-      // Final stable tie-breaker: keep the lexically earlier path. This makes
-      // the recommendation repeatable without implying a quality difference.
-      final firstPath = path.normalize(pair.first.filePath).toLowerCase();
-      final secondPath = path.normalize(pair.second.filePath).toLowerCase();
-      return firstPath.compareTo(secondPath) <= 0 ? pair.first : pair.second;
-    }
-
     return null;
   }
 
@@ -10350,36 +10426,18 @@ class _PossibleDuplicatesDialogState extends State<_PossibleDuplicatesDialog> {
     setState(() {
       _focusedSelectedPath = null;
       for (final pair in visible) {
+        final local = _localPhotoForCrossSourcePair(pair);
+        if (local == null) continue;
         final keeper = _recommendedKeeper(pair);
-        if (keeper == null) continue;
-
-        VaultPhoto? removal;
-
-        if (pair.similarity == 100) {
-          // Exact duplicates are byte-for-byte verified, so select the
-          // non-keeper even when both files come from the same source.
-          removal = keeper.filePath == pair.first.filePath
-              ? pair.second
-              : pair.first;
-        } else {
-          // Preserve the conservative behavior for merely similar photos:
-          // only recommend removing a Local Folder copy when the other copy
-          // is the recommended keeper.
-          final local = _localPhotoForCrossSourcePair(pair);
-          if (local != null && keeper.filePath != local.filePath) {
-            removal = local;
-          }
-        }
-
-        if (removal == null) continue;
-        final selectedPath = path.normalize(removal.filePath).toLowerCase();
+        if (keeper == null || keeper.filePath == local.filePath) continue;
+        final selectedPath = path.normalize(local.filePath).toLowerCase();
         _selectedLocalPaths.add(selectedPath);
         firstSelectedPath ??= selectedPath;
       }
-
-      // Bulk Select Recommended should leave the full filtered result set
-      // visible. Focus mode is reserved for single-file/manual selection.
-      _focusedSelectedPath = null;
+      // Show exactly one comparison containing the first selected FILE.
+      // A file can occur in several duplicate pairs, so this prevents one
+      // selected path from appearing to be multiple selections.
+      _focusedSelectedPath = firstSelectedPath;
     });
   }
 
@@ -10396,11 +10454,11 @@ class _PossibleDuplicatesDialogState extends State<_PossibleDuplicatesDialog> {
     final selectedPhotos = <VaultPhoto>[];
     final seen = <String>{};
     for (final pair in widget.pairs) {
-      for (final photo in <VaultPhoto>[pair.first, pair.second]) {
-        final key = path.normalize(photo.filePath).toLowerCase();
-        if (_selectedLocalPaths.contains(key) && seen.add(key)) {
-          selectedPhotos.add(photo);
-        }
+      final local = _localPhotoForCrossSourcePair(pair);
+      if (local == null) continue;
+      final key = path.normalize(local.filePath).toLowerCase();
+      if (_selectedLocalPaths.contains(key) && seen.add(key)) {
+        selectedPhotos.add(local);
       }
     }
     if (selectedPhotos.isEmpty) return;
@@ -10408,13 +10466,12 @@ class _PossibleDuplicatesDialogState extends State<_PossibleDuplicatesDialog> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Move Selected Copies?'),
+        title: const Text('Move Selected Local Copies?'),
         content: Text(
-          '${selectedPhotos.length} selected '
+          '${selectedPhotos.length} selected Local Folder '
           '${selectedPhotos.length == 1 ? 'copy' : 'copies'} will be moved to '
-          'Heirloom Atlas Duplicate Trash.\n\n'
-          'Exact-looking matches are byte-for-byte verified. Similar matches '
-          'still require visual review.',
+          'Heirloom Atlas Duplicate Trash. The OneDrive copies will remain untouched.\n\n'
+          'These are visually reviewed matches, not byte-for-byte verification.',
         ),
         actions: [
           TextButton(
@@ -10440,10 +10497,10 @@ class _PossibleDuplicatesDialogState extends State<_PossibleDuplicatesDialog> {
       if (moved > 0) {
         _changed = true;
         for (final pair in widget.pairs) {
-          final firstKey = path.normalize(pair.first.filePath).toLowerCase();
-          final secondKey = path.normalize(pair.second.filePath).toLowerCase();
-          if (_selectedLocalPaths.contains(firstKey) ||
-              _selectedLocalPaths.contains(secondKey)) {
+          final local = _localPhotoForCrossSourcePair(pair);
+          if (local == null) continue;
+          final key = path.normalize(local.filePath).toLowerCase();
+          if (_selectedLocalPaths.contains(key)) {
             _dismissed.add(_pairKey(pair));
           }
         }
@@ -10455,8 +10512,8 @@ class _PossibleDuplicatesDialogState extends State<_PossibleDuplicatesDialog> {
       SnackBar(
         content: Text(
           moved == 1
-              ? 'Moved 1 selected copy to Duplicate Trash.'
-              : 'Moved $moved selected copies to Duplicate Trash.',
+              ? 'Moved 1 selected local copy to Duplicate Trash.'
+              : 'Moved $moved selected local copies to Duplicate Trash.',
         ),
       ),
     );
@@ -10606,8 +10663,8 @@ class _PossibleDuplicatesDialogState extends State<_PossibleDuplicatesDialog> {
       },
       child: Dialog(
         child: SizedBox(
-          width: 1450,
-          height: 820,
+          width: 1150,
+          height: 780,
           child: Column(
             children: [
               Padding(
@@ -10680,14 +10737,6 @@ class _PossibleDuplicatesDialogState extends State<_PossibleDuplicatesDialog> {
                         DropdownMenuItem(
                           value: 'all',
                           child: Text('All Matches'),
-                        ),
-                        DropdownMenuItem(
-                          value: 'exact',
-                          child: Text('Exact-looking duplicates'),
-                        ),
-                        DropdownMenuItem(
-                          value: 'similar',
-                          child: Text('Similar duplicates'),
                         ),
                         DropdownMenuItem(
                           value: 'local_onedrive',
@@ -10815,142 +10864,108 @@ class _PossibleDuplicatesDialogState extends State<_PossibleDuplicatesDialog> {
               Expanded(
                 child: visible.isEmpty
                     ? const Center(child: Text('Review complete'))
-                    : LayoutBuilder(
-                        builder: (context, constraints) {
-                          final columns = constraints.maxWidth >= 1000 ? 2 : 1;
-                          final rowCount =
-                              (visible.length + columns - 1) ~/ columns;
-
-                          Widget buildPairItem(_PossibleDuplicatePair pair) {
-                            final localPhoto = _localPhotoForCrossSourcePair(
-                              pair,
-                            );
-                            return Column(
-                              key: _keyForDuplicatePair(pair),
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                if (localPhoto != null)
-                                  CheckboxListTile(
-                                    contentPadding: const EdgeInsets.symmetric(
-                                      horizontal: 4,
-                                    ),
-                                    dense: true,
-                                    controlAffinity:
-                                        ListTileControlAffinity.leading,
-                                    value: _isSelectedLocal(localPhoto),
-                                    secondary: IconButton(
-                                      tooltip:
-                                          'Select the recommended removal for this pair',
-                                      onPressed: _movingSelectedLocal
-                                          ? null
-                                          : () {
-                                              final keeper = _recommendedKeeper(
-                                                pair,
-                                              );
-                                              if (keeper == null) {
-                                                ScaffoldMessenger.of(
-                                                  context,
-                                                ).showSnackBar(
-                                                  const SnackBar(
-                                                    content: Text(
-                                                      'No clear keeper is recommended for this pair. Review it manually.',
-                                                    ),
-                                                  ),
-                                                );
-                                                return;
-                                              }
-                                              _toggleSelectedLocal(
-                                                localPhoto,
-                                                keeper.filePath !=
-                                                    localPhoto.filePath,
-                                              );
-                                            },
-                                      icon: const Icon(
-                                        Icons.auto_awesome_outlined,
-                                      ),
-                                    ),
-                                    onChanged: _movingSelectedLocal
+                    : ListView.separated(
+                        padding: const EdgeInsets.all(18),
+                        itemCount: visible.length,
+                        separatorBuilder: (_, _) => const SizedBox(height: 14),
+                        itemBuilder: (context, index) {
+                          final pair = visible[index];
+                          final localPhoto = _localPhotoForCrossSourcePair(
+                            pair,
+                          );
+                          return Column(
+                            key: _keyForDuplicatePair(pair),
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              if (localPhoto != null)
+                                CheckboxListTile(
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 4,
+                                  ),
+                                  dense: true,
+                                  controlAffinity:
+                                      ListTileControlAffinity.leading,
+                                  value: _isSelectedLocal(localPhoto),
+                                  secondary: IconButton(
+                                    tooltip:
+                                        'Select the recommended removal for this pair',
+                                    onPressed: _movingSelectedLocal
                                         ? null
-                                        : (value) => _toggleSelectedLocal(
-                                            localPhoto,
-                                            value ?? false,
-                                          ),
-                                    title: Text(
-                                      'Select Local Folder copy for Duplicate Trash — ${localPhoto.fileName}',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.w800,
-                                      ),
-                                    ),
-                                    subtitle: Text(
-                                      (() {
-                                        final keeper = _recommendedKeeper(pair);
-                                        if (keeper == null) {
-                                          return 'Manual review recommended — neither copy is clearly better.';
-                                        }
-                                        if (keeper.filePath ==
-                                            localPhoto.filePath) {
-                                          return 'Heirloom Atlas recommends keeping this Local Folder copy.';
-                                        }
-                                        return 'Recommended: keep the other copy; this local copy can go to Duplicate Trash.';
-                                      })(),
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
+                                        : () {
+                                            final keeper = _recommendedKeeper(
+                                              pair,
+                                            );
+                                            if (keeper == null) {
+                                              ScaffoldMessenger.of(
+                                                context,
+                                              ).showSnackBar(
+                                                const SnackBar(
+                                                  content: Text(
+                                                    'No clear keeper is recommended for this pair. Review it manually.',
+                                                  ),
+                                                ),
+                                              );
+                                              return;
+                                            }
+                                            final shouldRemoveLocal =
+                                                keeper.filePath !=
+                                                localPhoto.filePath;
+                                            _toggleSelectedLocal(
+                                              localPhoto,
+                                              shouldRemoveLocal,
+                                            );
+                                          },
+                                    icon: const Icon(
+                                      Icons.auto_awesome_outlined,
                                     ),
                                   ),
-                                _PossibleDuplicatePairCard(
-                                  pair: pair,
-                                  catalogByPath: widget.catalogByPath,
-                                  photoSources: widget.photoSources,
-                                  selectedFirst: _isSelectedLocal(pair.first),
-                                  selectedSecond: _isSelectedLocal(pair.second),
-                                  recommendedKeeperPath: _recommendedKeeper(
-                                    pair,
-                                  )?.filePath,
-                                  onNotMatch: () => _markNotMatch(pair),
-                                  onRemoveFirst: () =>
-                                      _removePairPhoto(pair, pair.first),
-                                  onRemoveSecond: () =>
-                                      _removePairPhoto(pair, pair.second),
-                                  onMergeKeepFirst: () =>
-                                      _merge(pair, pair.first, pair.second),
-                                  onMergeKeepSecond: () =>
-                                      _merge(pair, pair.second, pair.first),
+                                  onChanged: _movingSelectedLocal
+                                      ? null
+                                      : (value) => _toggleSelectedLocal(
+                                          localPhoto,
+                                          value ?? false,
+                                        ),
+                                  title: Text(
+                                    'Select Local Folder copy for Duplicate Trash — '
+                                    '${localPhoto.fileName}',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  subtitle: Text(
+                                    (() {
+                                      final keeper = _recommendedKeeper(pair);
+                                      if (keeper == null) {
+                                        return 'Manual review recommended — neither copy is clearly better.';
+                                      }
+                                      if (keeper.filePath ==
+                                          localPhoto.filePath) {
+                                        return 'Heirloom Atlas recommends keeping this Local Folder copy.';
+                                      }
+                                      return 'Heirloom Atlas recommends keeping the other copy; this local copy can be selected for Duplicate Trash after review.';
+                                    })(),
+                                  ),
                                 ),
-                              ],
-                            );
-                          }
-
-                          return ListView.builder(
-                            padding: const EdgeInsets.all(12),
-                            itemCount: rowCount,
-                            itemBuilder: (context, rowIndex) {
-                              final firstIndex = rowIndex * columns;
-                              return Padding(
-                                padding: const EdgeInsets.only(bottom: 12),
-                                child: Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    for (
-                                      var column = 0;
-                                      column < columns;
-                                      column++
-                                    ) ...[
-                                      if (column > 0) const SizedBox(width: 12),
-                                      Expanded(
-                                        child:
-                                            firstIndex + column < visible.length
-                                            ? buildPairItem(
-                                                visible[firstIndex + column],
-                                              )
-                                            : const SizedBox.shrink(),
-                                      ),
-                                    ],
-                                  ],
-                                ),
-                              );
-                            },
+                              _PossibleDuplicatePairCard(
+                                pair: pair,
+                                catalogByPath: widget.catalogByPath,
+                                photoSources: widget.photoSources,
+                                selectedFirst: _isSelectedLocal(pair.first),
+                                selectedSecond: _isSelectedLocal(pair.second),
+                                recommendedKeeperPath: _recommendedKeeper(
+                                  pair,
+                                )?.filePath,
+                                onNotMatch: () => _markNotMatch(pair),
+                                onRemoveFirst: () =>
+                                    _removePairPhoto(pair, pair.first),
+                                onRemoveSecond: () =>
+                                    _removePairPhoto(pair, pair.second),
+                                onMergeKeepFirst: () =>
+                                    _merge(pair, pair.first, pair.second),
+                                onMergeKeepSecond: () =>
+                                    _merge(pair, pair.second, pair.first),
+                              ),
+                            ],
                           );
                         },
                       ),
@@ -11066,18 +11081,6 @@ class _PossibleDuplicatePairCard extends StatelessWidget {
     if (secondMeta >= firstMeta + 3) {
       return 'Recommended: keep RIGHT — more catalog information. • $sourceText';
     }
-    if (pair.similarity == 100) {
-      final firstKind = firstSource.toLowerCase().contains('onedrive');
-      final secondKind = secondSource.toLowerCase().contains('onedrive');
-      final firstLocal = firstSource.toLowerCase().contains('local');
-      final secondLocal = secondSource.toLowerCase().contains('local');
-      if (firstKind && secondLocal) {
-        return 'Recommended: keep LEFT — preferred OneDrive photo source. • $sourceText';
-      }
-      if (secondKind && firstLocal) {
-        return 'Recommended: keep RIGHT — preferred OneDrive photo source. • $sourceText';
-      }
-    }
     return 'Review manually — neither copy is clearly better. • $sourceText';
   }
 
@@ -11108,10 +11111,10 @@ class _PossibleDuplicatePairCard extends StatelessWidget {
                 ),
               ],
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 8),
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 borderRadius: BorderRadius.circular(8),
@@ -11121,7 +11124,7 @@ class _PossibleDuplicatePairCard extends StatelessWidget {
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
             ),
-            const SizedBox(height: 7),
+            const SizedBox(height: 10),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -11138,7 +11141,7 @@ class _PossibleDuplicatePairCard extends StatelessWidget {
                   ),
                 ),
                 const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 6, vertical: 55),
+                  padding: EdgeInsets.symmetric(horizontal: 12, vertical: 80),
                   child: Icon(Icons.compare_arrows),
                 ),
                 Expanded(
@@ -11255,7 +11258,7 @@ class _PossibleDuplicatePhoto extends StatelessWidget {
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 160),
-      padding: const EdgeInsets.all(7),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: selectedForRemoval
             ? scheme.errorContainer.withValues(alpha: .32)
@@ -11297,14 +11300,14 @@ class _PossibleDuplicatePhoto extends StatelessWidget {
                     size: 17,
                     color: scheme.error,
                   ),
-                  label: const Text('REMOVE'),
+                  label: const Text('SELECTED FOR REMOVAL'),
                   visualDensity: VisualDensity.compact,
                 ),
             ],
           ),
           const SizedBox(height: 5),
           Container(
-            height: 135,
+            height: 170,
             width: double.infinity,
             color: Theme.of(context).colorScheme.surfaceContainerHighest,
             child: Image.file(
@@ -11318,17 +11321,18 @@ class _PossibleDuplicatePhoto extends StatelessWidget {
           const SizedBox(height: 9),
           Text(
             photo.fileName,
-            maxLines: 1,
+            maxLines: 2,
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontWeight: FontWeight.w800),
           ),
           const SizedBox(height: 8),
           _detail(context, 'Source', sourceName, emphasize: true),
           _detail(context, 'Folder', folder),
+          _detail(context, 'Size', _formatBytes(photo.fileSize)),
           _detail(
             context,
-            'Size',
-            '${_formatBytes(photo.fileSize)} • ${photo.extension.replaceFirst('.', '').toUpperCase()}',
+            'Type',
+            photo.extension.replaceFirst('.', '').toUpperCase(),
           ),
           _detail(
             context,
@@ -11344,12 +11348,12 @@ class _PossibleDuplicatePhoto extends StatelessWidget {
               FilledButton.tonalIcon(
                 onPressed: onMergeKeep,
                 icon: const Icon(Icons.merge_type, size: 18),
-                label: const Text('Merge & Keep'),
+                label: const Text('Merge & Keep This'),
               ),
               OutlinedButton.icon(
                 onPressed: onRemove,
                 icon: const Icon(Icons.delete_outline, size: 18),
-                label: const Text('Remove Copy'),
+                label: const Text('Remove This Copy'),
               ),
             ],
           ),

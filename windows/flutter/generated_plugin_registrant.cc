@@ -11,6 +11,7 @@
 #include <flutter_onnxruntime/flutter_onnxruntime_plugin.h>
 #include <flutter_video_thumbnail_plus/flutter_video_thumbnail_plus_plugin_c_api.h>
 #include <heic_native/heic_native_plugin_c_api.h>
+#include <pdfx/pdfx_plugin.h>
 #include <url_launcher_windows/url_launcher_windows.h>
 
 void RegisterPlugins(flutter::PluginRegistry* registry) {
@@ -24,6 +25,8 @@ void RegisterPlugins(flutter::PluginRegistry* registry) {
       registry->GetRegistrarForPlugin("FlutterVideoThumbnailPlusPluginCApi"));
   HeicNativePluginCApiRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("HeicNativePluginCApi"));
+  PdfxPluginRegisterWithRegistrar(
+      registry->GetRegistrarForPlugin("PdfxPlugin"));
   UrlLauncherWindowsRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("UrlLauncherWindows"));
 }

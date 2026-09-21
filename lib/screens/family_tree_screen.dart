@@ -78,8 +78,9 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
             final id = int.tryParse(entry.key.toString());
             final millis = int.tryParse(entry.value.toString());
             if (id != null && millis != null) {
-              _personLastViewed[id] =
-                  DateTime.fromMillisecondsSinceEpoch(millis);
+              _personLastViewed[id] = DateTime.fromMillisecondsSinceEpoch(
+                millis,
+              );
             }
           }
         }
@@ -149,6 +150,8 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
       await _saveFrequentPeople();
     }
 
+    if (!mounted) return;
+
     await Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => FamilyPersonScreen(person: person)),
@@ -160,9 +163,7 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
   Future<void> _importGedcom() async {
     final imported = await Navigator.push<bool>(
       context,
-      MaterialPageRoute(
-        builder: (_) => const GedcomImportScreen(),
-      ),
+      MaterialPageRoute(builder: (_) => const GedcomImportScreen()),
     );
 
     if (imported == true) {
@@ -173,6 +174,9 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
   Future<void> _openVisualTree() async {
     final searchController = TextEditingController();
     List<FamilyPerson> results = const [];
+
+    // Reuse the Family Tree screen's existing frequently/recently viewed data.
+    final recent = _frequentlyViewedPeople();
     bool searching = false;
 
     final person = await showDialog<FamilyPerson>(
@@ -204,12 +208,34 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
             });
           }
 
+          final query = searchController.text.trim();
+          final showRecent = query.length < 2;
+
+          Widget personTile(FamilyPerson candidate, {bool recentItem = false}) {
+            return ListTile(
+              leading: CircleAvatar(
+                child: Icon(
+                  recentItem ? Icons.history_outlined : Icons.person_outline,
+                ),
+              ),
+              title: Text(candidate.displayName),
+              subtitle: Text(
+                [
+                  if (candidate.lifeSpan.isNotEmpty) candidate.lifeSpan,
+                  if (candidate.birthPlace.isNotEmpty) candidate.birthPlace,
+                ].join(' • '),
+              ),
+              onTap: () => Navigator.pop(dialogContext, candidate),
+            );
+          }
+
           return AlertDialog(
             title: const Text('Choose Starting Person'),
             content: SizedBox(
               width: 620,
               height: 520,
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   TextField(
                     controller: searchController,
@@ -223,41 +249,45 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
                     ),
                   ),
                   const SizedBox(height: 12),
+                  if (showRecent && recent.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(4, 2, 4, 8),
+                      child: Text(
+                        'RECENTLY VIEWED',
+                        style: TextStyle(
+                          color: _heritageGold,
+                          fontSize: 11,
+                          letterSpacing: 1,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
                   Expanded(
                     child: searching
                         ? const Center(child: CircularProgressIndicator())
+                        : showRecent
+                        ? recent.isEmpty
+                              ? const Center(
+                                  child: Text(
+                                    'Recently viewed people will appear here.',
+                                  ),
+                                )
+                              : ListView.builder(
+                                  itemCount: recent.length,
+                                  itemBuilder: (context, index) => personTile(
+                                    recent[index],
+                                    recentItem: true,
+                                  ),
+                                )
                         : results.isEmpty
-                            ? const Center(
-                                child: Text(
-                                  'Search for the person you want '
-                                  'to center the tree on.',
-                                ),
-                              )
-                            : ListView.builder(
-                                itemCount: results.length,
-                                itemBuilder: (context, index) {
-                                  final candidate = results[index];
-
-                                  return ListTile(
-                                    leading: const CircleAvatar(
-                                      child: Icon(Icons.person_outline),
-                                    ),
-                                    title: Text(candidate.displayName),
-                                    subtitle: Text(
-                                      [
-                                        if (candidate.lifeSpan.isNotEmpty)
-                                          candidate.lifeSpan,
-                                        if (candidate.birthPlace.isNotEmpty)
-                                          candidate.birthPlace,
-                                      ].join(' • '),
-                                    ),
-                                    onTap: () => Navigator.pop(
-                                      dialogContext,
-                                      candidate,
-                                    ),
-                                  );
-                                },
-                              ),
+                        ? const Center(
+                            child: Text('No people match this search.'),
+                          )
+                        : ListView.builder(
+                            itemCount: results.length,
+                            itemBuilder: (context, index) =>
+                                personTile(results[index]),
+                          ),
                   ),
                 ],
               ),
@@ -287,7 +317,6 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
     await _load();
   }
 
-
   Future<FamilyPerson?> _chooseGenealogyPerson(String title) async {
     final searchController = TextEditingController();
     List<FamilyPerson> results = const [];
@@ -308,8 +337,9 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
             }
 
             setDialogState(() => searching = true);
-            final matches =
-                await _databaseHelper.getFamilyPeople(searchText: query);
+            final matches = await _databaseHelper.getFamilyPeople(
+              searchText: query,
+            );
             if (!dialogContext.mounted) return;
             setDialogState(() {
               results = matches.take(75).toList();
@@ -340,33 +370,31 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
                     child: searching
                         ? const Center(child: CircularProgressIndicator())
                         : results.isEmpty
-                            ? const Center(
-                                child: Text('Search for a starting person.'),
-                              )
-                            : ListView.builder(
-                                itemCount: results.length,
-                                itemBuilder: (context, index) {
-                                  final candidate = results[index];
-                                  return ListTile(
-                                    leading: const CircleAvatar(
-                                      child: Icon(Icons.person_outline),
-                                    ),
-                                    title: Text(candidate.displayName),
-                                    subtitle: Text(
-                                      [
-                                        if (candidate.lifeSpan.isNotEmpty)
-                                          candidate.lifeSpan,
-                                        if (candidate.birthPlace.isNotEmpty)
-                                          candidate.birthPlace,
-                                      ].join(' • '),
-                                    ),
-                                    onTap: () => Navigator.pop(
-                                      dialogContext,
-                                      candidate,
-                                    ),
-                                  );
-                                },
-                              ),
+                        ? const Center(
+                            child: Text('Search for a starting person.'),
+                          )
+                        : ListView.builder(
+                            itemCount: results.length,
+                            itemBuilder: (context, index) {
+                              final candidate = results[index];
+                              return ListTile(
+                                leading: const CircleAvatar(
+                                  child: Icon(Icons.person_outline),
+                                ),
+                                title: Text(candidate.displayName),
+                                subtitle: Text(
+                                  [
+                                    if (candidate.lifeSpan.isNotEmpty)
+                                      candidate.lifeSpan,
+                                    if (candidate.birthPlace.isNotEmpty)
+                                      candidate.birthPlace,
+                                  ].join(' • '),
+                                ),
+                                onTap: () =>
+                                    Navigator.pop(dialogContext, candidate),
+                              );
+                            },
+                          ),
                   ),
                 ],
               ),
@@ -389,9 +417,7 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
   Future<void> _openRelationships() async {
     await Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => const FamilyRelationshipFinderScreen(),
-      ),
+      MaterialPageRoute(builder: (_) => const FamilyRelationshipFinderScreen()),
     );
     await _load();
   }
@@ -412,7 +438,9 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
   Future<void> _exportGedcom() async {
     if (_people.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('There are no Family Tree people to export.')),
+        const SnackBar(
+          content: Text('There are no Family Tree people to export.'),
+        ),
       );
       return;
     }
@@ -467,12 +495,9 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
         if (childId == null) continue;
 
         final parents = await _databaseHelper.getFamilyParents(childId);
-        final parentIds = parents
-            .map((person) => person.id)
-            .whereType<int>()
-            .toSet()
-            .toList()
-          ..sort();
+        final parentIds =
+            parents.map((person) => person.id).whereType<int>().toSet().toList()
+              ..sort();
 
         if (parentIds.isEmpty) continue;
 
@@ -511,7 +536,9 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
         final family = families[index];
 
         for (final parentId in family.parentIds) {
-          familyIdsByPerson.putIfAbsent(parentId, () => <int>[]).add(familyNumber);
+          familyIdsByPerson
+              .putIfAbsent(parentId, () => <int>[])
+              .add(familyNumber);
         }
         for (final childId in family.childIds) {
           childFamilyByPerson[childId] = familyNumber;
@@ -533,9 +560,10 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
         if (id == null) continue;
 
         final given = clean(
-          [person.firstName, person.middleName]
-              .where((part) => part.trim().isNotEmpty)
-              .join(' '),
+          [
+            person.firstName,
+            person.middleName,
+          ].where((part) => part.trim().isNotEmpty).join(' '),
         );
         final surname = clean(person.lastName);
 
@@ -669,11 +697,10 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
           actions: [
             TextButton.icon(
               onPressed: () async {
-                await Process.start(
-                  'explorer.exe',
-                  ['/select,', file.path],
-                  runInShell: true,
-                );
+                await Process.start('explorer.exe', [
+                  '/select,',
+                  file.path,
+                ], runInShell: true);
               },
               icon: const Icon(Icons.folder_open_outlined),
               label: const Text('Show in Folder'),
@@ -687,9 +714,9 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
       );
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('GEDCOM export failed: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('GEDCOM export failed: $error')));
     }
   }
 
@@ -698,9 +725,7 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Tree Health & Backups'),
-        content: const Text(
-          'Choose a maintenance tool for your Family Tree.',
-        ),
+        content: const Text('Choose a maintenance tool for your Family Tree.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext),
@@ -779,9 +804,9 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
       );
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Diagnostics failed: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Diagnostics failed: $error')));
     }
   }
 
@@ -839,8 +864,8 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
                           error.isNotEmpty
                               ? Icons.error_outline
                               : people > 0
-                                  ? Icons.check_circle_outline
-                                  : Icons.remove_circle_outline,
+                              ? Icons.check_circle_outline
+                              : Icons.remove_circle_outline,
                         ),
                         title: Text(
                           item['name']?.toString() ?? '',
@@ -854,8 +879,8 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
                           error.isNotEmpty
                               ? 'Inspection error: $error'
                               : '$date\nPeople: $people  •  '
-                                  'Parent/child: $pc  •  Spouses: $spouses  •  '
-                                  'GEDCOM links: $links',
+                                    'Parent/child: $pc  •  Spouses: $spouses  •  '
+                                    'GEDCOM links: $links',
                         ),
                         isThreeLine: true,
                       );
@@ -939,9 +964,9 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
     } catch (error) {
       if (!mounted) return;
       Navigator.of(context, rootNavigator: true).pop();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Backup failed: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Backup failed: $error')));
     }
   }
 
@@ -1065,9 +1090,7 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
           color: const Color(0xFF102A40),
-          border: Border.all(
-            color: _heritageGold.withValues(alpha: .22),
-          ),
+          border: Border.all(color: _heritageGold.withValues(alpha: .22)),
           borderRadius: BorderRadius.circular(3),
         ),
         child: Row(
@@ -1113,9 +1136,7 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: _panelNavy.withValues(alpha: .94),
-        border: Border.all(
-          color: _heritageGold.withValues(alpha: .30),
-        ),
+        border: Border.all(color: _heritageGold.withValues(alpha: .30)),
         borderRadius: BorderRadius.circular(4),
       ),
       child: SingleChildScrollView(
@@ -1179,10 +1200,7 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
               onTap: _openFanChart,
             ),
             const SizedBox(height: 18),
-            Divider(
-              height: 1,
-              color: _heritageGold.withValues(alpha: .18),
-            ),
+            Divider(height: 1, color: _heritageGold.withValues(alpha: .18)),
             const SizedBox(height: 14),
             Text(
               'MANAGE',
@@ -1229,8 +1247,9 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
     ranked.sort((a, b) {
       final aId = a.id!;
       final bId = b.id!;
-      final countCompare =
-          (_personViewCounts[bId] ?? 0).compareTo(_personViewCounts[aId] ?? 0);
+      final countCompare = (_personViewCounts[bId] ?? 0).compareTo(
+        _personViewCounts[aId] ?? 0,
+      );
       if (countCompare != 0) return countCompare;
 
       final aTime =
@@ -1307,9 +1326,18 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
                         fontSize: 11,
                       ),
                     ),
-              onTap: () {
+              onTap: () async {
                 _searchFocusNode.unfocus();
-                _openPerson(person);
+
+                await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        FamilyVisualTreeScreen(initialPerson: person),
+                  ),
+                );
+
+                await _load();
               },
             ),
         ],
@@ -1321,9 +1349,7 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
     return Container(
       decoration: BoxDecoration(
         color: _panelNavy.withValues(alpha: .94),
-        border: Border.all(
-          color: _heritageGold.withValues(alpha: .30),
-        ),
+        border: Border.all(color: _heritageGold.withValues(alpha: .30)),
         borderRadius: BorderRadius.circular(4),
       ),
       child: Column(
@@ -1358,10 +1384,7 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
               ],
             ),
           ),
-          Divider(
-            height: 1,
-            color: _heritageGold.withValues(alpha: .20),
-          ),
+          Divider(height: 1, color: _heritageGold.withValues(alpha: .20)),
           Padding(
             padding: const EdgeInsets.all(11),
             child: Row(
@@ -1399,107 +1422,102 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
             ),
           ),
           if (_searchFocused && _searchController.text.trim().isEmpty)
-            _buildFrequentPeople(),
+            Flexible(
+              flex: 0,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 225),
+                child: SingleChildScrollView(child: _buildFrequentPeople()),
+              ),
+            ),
           Expanded(
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
                 : _people.isEmpty
-                    ? Center(
-                        child: Padding(
-                          padding: const EdgeInsets.all(28),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.family_restroom_outlined,
-                                size: 42,
-                                color: _heritageGold.withValues(alpha: .72),
-                              ),
-                              const SizedBox(height: 12),
-                              Text(
-                                _searchController.text.trim().isEmpty
-                                    ? 'Your family archive is ready for its first person.'
-                                    : 'No people match this search.',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: _heritageCream.withValues(alpha: .72),
-                                ),
-                              ),
-                              if (_searchController.text.trim().isEmpty) ...[
-                                const SizedBox(height: 14),
-                                FilledButton.icon(
-                                  onPressed: _addPerson,
-                                  icon: const Icon(
-                                    Icons.person_add_alt_1_outlined,
-                                  ),
-                                  label: const Text('Add First Person'),
-                                ),
-                              ],
-                            ],
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(28),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.family_restroom_outlined,
+                            size: 42,
+                            color: _heritageGold.withValues(alpha: .72),
                           ),
-                        ),
-                      )
-                    : ListView.separated(
-                        padding: const EdgeInsets.fromLTRB(9, 0, 9, 10),
-                        itemCount: _people.length,
-                        separatorBuilder: (_, _) => Divider(
-                          height: 1,
-                          color: _heritageGold.withValues(alpha: .12),
-                        ),
-                        itemBuilder: (context, index) {
-                          final person = _people[index];
-                          final photoPath = person.profilePhotoPath;
-                          final hasPhoto = photoPath.isNotEmpty &&
-                              File(photoPath).existsSync();
-
-                          return ListTile(
-                            dense: true,
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 2,
+                          const SizedBox(height: 12),
+                          Text(
+                            _searchController.text.trim().isEmpty
+                                ? 'Your family archive is ready for its first person.'
+                                : 'No people match this search.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: _heritageCream.withValues(alpha: .72),
                             ),
-                            leading: CircleAvatar(
-                              radius: 18,
-                              backgroundImage: hasPhoto
-                                  ? FileImage(File(photoPath))
-                                  : null,
-                              child: hasPhoto
-                                  ? null
-                                  : const Icon(
-                                      Icons.person_outline,
-                                      size: 18,
-                                    ),
+                          ),
+                          if (_searchController.text.trim().isEmpty) ...[
+                            const SizedBox(height: 14),
+                            FilledButton.icon(
+                              onPressed: _addPerson,
+                              icon: const Icon(Icons.person_add_alt_1_outlined),
+                              label: const Text('Add First Person'),
                             ),
-                            title: Text(
-                              person.displayName,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            subtitle: Text(
-                              [
-                                person.lifeSpan,
-                                person.birthPlace,
-                              ].where((value) => value.isNotEmpty).join(' • '),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            trailing: const Icon(
-                              Icons.chevron_right,
-                              size: 18,
-                            ),
-                            onTap: () => _openPerson(person),
-                          );
-                        },
+                          ],
+                        ],
                       ),
+                    ),
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(9, 0, 9, 10),
+                    itemCount: _people.length,
+                    separatorBuilder: (_, _) => Divider(
+                      height: 1,
+                      color: _heritageGold.withValues(alpha: .12),
+                    ),
+                    itemBuilder: (context, index) {
+                      final person = _people[index];
+                      final photoPath = person.profilePhotoPath;
+                      final hasPhoto =
+                          photoPath.isNotEmpty && File(photoPath).existsSync();
+
+                      return ListTile(
+                        dense: true,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        leading: CircleAvatar(
+                          radius: 18,
+                          backgroundImage: hasPhoto
+                              ? FileImage(File(photoPath))
+                              : null,
+                          child: hasPhoto
+                              ? null
+                              : const Icon(Icons.person_outline, size: 18),
+                        ),
+                        title: Text(
+                          person.displayName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        subtitle: Text(
+                          [
+                            person.lifeSpan,
+                            person.birthPlace,
+                          ].where((value) => value.isNotEmpty).join(' • '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        trailing: const Icon(Icons.chevron_right, size: 18),
+                        onTap: () => _openPerson(person),
+                      );
+                    },
+                  ),
           ),
         ],
       ),
     );
   }
-
 
   @override
   Widget build(BuildContext context) {
@@ -1529,15 +1547,9 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
                   return Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Expanded(
-                        flex: 1,
-                        child: _buildGenealogyToolsPanel(),
-                      ),
+                      Expanded(flex: 1, child: _buildGenealogyToolsPanel()),
                       const SizedBox(width: 14),
-                      Expanded(
-                        flex: 2,
-                        child: _buildPeoplePanel(),
-                      ),
+                      Expanded(flex: 2, child: _buildPeoplePanel()),
                     ],
                   );
                 },
@@ -1549,7 +1561,6 @@ class _FamilyTreeScreenState extends State<FamilyTreeScreen> {
     );
   }
 }
-
 
 class _GedcomExportFamily {
   final List<int> parentIds;

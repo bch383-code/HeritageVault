@@ -8,6 +8,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   flutter_onnxruntime
   flutter_video_thumbnail_plus
   heic_native
+  pdfx
   url_launcher_windows
 )
 
