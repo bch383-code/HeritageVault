@@ -18,7 +18,7 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  static const String _version = 'Private Beta 0.1.6';
+  static const String _version = 'Private Beta 0.1.7';
   String? _dataPath;
   String _helpLevel = 'Guided';
   String _changePolicy = 'Ask before changing originals';
